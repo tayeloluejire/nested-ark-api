@@ -1711,15 +1711,17 @@ app.put("/api/projects/:projectId", authenticate, async (req: Request, res: Resp
         visibility         = COALESCE($11, visibility),
         project_mode       = COALESCE($12, project_mode),
         lifecycle_stage    = COALESCE($13, lifecycle_stage),
-        owner_type         = COALESCE($12, owner_type),
-        owner_name         = COALESCE($13, owner_name),
-        owner_phone        = COALESCE($14, owner_phone),
-        owner_company      = COALESCE($15, owner_company),
+        owner_type         = COALESCE($14, owner_type),
+        owner_name         = COALESCE($15, owner_name),
+        owner_phone        = COALESCE($16, owner_phone),
+        owner_company      = COALESCE($17, owner_company),
         updated_at         = NOW()
-       WHERE id = $16 RETURNING *`,
+       WHERE id = $18 RETURNING *`,
       [title, description, status, progress_percentage, pitch_summary,
        hero_image_url, expected_roi, risk_grade, assigned_bank, primary_supplier,
-       visibility, owner_type, owner_name, owner_phone, owner_company,
+       visibility,
+       req.body.project_mode, req.body.lifecycle_stage,
+       owner_type, owner_name, owner_phone, owner_company,
        req.params.projectId]
     );
     return res.json({ success: true, project: result.rows[0] });
@@ -5537,29 +5539,7 @@ app.post('/api/flex-pay/setup', authenticate, async (req: Request, res: Response
 });
 
 // POST /api/flex-pay/contribute
-app.post('/api/flex-pay/contribute', authenticate, async (req: Request, res: Response): Promise<any> => {
-  const { vault_id, amount_ngn, paystack_ref } = req.body;
-  if (!vault_id || !amount_ngn) return res.status(400).json({ error: 'vault_id and amount_ngn required' });
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    const vault = await client.query(`SELECT * FROM flex_pay_vaults WHERE id = $1 FOR UPDATE`, [vault_id]);
-    if (!vault.rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Vault not found' }); }
-    const v = vault.rows[0];
-    const amount = parseFloat(amount_ngn);
-    const newBalance = parseFloat(v.vault_balance) + amount;
-    const periodLabel = new Date().toISOString().slice(0,7);
-    const h = crypto.createHash('sha256').update(`flex-contrib-${vault_id}-${amount}-${Date.now()}`).digest('hex');
-    await client.query(`INSERT INTO flex_contributions (vault_id, tenancy_id, amount_ngn, paystack_ref, status, period_label, paid_at, ledger_hash) VALUES ($1,$2,$3,$4,'SUCCESS',$5,NOW(),$6)`, [vault_id, v.tenancy_id, amount, paystack_ref || null, periodLabel, h]);
-    const target = parseFloat(v.target_amount);
-    let newStatus = v.status, newPeriods = v.funded_periods;
-    if (newBalance >= target) { newPeriods += 1; newStatus = v.cashout_mode === 'LUMP_SUM' ? 'FUNDED_READY' : v.status; }
-    await client.query(`UPDATE flex_pay_vaults SET vault_balance=$1, funded_periods=$2, status=$3, updated_at=NOW() WHERE id=$4`, [newBalance, newPeriods, newStatus, vault_id]);
-    await client.query(`INSERT INTO system_ledger (transaction_type, payload, immutable_hash) VALUES ($1,$2,$3)`, ['FLEX_CONTRIBUTION', JSON.stringify({ vault_id, amount, new_balance: newBalance, target, period_label: periodLabel }), h]);
-    await client.query('COMMIT');
-    return res.json({ success: true, new_balance: newBalance, target_amount: target, funded_pct: Math.min(Math.round((newBalance / target) * 100), 100), status: newStatus, message: newStatus === 'FUNDED_READY' ? '🎉 Vault fully funded! Landlord cashout available.' : `Contribution recorded. ${Math.round((newBalance / target) * 100)}% of target reached.` });
-  } catch (e: any) { await client.query('ROLLBACK'); return res.status(500).json({ error: e.message }); }
-});
+
 
 // GET /api/flex-pay/vault/:tenancyId
 app.get('/api/flex-pay/vault/:tenancyId', authenticate, async (req: Request, res: Response): Promise<any> => {
@@ -6214,16 +6194,8 @@ app.post('/api/messaging/send', authenticate, async (req: Request, res: Response
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
 
-// ── 6. ENHANCED POST /api/flex-pay/contribute — dual-channel receipt ──────────
-// This REPLACES the existing route. Find:
-//   app.post('/api/flex-pay/contribute', authenticate,
-// and replace its entire block with this.
-//
-// KEY ADDITION: after COMMIT, fires dual-channel receipt (email PDF + WhatsApp)
-//
-// DIFF from existing: adds receipt dispatch after client.query('COMMIT')
-// Everything else is identical to the existing route.
-app.post('/api/flex-pay/contribute-v2', authenticate, async (req: Request, res: Response): Promise<any> => {
+// ── 6. POST /api/flex-pay/contribute — dual-channel receipt version ──────────
+app.post('/api/flex-pay/contribute', authenticate, async (req: Request, res: Response): Promise<any> => {
   const { vault_id, amount_ngn, paystack_ref } = req.body;
   if (!vault_id || !amount_ngn) return res.status(400).json({ error: 'vault_id and amount_ngn required' });
   const client = await pool.connect();
@@ -6390,32 +6362,8 @@ import { startReminderCron } from './cron_scheduler';
 
 const PORT = parseInt(process.env.PORT || "10000");
 
-async function startServer() {
-  try {
 
-    // Test DB — retry up to 3 times with 5s delay (Supabase can be slow on cold start)
-    let dbOk = false;
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      try {
-        await pool.query("SELECT 1");
-        dbOk = true;
-        break;
-      } catch (dbErr: any) {
-        process.stderr.write(`DB connect attempt ${attempt}/3 failed: ${dbErr.message}\n`);
-        if (attempt < 3) await new Promise(r => setTimeout(r, 5000));
-      }
-    }
-    if (!dbOk) {
-      process.stderr.write("FATAL: Could not connect to database after 3 attempts. Exiting.\n");
-      process.exit(1);
-    }
-    console.log("Database connected successfully");
-
-    // Ensure tables
-    await ensureTablesExist();
-    console.log("Tables verified");
-
-    // GET: Generate a professional WhatsApp invitation link
+// GET: Generate a professional WhatsApp invitation link
 app.get("/api/rental/invite-link/:unitId", async (req: Request, res: Response): Promise<any> => {
   const { unitId } = req.params;
   try {
@@ -6531,6 +6479,32 @@ app.post('/api/tenant/onboard', async (req: Request, res: Response): Promise<any
 });
 
 
+async function startServer() {
+  try {
+
+    // Test DB — retry up to 3 times with 5s delay (Supabase can be slow on cold start)
+    let dbOk = false;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        await pool.query("SELECT 1");
+        dbOk = true;
+        break;
+      } catch (dbErr: any) {
+        process.stderr.write(`DB connect attempt ${attempt}/3 failed: ${dbErr.message}\n`);
+        if (attempt < 3) await new Promise(r => setTimeout(r, 5000));
+      }
+    }
+    if (!dbOk) {
+      process.stderr.write("FATAL: Could not connect to database after 3 attempts. Exiting.\n");
+      process.exit(1);
+    }
+    console.log("Database connected successfully");
+
+    // Ensure tables
+    await ensureTablesExist();
+    console.log("Tables verified");
+
+
     // Start daily reminder & drawdown cron (08:00 WAT)
     startReminderCron(pool, getMailer);
 
@@ -6556,13 +6530,14 @@ Modules: 7
 - Gov / Ledger
 - Investments
 
-Endpoints: 57 total ✅
+Endpoints: 60+ total ✅
 Security: Tri-Layer Verification 🔒
 Ledger: Bulletproof Hash Chain 🔐
 Currency Oracle: Live 💱
 Geo-Awareness: Active 🌍
 Market Ticker: Live 📡
 Revenue Engine: Active 💰
+Rental Engine: Active 🏠
 Escrow Mode: Funds held in main Paystack balance (no subaccount split)
 Paystack Fee: Platform covers 1.5% transaction fee (bearer: account)
 Platform Fee: 2% deducted at milestone RELEASE (not at payment time)
