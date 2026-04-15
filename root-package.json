@@ -1,0 +1,53 @@
+{
+  "name": "infrastructure-platform",
+  "version": "1.0.0",
+  "description": "Global Infrastructure Project & Investment Operating System",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "turbo run dev --parallel",
+    "dev:all": "turbo run dev --parallel",
+    "dev:backend": "turbo run dev --scope=@infrastructure-platform/backend",
+    "dev:frontend": "turbo run dev --scope=@infrastructure-platform/frontend",
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "test:watch": "turbo run test:watch",
+    "test:coverage": "turbo run test:coverage",
+    "lint": "turbo run lint",
+    "format": "turbo run format && prettier --write \"**/*.{ts,tsx,js,jsx,json,md}\"",
+    "db:migrate": "npm run -w apps/backend db:migrate",
+    "db:seed": "npm run -w apps/backend db:seed",
+    "db:reset": "npm run -w apps/backend db:reset",
+    "health-check": "npm run -w apps/backend health-check",
+    "docker:build": "docker build -f apps/backend/Dockerfile -t infrastructure-platform:backend apps/backend && docker build -f apps/frontend/Dockerfile -t infrastructure-platform:frontend apps/frontend",
+    "docker:up": "docker-compose up -d",
+    "docker:down": "docker-compose down",
+    "docker:logs": "docker-compose logs -f",
+    "docker:clean": "docker-compose down -v",
+    "clean": "turbo run clean && rm -rf node_modules dist",
+    "type-check": "turbo run type-check",
+    "pre-commit": "npm run lint && npm run type-check && npm run test"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "turbo": "^1.10.0",
+    "prettier": "^2.8.8",
+    "typescript": "^5.0.0",
+    "@typescript-eslint/eslint-plugin": "^5.59.0",
+    "@typescript-eslint/parser": "^5.59.0",
+    "eslint": "^8.40.0",
+    "husky": "^8.0.3",
+    "lint-staged": "^13.2.2"
+  },
+  "engines": {
+    "node": ">=16.0.0",
+    "npm": ">=8.0.0"
+  },
+  "lint-staged": {
+    "*.{ts,tsx,js,jsx}": "eslint --fix",
+    "*.{ts,tsx,js,jsx,json,md}": "prettier --write"
+  }
+}
