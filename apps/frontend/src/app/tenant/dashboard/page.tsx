@@ -1,512 +1,532 @@
 'use client';
-export const dynamic = 'force-dynamic';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import Link from 'next/link';
-import { useAuth } from '@/lib/AuthContext';
-import api from '@/lib/api';
-import {
-  Wallet, ShieldCheck, Download, Bell, Clock,
-  CheckCircle2, AlertCircle, Loader2, RefreshCw,
-  TrendingUp, FileText, Calendar, MessageCircle,
-  ChevronRight, Home, Lock, Activity
-} from 'lucide-react';
 
-interface VaultData {
-  id: string;
-  vault_balance: number;
-  target_amount: number;
-  frequency: string;
+const API = process.env.NEXT_PUBLIC_API_URL || 'https://nested-ark-api.onrender.com';
+
+interface Tenancy {
+  tenancy_id:      string;
+  unit_id:         string;
+  project_id:      string;
+  tenant_name:     string;
+  tenant_email:    string;
+  unit_name:       string;
+  project_title:   string;
+  project_number:  string;
+  // New world-class fields
+  guarantor_json?:          { name: string; phone: string; work_id?: string; relationship?: string } | null;
+  digital_signature_url?:   string | null;
+  tenant_score?:            number | null;
+  former_landlord_contact?: string | null;
+  reason_for_quit?:         string | null;
+  litigation_history?:      any[] | null;
+}
+
+interface Vault {
+  id:                 string;
+  vault_balance:      number;
+  target_amount:      number;
+  frequency:          string;
   installment_amount: number;
-  next_due_date: string;
-  cashout_mode: string;
-  status: string;
-  funded_periods: number;
-  total_contributed: number;
-  contribution_count: number;
-  tenant_name: string;
-  tenant_email: string;
-  unit_name: string;
-  rent_amount: number;
-  funded_pct: number;
+  currency:           string;
+  next_due_date:      string;
+  status:             string;
 }
 
 interface Contribution {
-  id: string;
-  amount_ngn: number;
+  id:           string;
+  amount:       number;
+  currency:     string;
   period_label: string;
-  paid_at: string;
-  ledger_hash: string;
-  status: string;
-  paystack_ref: string;
+  paid_at:      string;
+  status:       string;
+  receipt_id?:  string;
 }
 
 interface Notice {
-  id: string;
-  notice_number: string;
-  notice_type: string;
-  amount_overdue: number;
-  days_overdue: number;
-  issued_at: string;
-  status: string;
+  id:                string;
+  notice_number:     string;
+  notice_type:       string;
+  amount_overdue:    number;
+  days_overdue:      number;
+  issued_at:         string;
   response_deadline: string;
+  status:            string;
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-const FREQ_COLOR: Record<string, string> = {
-  WEEKLY: 'text-blue-400', MONTHLY: 'text-teal-400', QUARTERLY: 'text-amber-400',
+const NOTICE_COLORS: Record<string, string> = {
+  ISSUED:   'text-amber-400 bg-amber-950 border-amber-800',
+  SERVED:   'text-red-400 bg-red-950 border-red-800',
+  RESOLVED: 'text-teal-400 bg-teal-950 border-teal-800',
+  EXPIRED:  'text-zinc-400 bg-zinc-900 border-zinc-700',
 };
 
-const STATUS_CONFIG: Record<string, { label: string; color: string; bg: string }> = {
-  ACTIVE:       { label: 'Active',         color: 'text-teal-400',  bg: 'bg-teal-500/10 border-teal-500/20' },
-  FUNDED_READY: { label: 'Fully Funded ✓', color: 'text-green-400', bg: 'bg-green-500/10 border-green-500/20' },
-  PAUSED:       { label: 'Paused',          color: 'text-amber-400', bg: 'bg-amber-500/10 border-amber-500/20' },
-  DEFAULTED:    { label: 'Defaulted',       color: 'text-red-400',   bg: 'bg-red-500/10 border-red-500/20' },
-  COMPLETED:    { label: 'Completed',       color: 'text-zinc-400',  bg: 'bg-zinc-800 border-zinc-700' },
-};
-
-function daysUntil(dateStr: string): number {
-  if (!dateStr) return 0;
-  return Math.max(0, Math.ceil((new Date(dateStr).getTime() - Date.now()) / 86_400_000));
-}
+const SCORE_COLOR = (s: number) =>
+  s >= 80 ? 'text-teal-400' : s >= 60 ? 'text-amber-400' : 'text-red-400';
 
 export default function TenantDashboardPage() {
-  const { user, isLoading: authLoading } = useAuth();
   const router = useRouter();
+  const [tenancy,       setTenancy]       = useState<Tenancy | null>(null);
+  const [vault,         setVault]         = useState<Vault | null>(null);
+  const [contributions, setContributions] = useState<Contribution[]>([]);
+  const [notices,       setNotices]       = useState<Notice[]>([]);
+  const [loading,       setLoading]       = useState(true);
+  const [error,         setError]         = useState('');
+  const [payLoading,    setPayLoading]    = useState(false);
+  const [tab,           setTab]           = useState<'vault' | 'history' | 'profile' | 'notices'>('vault');
 
-  const [vault,          setVault]         = useState<VaultData | null>(null);
-  const [contributions,  setContributions]  = useState<Contribution[]>([]);
-  const [notices,        setNotices]        = useState<Notice[]>([]);
-  const [loading,        setLoading]        = useState(true);
-  const [error,          setError]          = useState('');
-  const [tenancyId,      setTenancyId]      = useState('');
-  const [payAmount,      setPayAmount]      = useState('');
-  const [paying,         setPaying]         = useState(false);
-  const [payResult,      setPayResult]      = useState<any>(null);
-  const [downloadingPdf, setDownloadingPdf] = useState<string | null>(null);
+  const token = typeof window !== 'undefined' ? localStorage.getItem('ark_token') : null;
 
-  // Resolve tenancy from authenticated user
-  const resolveAndLoad = useCallback(async () => {
-    if (!user) return;
-    setLoading(true); setError('');
+  useEffect(() => {
+    if (!token) { router.push('/login'); return; }
+    loadDashboard();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
+
+  async function loadDashboard() {
+    setLoading(true);
+    setError('');
     try {
-      // Get the user's tenancy
-      const tenRes = await api.get('/api/tenant/my-tenancy');
-      const tid    = tenRes.data.tenancy_id;
-      setTenancyId(tid);
+      // 1. Get tenancy
+      const tenRes = await fetch(`${API}/api/tenant/my-tenancy`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!tenRes.ok) {
+        const d = await tenRes.json();
+        setError(d.error || 'Could not load your tenancy.');
+        setLoading(false);
+        return;
+      }
+      const ten: Tenancy = await tenRes.json();
+      setTenancy(ten);
 
-      const [vaultRes, contribRes, noticeRes] = await Promise.allSettled([
-        api.get(`/api/flex-pay/vault/${tid}`),
-        api.get(`/api/flex-pay/contributions/${tid}`),
-        api.get(`/api/tenant/notices/${tid}`),
-      ]);
+      // 2. Get vault
+      const vRes = await fetch(
+        `${API}/api/flex-pay/vault-status/${ten.tenancy_id}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (vRes.ok) {
+        const vd = await vRes.json();
+        setVault(vd.vault || null);
+      }
 
-      if (vaultRes.status === 'fulfilled') {
-        setVault(vaultRes.value.data.vault);
-        setPayAmount(String(vaultRes.value.data.vault.installment_amount));
+      // 3. Contributions
+      const cRes = await fetch(
+        `${API}/api/flex-pay/contributions/${ten.tenancy_id}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (cRes.ok) {
+        const cd = await cRes.json();
+        setContributions(cd.contributions || []);
       }
-      if (contribRes.status === 'fulfilled') {
-        setContributions(contribRes.value.data.contributions ?? []);
+
+      // 4. Legal notices
+      const nRes = await fetch(
+        `${API}/api/tenant/notices/${ten.tenancy_id}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (nRes.ok) {
+        const nd = await nRes.json();
+        setNotices(nd.notices || []);
       }
-      if (noticeRes.status === 'fulfilled') {
-        setNotices(noticeRes.value.data.notices ?? []);
-      }
-    } catch (ex: any) {
-      setError(ex?.response?.data?.error ?? 'Could not load your vault data.');
+    } catch (e: any) {
+      setError(e.message || 'Failed to load dashboard.');
     } finally {
       setLoading(false);
     }
-  }, [user]);
+  }
 
-  useEffect(() => {
-    if (!authLoading) resolveAndLoad();
-  }, [authLoading, resolveAndLoad]);
-
-  const makeContribution = async () => {
-    if (!payAmount || !tenancyId || !vault) return;
-    setPaying(true); setPayResult(null);
+  async function handlePay() {
+    if (!tenancy?.tenancy_id) return;
+    setPayLoading(true);
     try {
-      // In production: init Paystack first, then call on callback
-      const res = await api.post('/api/flex-pay/contribute', {
-        vault_id:   vault.id,
-        amount_ngn: parseFloat(payAmount),
+      const res = await fetch(`${API}/api/rental/payments/initialize`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ tenancy_id: tenancy.tenancy_id }),
       });
-      setPayResult({ success: true, ...res.data });
-      resolveAndLoad();
-    } catch (ex: any) {
-      setPayResult({ success: false, error: ex?.response?.data?.error ?? 'Payment failed' });
+      const data = await res.json();
+      if (data.authorization_url) {
+        window.location.href = data.authorization_url;
+      } else {
+        alert(data.error || 'Could not initialize payment.');
+      }
+    } catch (e: any) {
+      alert(e.message);
     } finally {
-      setPaying(false);
+      setPayLoading(false);
     }
-  };
+  }
 
-  const downloadReceipt = async (contributionId: string) => {
-    setDownloadingPdf(contributionId);
-    try {
-      const res = await api.get(`/api/flex-pay/receipt/${contributionId}`, { responseType: 'blob' });
-      const mime = res.headers['content-type'] || 'application/pdf';
-      const ext  = mime.includes('pdf') ? 'pdf' : 'html';
-      const url  = URL.createObjectURL(new Blob([res.data], { type: mime }));
-      const a    = document.createElement('a');
-      a.href     = url;
-      a.download = `ARK-RECEIPT-${contributionId.slice(0, 8).toUpperCase()}.${ext}`;
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch { alert('Receipt download failed. Try again.'); }
-    finally   { setDownloadingPdf(null); }
-  };
-
-  if (authLoading || loading) return (
-    <div className="min-h-screen bg-[#050505] text-white flex items-center justify-center">
-      <div className="text-center space-y-4">
-        <Loader2 className="animate-spin text-teal-500 mx-auto" size={28} />
-        <p className="text-zinc-500 text-xs uppercase tracking-widest font-bold">Loading your vault…</p>
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-black flex items-center justify-center">
+        <div className="text-teal-500 text-sm animate-pulse">Loading your dashboard…</div>
       </div>
-    </div>
-  );
+    );
+  }
 
-  if (error) return (
-    <div className="min-h-screen bg-[#050505] text-white flex items-center justify-center">
-      <div className="text-center space-y-4 max-w-sm px-6">
-        <AlertCircle className="text-amber-400 mx-auto" size={32} />
-        <p className="font-bold text-sm">{error}</p>
-        <p className="text-zinc-600 text-xs">If you haven't onboarded yet, ask your landlord for your invite link.</p>
-        <button onClick={resolveAndLoad}
-          className="text-teal-500 text-xs font-bold uppercase tracking-widest hover:text-white transition-colors">
-          Retry →
+  if (error && !tenancy) {
+    return (
+      <div className="min-h-screen bg-black flex flex-col items-center justify-center p-6 text-center">
+        <div className="text-4xl mb-4">🏠</div>
+        <p className="text-zinc-400 text-sm mb-4">{error}</p>
+        <p className="text-zinc-600 text-xs mb-6">
+          No active tenancy is linked to your account yet. If you have a tenancy invite link, use it to complete onboarding first.
+        </p>
+        <button
+          onClick={() => router.push('/')}
+          className="bg-teal-500 text-black font-bold px-6 py-2 rounded-lg text-sm"
+        >
+          Back to Home
         </button>
       </div>
-    </div>
-  );
+    );
+  }
 
-  if (!vault) return (
-    <div className="min-h-screen bg-[#050505] text-white flex items-center justify-center">
-      <div className="text-center space-y-4 max-w-sm px-6">
-        <Wallet className="text-zinc-700 mx-auto" size={40} />
-        <p className="font-bold text-sm">No active vault found</p>
-        <p className="text-zinc-600 text-xs leading-relaxed">Your landlord needs to invite you first via WhatsApp or email. Contact them to get your onboarding link.</p>
-      </div>
-    </div>
-  );
+  if (!tenancy) return null;
 
-  const statusCfg    = STATUS_CONFIG[vault.status] ?? STATUS_CONFIG.ACTIVE;
-  const daysLeft     = daysUntil(vault.next_due_date);
-  const isUrgent     = daysLeft <= 7;
-  const shortfall    = Math.max(0, vault.target_amount - vault.vault_balance);
-  const openNotices  = notices.filter(n => n.status !== 'RESOLVED');
+  const score    = tenancy.tenant_score ?? 100;
+  const funded   = vault ? Math.min((vault.vault_balance / vault.target_amount) * 100, 100) : 0;
+  const hasNotice = notices.some(n => n.status === 'ISSUED' || n.status === 'SERVED');
 
   return (
-    <div className="min-h-screen bg-[#050505] text-white">
-
-      {/* ── Top bar ─────────────────────────────────────────────────────── */}
-      <div className="border-b border-zinc-900 px-6 py-4 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-full bg-teal-500/10 border border-teal-500/30 flex items-center justify-center">
-            <Home size={13} className="text-teal-500" />
-          </div>
+    <div className="min-h-screen bg-black text-white">
+      {/* Header */}
+      <div className="border-b border-zinc-900 px-4 py-4">
+        <div className="max-w-2xl mx-auto flex items-center justify-between">
           <div>
-            <p className="text-[9px] text-teal-500 font-mono font-black tracking-widest uppercase">Nested Ark OS</p>
-            <p className="text-[9px] text-zinc-600 uppercase tracking-widest">Tenant Portal</p>
+            <p className="text-xs text-teal-500 font-bold uppercase tracking-widest">Nested Ark</p>
+            <p className="text-lg font-black text-white">{tenancy.tenant_name}</p>
+            <p className="text-xs text-zinc-500">{tenancy.unit_name} · {tenancy.project_title}</p>
           </div>
-        </div>
-        <div className="flex items-center gap-3">
-          {openNotices.length > 0 && (
-            <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-500/10 border border-red-500/20">
-              <AlertCircle size={10} className="text-red-400" />
-              <span className="text-[9px] text-red-400 font-bold uppercase tracking-widest">{openNotices.length} notice{openNotices.length > 1 ? 's' : ''}</span>
-            </div>
-          )}
-          <button onClick={resolveAndLoad}
-            className="p-2 border border-zinc-800 rounded-lg text-zinc-600 hover:text-teal-500 transition-all">
-            <RefreshCw size={13} />
-          </button>
+          <div className="text-right">
+            <p className="text-xs text-zinc-500 mb-1">Nested Ark Score</p>
+            <p className={`text-2xl font-black ${SCORE_COLOR(score)}`}>{score}</p>
+            <p className="text-xs text-zinc-600">/ 100</p>
+          </div>
         </div>
       </div>
 
-      <main className="max-w-4xl mx-auto px-6 py-8 space-y-6">
-
-        {/* ── Header ──────────────────────────────────────────────────────── */}
-        <div className="flex items-start justify-between flex-wrap gap-4">
-          <div>
-            <h1 className="text-3xl font-black uppercase tracking-tighter italic">The Vault</h1>
-            <p className="text-zinc-500 text-xs mt-1 uppercase tracking-widest">
-              {vault.unit_name} · {vault.frequency} pattern
-            </p>
-          </div>
-          <div className={`flex items-center gap-2 px-3 py-1.5 rounded-xl border text-[9px] font-black uppercase tracking-widest ${statusCfg.bg} ${statusCfg.color}`}>
-            <Activity size={9} />
-            {statusCfg.label}
+      {/* Active notice banner */}
+      {hasNotice && (
+        <div className="bg-red-950 border-b border-red-900 px-4 py-3">
+          <div className="max-w-2xl mx-auto flex items-center gap-3">
+            <span className="text-xl">⚠️</span>
+            <div>
+              <p className="text-sm font-bold text-red-300">You have an active legal notice</p>
+              <p className="text-xs text-red-400">Review it in the Notices tab and take action before the deadline.</p>
+            </div>
+            <button
+              onClick={() => setTab('notices')}
+              className="ml-auto text-xs bg-red-800 text-red-200 px-3 py-1 rounded-lg"
+            >
+              View →
+            </button>
           </div>
         </div>
+      )}
 
-        {/* ── Open legal notices alert ─────────────────────────────────── */}
-        {openNotices.length > 0 && (
-          <div className="p-4 rounded-2xl border border-red-500/30 bg-red-500/5 space-y-3">
-            <div className="flex items-center gap-2">
-              <AlertCircle size={14} className="text-red-400" />
-              <p className="text-sm font-black text-red-400 uppercase tracking-tight">
-                {openNotices.length} Unresolved Legal Notice{openNotices.length > 1 ? 's' : ''}
-              </p>
-            </div>
-            {openNotices.map(n => (
-              <div key={n.id} className="flex items-center justify-between gap-4 flex-wrap">
-                <div>
-                  <p className="font-mono text-[9px] text-red-400">{n.notice_number}</p>
-                  <p className="text-xs text-zinc-400">{n.notice_type.replace(/_/g, ' ')} · ₦{Number(n.amount_overdue).toLocaleString()} · Respond by {new Date(n.response_deadline).toLocaleDateString()}</p>
+      {/* Tabs */}
+      <div className="border-b border-zinc-900 px-4">
+        <div className="max-w-2xl mx-auto flex gap-0">
+          {(['vault', 'history', 'profile', 'notices'] as const).map(t => (
+            <button
+              key={t}
+              onClick={() => setTab(t)}
+              className={`px-4 py-3 text-xs font-bold uppercase tracking-widest border-b-2 transition ${
+                tab === t
+                  ? 'border-teal-500 text-teal-400'
+                  : 'border-transparent text-zinc-500 hover:text-zinc-300'
+              }`}
+            >
+              {t === 'notices' && hasNotice ? `${t} 🔴` : t}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="max-w-2xl mx-auto px-4 py-6">
+
+        {/* ── Vault Tab ── */}
+        {tab === 'vault' && (
+          <div className="space-y-4">
+            {vault ? (
+              <>
+                {/* Vault card */}
+                <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5">
+                  <div className="flex justify-between items-start mb-4">
+                    <div>
+                      <p className="text-xs text-zinc-500 uppercase tracking-widest font-bold mb-1">Flex-Pay Vault</p>
+                      <p className="text-3xl font-black text-teal-400 font-mono">
+                        {vault.currency} {Number(vault.vault_balance).toLocaleString()}
+                      </p>
+                      <p className="text-xs text-zinc-500 mt-1">
+                        of {vault.currency} {Number(vault.target_amount).toLocaleString()} target
+                      </p>
+                    </div>
+                    <div className={`text-xs font-bold px-3 py-1 rounded-full border ${
+                      vault.status === 'FUNDED_READY' ? 'text-teal-400 bg-teal-950 border-teal-800' :
+                      vault.status === 'ACTIVE'       ? 'text-amber-400 bg-amber-950 border-amber-800' :
+                                                        'text-zinc-400 bg-zinc-800 border-zinc-700'
+                    }`}>
+                      {vault.status === 'FUNDED_READY' ? '✓ FUNDED' : vault.status}
+                    </div>
+                  </div>
+
+                  {/* Progress bar */}
+                  <div className="h-2 bg-zinc-800 rounded-full overflow-hidden mb-3">
+                    <div
+                      className="h-2 bg-teal-500 rounded-full transition-all"
+                      style={{ width: `${funded}%` }}
+                    />
+                  </div>
+                  <p className="text-xs text-zinc-500">{funded.toFixed(1)}% funded</p>
+
+                  <div className="grid grid-cols-3 gap-3 mt-4">
+                    <div className="bg-zinc-800 rounded-lg p-3">
+                      <p className="text-xs text-zinc-500 mb-1">Frequency</p>
+                      <p className="text-sm font-bold text-white">{vault.frequency}</p>
+                    </div>
+                    <div className="bg-zinc-800 rounded-lg p-3">
+                      <p className="text-xs text-zinc-500 mb-1">Installment</p>
+                      <p className="text-sm font-bold text-white font-mono">
+                        {vault.currency} {Number(vault.installment_amount).toLocaleString()}
+                      </p>
+                    </div>
+                    <div className="bg-zinc-800 rounded-lg p-3">
+                      <p className="text-xs text-zinc-500 mb-1">Next Due</p>
+                      <p className="text-sm font-bold text-white">
+                        {vault.next_due_date ? new Date(vault.next_due_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) : '—'}
+                      </p>
+                    </div>
+                  </div>
                 </div>
-                <button onClick={() => downloadReceipt(n.id)}
-                  disabled={downloadingPdf === n.id}
-                  className="flex items-center gap-1.5 px-3 py-2 bg-red-500/20 border border-red-500/30 text-red-400 font-bold text-[9px] uppercase tracking-widest rounded-xl hover:bg-red-500/30 transition-all disabled:opacity-50">
-                  {downloadingPdf === n.id ? <Loader2 size={9} className="animate-spin" /> : <Download size={9} />}
-                  Download Notice
+
+                <button
+                  onClick={handlePay}
+                  disabled={payLoading}
+                  className="w-full bg-teal-500 hover:bg-teal-400 text-black font-black py-4 rounded-xl text-sm transition disabled:opacity-50"
+                >
+                  {payLoading ? '⏳ Initializing…' : `💳 Pay ${vault.currency} ${Number(vault.installment_amount).toLocaleString()} Now`}
                 </button>
+
+                <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 text-xs text-zinc-500">
+                  <p className="font-bold text-zinc-400 mb-1">🔐 The 48-Hour Rule</p>
+                  <p>If your vault is not funded within 48 hours of the due date, the system automatically triggers a formal Notice to Pay. Your vault is your responsibility.</p>
+                </div>
+              </>
+            ) : (
+              <div className="text-center py-12">
+                <p className="text-zinc-500 text-sm">No active vault found.</p>
+                <p className="text-zinc-600 text-xs mt-2">Contact your landlord to set up your Flex-Pay vault.</p>
               </div>
-            ))}
+            )}
           </div>
         )}
 
-        {/* ── THE VAULT HERO ───────────────────────────────────────────── */}
-        <div className="relative p-8 rounded-2xl border border-zinc-800 bg-zinc-900/30 overflow-hidden space-y-6">
-          {/* Background watermark */}
-          <Wallet className="absolute -bottom-10 -right-8 text-zinc-800/15 pointer-events-none" size={280} />
+        {/* ── History Tab ── */}
+        {tab === 'history' && (
+          <div>
+            <h3 className="text-sm font-bold text-zinc-400 uppercase tracking-widest mb-4">Contribution History</h3>
+            {contributions.length === 0 ? (
+              <div className="text-center py-12 text-zinc-600 text-sm">No contributions recorded yet.</div>
+            ) : (
+              <div className="space-y-3">
+                {contributions.map(c => (
+                  <div key={c.id} className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 flex items-center justify-between">
+                    <div>
+                      <p className="text-sm font-bold text-white font-mono">
+                        {c.currency} {Number(c.amount).toLocaleString()}
+                      </p>
+                      <p className="text-xs text-zinc-500 mt-0.5">{c.period_label}</p>
+                      <p className="text-xs text-zinc-600">
+                        {c.paid_at ? new Date(c.paid_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '—'}
+                      </p>
+                    </div>
+                    <div className="flex flex-col items-end gap-2">
+                      <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${
+                        c.status === 'SUCCESS' ? 'text-teal-400 bg-teal-950' : 'text-amber-400 bg-amber-950'
+                      }`}>
+                        {c.status}
+                      </span>
+                      {c.receipt_id && (
+                        <a
+                          href={`${API}/api/flex-pay/receipt/${c.receipt_id}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-xs text-teal-500 hover:text-teal-400"
+                        >
+                          📄 Receipt
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
-          <div className="relative z-10 space-y-6">
-            {/* Balance */}
-            <div>
-              <p className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest mb-2">
-                Vault Balance
-              </p>
-              <div className="flex items-end gap-4 flex-wrap">
-                <p className="text-5xl font-black font-mono tabular-nums text-teal-400">
-                  ₦{Number(vault.vault_balance).toLocaleString()}
-                </p>
-                <div className="pb-2 space-y-0.5">
-                  <p className="text-[9px] text-zinc-500">of ₦{Number(vault.target_amount).toLocaleString()} target</p>
-                  <p className={`text-[9px] font-bold ${FREQ_COLOR[vault.frequency]}`}>
-                    ₦{Number(vault.installment_amount).toLocaleString()} {vault.frequency.toLowerCase()} installment
+        {/* ── Profile Tab ── */}
+        {tab === 'profile' && (
+          <div className="space-y-4">
+            {/* Nested Ark Score */}
+            <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5">
+              <p className="text-xs text-zinc-500 uppercase tracking-widest font-bold mb-3">Nested Ark Score</p>
+              <div className="flex items-center gap-4">
+                <div className={`text-5xl font-black font-mono ${SCORE_COLOR(score)}`}>{score}</div>
+                <div>
+                  <p className="text-sm font-bold text-white">
+                    {score >= 80 ? 'Excellent Tenant' : score >= 60 ? 'Good Standing' : 'Needs Attention'}
+                  </p>
+                  <p className="text-xs text-zinc-500">
+                    {score >= 80
+                      ? 'Your payment history is exemplary. Future landlords will see this.'
+                      : score >= 60
+                      ? 'A few missed payments have affected your score. Stay consistent.'
+                      : 'Your score is low due to overdue payments or legal notices. Act now.'}
                   </p>
                 </div>
               </div>
+              <div className="h-2 bg-zinc-800 rounded-full overflow-hidden mt-4">
+                <div className={`h-2 rounded-full ${score >= 80 ? 'bg-teal-500' : score >= 60 ? 'bg-amber-500' : 'bg-red-500'}`} style={{ width: `${score}%` }} />
+              </div>
             </div>
 
-            {/* Progress bar */}
-            <div className="space-y-2">
-              <div className="flex justify-between text-[9px]">
-                <span className="text-zinc-500">{vault.funded_pct.toFixed(0)}% of annual rent secured</span>
-                <span className={`font-bold font-mono ${isUrgent ? 'text-amber-400' : 'text-zinc-500'}`}>
-                  {daysLeft === 0 ? 'Due today' : `${daysLeft}d until due`}
-                </span>
+            {/* Tenancy info */}
+            <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5">
+              <p className="text-xs text-zinc-500 uppercase tracking-widest font-bold mb-3">Tenancy Details</p>
+              <div className="space-y-2 text-sm">
+                <Row label="Unit"    value={tenancy.unit_name} />
+                <Row label="Project" value={tenancy.project_title} />
+                <Row label="Ref"     value={tenancy.project_number} />
+                <Row label="Email"   value={tenancy.tenant_email} />
               </div>
-              <div className="w-full h-4 bg-black rounded-full border border-zinc-800 overflow-hidden">
-                <div
-                  className={`h-full rounded-full transition-all duration-1000 ${
-                    vault.funded_pct >= 100 ? 'bg-green-500' :
-                    vault.funded_pct >= 75  ? 'bg-teal-500'  :
-                    vault.funded_pct >= 50  ? 'bg-amber-500' : 'bg-red-500'
-                  }`}
-                  style={{ width: `${Math.min(vault.funded_pct, 100)}%` }}
-                />
-              </div>
-              {shortfall > 0 && (
-                <p className="text-[9px] text-zinc-600 font-mono">
-                  Shortfall: ₦{shortfall.toLocaleString()} · {Math.ceil(shortfall / vault.installment_amount)} installment{Math.ceil(shortfall / vault.installment_amount) !== 1 ? 's' : ''} remaining
-                </p>
-              )}
             </div>
 
-            {/* Stats row */}
-            <div className="grid grid-cols-3 gap-3">
-              {[
-                { label: 'Contributions',   value: vault.contribution_count,                              color: 'text-teal-400' },
-                { label: 'Total Paid',      value: `₦${Number(vault.total_contributed).toLocaleString()}`, color: 'text-white' },
-                { label: 'Periods Funded',  value: vault.funded_periods,                                  color: 'text-amber-400' },
-              ].map(s => (
-                <div key={s.label} className="p-3 rounded-xl bg-zinc-900/50 border border-zinc-800 text-center space-y-1">
-                  <p className={`font-mono font-black text-base ${s.color}`}>{s.value}</p>
-                  <p className="text-[8px] text-zinc-600 uppercase tracking-widest">{s.label}</p>
+            {/* Guarantor */}
+            {tenancy.guarantor_json ? (
+              <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5">
+                <p className="text-xs text-zinc-500 uppercase tracking-widest font-bold mb-3">🛡️ Guarantor on File</p>
+                <div className="space-y-2 text-sm">
+                  <Row label="Name"         value={tenancy.guarantor_json.name} />
+                  <Row label="Phone"        value={tenancy.guarantor_json.phone} />
+                  <Row label="Work / ID"    value={tenancy.guarantor_json.work_id   || 'Not provided'} />
+                  <Row label="Relationship" value={tenancy.guarantor_json.relationship || 'Not specified'} />
                 </div>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        {/* ── PAY NOW ─────────────────────────────────────────────────── */}
-        {vault.status === 'ACTIVE' && (
-          <div className="p-6 rounded-2xl border border-zinc-800 bg-zinc-900/20 space-y-4">
-            <p className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest">Make a Contribution</p>
-            <div className="flex gap-3">
-              <div className="relative flex-1">
-                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-500 font-mono text-sm">₦</span>
-                <input
-                  type="number"
-                  value={payAmount}
-                  onChange={e => setPayAmount(e.target.value)}
-                  className="w-full bg-black border border-zinc-700 rounded-xl pl-8 pr-4 py-3 text-sm text-white font-mono focus:border-teal-500 outline-none transition-colors"
-                />
               </div>
-              <button onClick={makeContribution} disabled={paying || !payAmount}
-                className="px-6 py-3 bg-teal-500 text-black font-black text-[10px] uppercase tracking-widest rounded-xl hover:bg-white transition-all disabled:opacity-60 flex items-center gap-2">
-                {paying ? <Loader2 className="animate-spin" size={12} /> : <Wallet size={12} />}
-                Pay
-              </button>
-            </div>
-
-            {/* Quick amounts */}
-            <div className="flex flex-wrap gap-2">
-              {[
-                vault.installment_amount,
-                vault.installment_amount * 2,
-                Math.ceil(shortfall),
-              ].filter(a => a > 0).map(amt => (
-                <button key={amt} onClick={() => setPayAmount(String(amt))}
-                  className="px-3 py-1.5 border border-zinc-800 text-zinc-500 hover:text-teal-400 hover:border-teal-500/30 font-mono text-[9px] rounded-lg transition-all">
-                  ₦{amt.toLocaleString()}
-                </button>
-              ))}
-            </div>
-
-            {/* Payment result */}
-            {payResult && (
-              <div className={`p-4 rounded-xl border text-sm font-bold flex items-center gap-3 ${
-                payResult.success
-                  ? 'bg-teal-500/10 border-teal-500/20 text-teal-400'
-                  : 'bg-red-500/10 border-red-500/20 text-red-400'
-              }`}>
-                {payResult.success ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}
-                <div>
-                  <p>{payResult.success ? payResult.message : payResult.error}</p>
-                  {payResult.success && (
-                    <p className="text-[9px] font-normal mt-1 opacity-70">
-                      New balance: ₦{Number(payResult.new_balance).toLocaleString()} · {payResult.funded_pct}% funded
-                    </p>
-                  )}
-                </div>
+            ) : (
+              <div className="bg-zinc-900 border border-amber-900 rounded-xl p-4">
+                <p className="text-xs text-amber-400 font-bold uppercase tracking-widest mb-1">⚠️ No Guarantor on File</p>
+                <p className="text-xs text-zinc-500">Your tenancy profile is incomplete. Contact your landlord to update your guarantor details.</p>
               </div>
             )}
 
-            <p className="text-[9px] text-zinc-700 leading-relaxed">
-              In production: clicking Pay will initiate a Paystack checkout. Your digital receipt
-              will be emailed and sent via WhatsApp immediately on confirmation.
-            </p>
-          </div>
-        )}
-
-        {vault.status === 'FUNDED_READY' && (
-          <div className="p-6 rounded-2xl border border-green-500/30 bg-green-500/5 text-center space-y-3">
-            <CheckCircle2 className="text-green-400 mx-auto" size={28} />
-            <p className="font-black text-sm uppercase">Vault Fully Funded!</p>
-            <p className="text-[10px] text-zinc-500 leading-relaxed">
-              Your annual rent is fully secured. Your landlord has been notified and can now
-              initiate cashout. You'll receive confirmation when funds are released.
-            </p>
-          </div>
-        )}
-
-        {/* ── QUICK ACTIONS ─────────────────────────────────────────── */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-          <a
-            href="/assets/Nested_Ark_Tenancy_Handbook.pdf"
-            download
-            className="p-5 bg-zinc-900 border border-zinc-800 rounded-2xl flex items-center justify-between hover:border-teal-500/40 hover:bg-teal-500/5 transition-all group">
-            <div>
-              <p className="text-xs font-black uppercase tracking-tight">Tenancy Handbook</p>
-              <p className="text-[9px] text-zinc-500 mt-0.5">Rights, rules &amp; Flex-Pay protocol</p>
-            </div>
-            <Download size={16} className="text-teal-500 group-hover:translate-y-0.5 transition-transform" />
-          </a>
-          <div className="p-5 bg-zinc-900 border border-zinc-800 rounded-2xl flex items-center justify-between">
-            <div>
-              <p className="text-xs font-black uppercase tracking-tight">Status</p>
-              <p className="text-[9px] text-zinc-500 mt-0.5">Ledger verified · Protected</p>
-            </div>
-            <ShieldCheck size={16} className="text-teal-500" />
-          </div>
-          <div className="p-5 bg-zinc-900 border border-zinc-800 rounded-2xl flex items-center justify-between">
-            <div>
-              <p className="text-xs font-black uppercase tracking-tight">Next Due</p>
-              <p className={`text-[9px] mt-0.5 font-mono font-bold ${isUrgent ? 'text-amber-400' : 'text-zinc-500'}`}>
-                {vault.next_due_date ? new Date(vault.next_due_date).toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' }) : '—'}
-              </p>
-            </div>
-            <Calendar size={16} className={isUrgent ? 'text-amber-400' : 'text-zinc-600'} />
-          </div>
-        </div>
-
-        {/* ── CONTRIBUTION HISTORY ─────────────────────────────────── */}
-        <div className="space-y-3">
-          <p className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest">
-            Contribution History
-          </p>
-
-          {contributions.length === 0 ? (
-            <div className="py-10 text-center border border-dashed border-zinc-800 rounded-2xl space-y-2">
-              <Clock className="text-zinc-700 mx-auto" size={24} />
-              <p className="text-zinc-600 text-sm font-bold">No contributions yet</p>
-              <p className="text-zinc-700 text-xs">Make your first payment above to get started</p>
-            </div>
-          ) : (
-            <div className="space-y-2">
-              {contributions.map(c => (
-                <div key={c.id}
-                  className="p-4 rounded-xl border border-zinc-800 bg-zinc-900/20 flex items-center justify-between gap-4 flex-wrap hover:border-zinc-700 transition-all">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-                      <span className={`text-[8px] px-2 py-0.5 rounded font-bold uppercase ${
-                        c.status === 'SUCCESS' ? 'bg-teal-500/10 text-teal-400 border border-teal-500/20' : 'bg-zinc-800 text-zinc-500'
-                      }`}>
-                        {c.status === 'SUCCESS' ? '✓ Confirmed' : c.status}
-                      </span>
-                      <span className="text-[8px] text-zinc-600 font-mono">{c.period_label}</span>
-                    </div>
-                    <p className="font-mono font-bold text-sm text-teal-400">
-                      ₦{Number(c.amount_ngn).toLocaleString()}
-                    </p>
-                    <p className="text-[9px] text-zinc-600 font-mono mt-0.5 truncate">
-                      {c.paid_at ? new Date(c.paid_at).toLocaleString() : '—'}
-                      {c.paystack_ref && ` · ${c.paystack_ref}`}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-2 flex-shrink-0">
-                    {/* Ledger hash */}
-                    <div className="text-right hidden md:block">
-                      <p className="text-[8px] text-zinc-700 font-mono truncate max-w-[120px]">
-                        {c.ledger_hash?.slice(0, 14)}…
-                      </p>
-                      <p className="text-[7px] text-zinc-800 uppercase">SHA-256</p>
-                    </div>
-                    <button
-                      onClick={() => downloadReceipt(c.id)}
-                      disabled={downloadingPdf === c.id}
-                      title="Download digital receipt"
-                      className="p-2 rounded-lg border border-zinc-800 text-zinc-500 hover:text-teal-400 hover:border-teal-500/30 transition-all disabled:opacity-50">
-                      {downloadingPdf === c.id
-                        ? <Loader2 size={13} className="animate-spin" />
-                        : <Download size={13} />}
-                    </button>
-                  </div>
+            {/* Digital Signature */}
+            <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5">
+              <p className="text-xs text-zinc-500 uppercase tracking-widest font-bold mb-3">✍️ Tenancy Handbook Signature</p>
+              {tenancy.digital_signature_url ? (
+                <div>
+                  <p className="text-xs text-teal-400 mb-2">✓ Signed — Tenancy Handbook accepted</p>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={tenancy.digital_signature_url}
+                    alt="Digital signature"
+                    className="border border-zinc-700 rounded-lg max-w-[200px] bg-zinc-950"
+                  />
                 </div>
-              ))}
+              ) : (
+                <p className="text-xs text-amber-400">⚠️ Not yet signed. Complete your onboarding to sign the Tenancy Handbook.</p>
+              )}
             </div>
-          )}
-        </div>
 
-        {/* ── LEDGER TRUST FOOTER ─────────────────────────────────── */}
-        <div className="p-4 rounded-2xl border border-zinc-800/50 bg-zinc-900/10 flex items-start gap-3">
-          <Lock size={12} className="text-teal-500/70 flex-shrink-0 mt-0.5" />
-          <div className="space-y-0.5">
-            <p className="text-[9px] text-zinc-500 leading-relaxed">
-              Every contribution is SHA-256 hashed and written to the immutable Nested Ark ledger.
-              Your landlord cannot alter, delete, or dispute any payment record.
-              Download any receipt at any time as your legal proof of payment.
-            </p>
-            <p className="text-[8px] text-zinc-700 font-mono">
-              Vault ID: {vault.id?.slice(0, 16)}… · Secured by Paystack · Impressions &amp; Impacts Ltd
-            </p>
+            {/* Litigation history */}
+            {Array.isArray(tenancy.litigation_history) && tenancy.litigation_history.length > 0 && (
+              <div className="bg-red-950 border border-red-900 rounded-xl p-5">
+                <p className="text-xs text-red-400 uppercase tracking-widest font-bold mb-3">⚖️ Litigation History</p>
+                <div className="space-y-2">
+                  {tenancy.litigation_history.map((l: any, i: number) => (
+                    <div key={i} className="text-xs text-red-300 bg-red-900/30 rounded-lg p-3">
+                      <p className="font-bold">{l.type || 'Legal Event'}</p>
+                      <p className="text-red-400">{l.date || ''} — {l.description || ''}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
-        </div>
+        )}
 
-      </main>
+        {/* ── Notices Tab ── */}
+        {tab === 'notices' && (
+          <div>
+            <h3 className="text-sm font-bold text-zinc-400 uppercase tracking-widest mb-4">Legal Notices</h3>
+            {notices.length === 0 ? (
+              <div className="text-center py-12">
+                <div className="text-4xl mb-3">✅</div>
+                <p className="text-zinc-400 text-sm font-bold">No legal notices</p>
+                <p className="text-zinc-600 text-xs mt-1">Your tenancy is in good standing.</p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {notices.map(n => (
+                  <div key={n.id} className={`border rounded-xl p-5 ${NOTICE_COLORS[n.status] || NOTICE_COLORS.EXPIRED}`}>
+                    <div className="flex justify-between items-start mb-3">
+                      <div>
+                        <p className="text-xs font-bold uppercase tracking-widest opacity-75 mb-1">{n.notice_type.replace(/_/g, ' ')}</p>
+                        <p className="font-mono text-sm font-bold">{n.notice_number}</p>
+                      </div>
+                      <span className="text-xs font-bold px-2 py-1 rounded-full border border-current opacity-75">
+                        {n.status}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3 text-xs">
+                      <div>
+                        <p className="opacity-60 uppercase tracking-widest text-[10px] mb-0.5">Amount Overdue</p>
+                        <p className="font-bold font-mono">₦{Number(n.amount_overdue || 0).toLocaleString()}</p>
+                      </div>
+                      <div>
+                        <p className="opacity-60 uppercase tracking-widest text-[10px] mb-0.5">Days Overdue</p>
+                        <p className="font-bold">{n.days_overdue} days</p>
+                      </div>
+                      <div>
+                        <p className="opacity-60 uppercase tracking-widest text-[10px] mb-0.5">Issued</p>
+                        <p>{new Date(n.issued_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}</p>
+                      </div>
+                      <div>
+                        <p className="opacity-60 uppercase tracking-widest text-[10px] mb-0.5">Respond By</p>
+                        <p className="font-bold">{n.response_deadline ? new Date(n.response_deadline).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '—'}</p>
+                      </div>
+                    </div>
+                    {(n.status === 'ISSUED' || n.status === 'SERVED') && (
+                      <div className="mt-3 pt-3 border-t border-current border-opacity-20">
+                        <p className="text-xs opacity-75">To resolve this notice, make the overdue payment immediately.</p>
+                        <button
+                          onClick={handlePay}
+                          className="mt-2 bg-current text-black font-bold text-xs px-4 py-2 rounded-lg opacity-90 hover:opacity-100 transition"
+                        >
+                          Pay Now to Resolve →
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Row({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex justify-between">
+      <span className="text-zinc-500 text-xs">{label}</span>
+      <span className="text-white text-xs font-medium max-w-[200px] text-right">{value}</span>
     </div>
   );
 }
