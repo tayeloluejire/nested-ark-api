@@ -10,8 +10,11 @@
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
     "resolveJsonModule": true,
-    "baseUrl": "./src",
-    "forceConsistentCasingInFileNames": true
+    "baseUrl": ".",
+    "paths": {
+      "*": ["node_modules/*"]
+    },
+    "types": ["node", "express", "jsonwebtoken", "pg", "cors", "uuid", "nodemailer"]
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist"]
