@@ -900,6 +900,21 @@ const ensureTablesExist = async () => {
       CREATE INDEX IF NOT EXISTS idx_ten_project_bp ON tenancies(project_id) WHERE project_id IS NOT NULL;
       CREATE INDEX IF NOT EXISTS idx_rp_tenant_bp   ON rent_payments(tenant_id) WHERE tenant_id IS NOT NULL;
 
+      -- ── WORLD-CLASS KYC + DIGITAL BAILIFF COLUMNS ─────────────────────────
+      ALTER TABLE tenancies ADD COLUMN IF NOT EXISTS guarantor_json            JSONB;
+      ALTER TABLE tenancies ADD COLUMN IF NOT EXISTS former_landlord_contact   TEXT;
+      ALTER TABLE tenancies ADD COLUMN IF NOT EXISTS reason_for_quit           TEXT;
+      ALTER TABLE tenancies ADD COLUMN IF NOT EXISTS digital_signature_url     TEXT;
+      ALTER TABLE tenancies ADD COLUMN IF NOT EXISTS litigation_history        JSONB DEFAULT '[]'::jsonb;
+      ALTER TABLE tenancies ADD COLUMN IF NOT EXISTS tenant_score              INTEGER DEFAULT 100;
+      ALTER TABLE tenancies ADD COLUMN IF NOT EXISTS selfie_url                TEXT;
+      ALTER TABLE tenancies ADD COLUMN IF NOT EXISTS updated_at                TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+      ALTER TABLE legal_notices ADD COLUMN IF NOT EXISTS resolved_at           TIMESTAMP;
+      ALTER TABLE legal_notices ADD COLUMN IF NOT EXISTS resolved_by           UUID REFERENCES users(id);
+      ALTER TABLE legal_notices ADD COLUMN IF NOT EXISTS resolution_note       TEXT;
+      CREATE INDEX IF NOT EXISTS idx_ten_score       ON tenancies(tenant_score);
+      CREATE INDEX IF NOT EXISTS idx_ten_email_score ON tenancies(tenant_email, tenant_score);
+
       -- Notice auto-increment counter
       CREATE SEQUENCE IF NOT EXISTS notice_number_seq START 1;
 
@@ -6092,6 +6107,8 @@ app.get('/api/tenant/my-tenancy', authenticate, async (req: Request, res: Respon
     // First try tenant_user_id link
     let tenancy = await pool.query(
       `SELECT t.id AS tenancy_id, t.unit_id, t.project_id, t.tenant_name, t.tenant_email,
+              t.guarantor_json, t.digital_signature_url, t.tenant_score,
+              t.former_landlord_contact, t.reason_for_quit, t.litigation_history,
               ru.unit_name, p.title AS project_title, p.project_number
        FROM tenancies t
        JOIN rental_units ru ON ru.id = t.unit_id
@@ -6106,6 +6123,8 @@ app.get('/api/tenant/my-tenancy', authenticate, async (req: Request, res: Respon
       if (userRes.rows.length) {
         tenancy = await pool.query(
           `SELECT t.id AS tenancy_id, t.unit_id, t.project_id, t.tenant_name, t.tenant_email,
+                  t.guarantor_json, t.digital_signature_url, t.tenant_score,
+                  t.former_landlord_contact, t.reason_for_quit, t.litigation_history,
                   ru.unit_name, p.title AS project_title, p.project_number
            FROM tenancies t
            JOIN rental_units ru ON ru.id = t.unit_id
@@ -6390,7 +6409,12 @@ app.get("/api/rental/invite-link/:unitId", async (req: Request, res: Response): 
 // POST /api/tenant/onboard — dual-channel welcome on tenant self-registration
 // ============================================================================
 app.post('/api/tenant/onboard', async (req: Request, res: Response): Promise<any> => {
-  const { unitId, fullName, email, phone, pattern } = req.body;
+  const {
+    unitId, fullName, email, phone, pattern,
+    // World-class KYC fields (all optional for backward compat)
+    selfie_url, former_address, reason_for_quit, former_landlord_contact,
+    guarantor_json, digital_signature_url,
+  } = req.body;
   if (!unitId || !fullName || !email) return res.status(400).json({ error: 'unitId, fullName and email are required' });
   const validPatterns = ['WEEKLY','MONTHLY','QUARTERLY'];
   const frequency     = validPatterns.includes(pattern) ? pattern : 'MONTHLY';
@@ -6406,11 +6430,49 @@ app.post('/api/tenant/onboard', async (req: Request, res: Response): Promise<any
     let tenancyId: string;
     if (existingTen.rows.length) {
       tenancyId = existingTen.rows[0].id;
-      await client.query(`UPDATE tenancies SET tenant_name=$1, tenant_phone=$2, status='ACTIVE', updated_at=NOW() WHERE id=$3`, [fullName.trim(), phone?.trim()||null, tenancyId]);
+      // Update existing tenancy with all KYC data
+      await client.query(
+        `UPDATE tenancies SET
+          tenant_name              = $1,
+          tenant_phone             = $2,
+          status                   = 'ACTIVE',
+          selfie_url               = COALESCE($3, selfie_url),
+          former_landlord_contact  = COALESCE($4, former_landlord_contact),
+          reason_for_quit          = COALESCE($5, reason_for_quit),
+          guarantor_json           = COALESCE($6, guarantor_json),
+          digital_signature_url    = COALESCE($7, digital_signature_url),
+          updated_at               = NOW()
+        WHERE id = $8`,
+        [
+          fullName.trim(),
+          phone?.trim() || null,
+          selfie_url || null,
+          former_landlord_contact || null,
+          reason_for_quit || null,
+          guarantor_json ? JSON.stringify(guarantor_json) : null,
+          digital_signature_url || null,
+          tenancyId,
+        ]
+      );
     } else {
       const tenRes = await client.query(
-        `INSERT INTO tenancies (unit_id, project_id, tenant_name, tenant_email, tenant_phone, rent_amount, currency, payment_day, lease_start, status) VALUES ($1,$2,$3,$4,$5,$6,$7,1,CURRENT_DATE,'ACTIVE') RETURNING id`,
-        [unitId, unit.project_id, fullName.trim(), email.toLowerCase().trim(), phone?.trim()||null, unit.rent_amount, unit.currency||'NGN']
+        `INSERT INTO tenancies
+           (unit_id, project_id, tenant_name, tenant_email, tenant_phone,
+            rent_amount, currency, payment_day, lease_start, status,
+            selfie_url, former_landlord_contact, reason_for_quit,
+            guarantor_json, digital_signature_url, tenant_score)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,1,CURRENT_DATE,'ACTIVE',$8,$9,$10,$11,$12,100)
+         RETURNING id`,
+        [
+          unitId, unit.project_id, fullName.trim(),
+          email.toLowerCase().trim(), phone?.trim() || null,
+          unit.rent_amount, unit.currency || 'NGN',
+          selfie_url || null,
+          former_landlord_contact || null,
+          reason_for_quit || null,
+          guarantor_json ? JSON.stringify(guarantor_json) : null,
+          digital_signature_url || null,
+        ]
       );
       tenancyId = tenRes.rows[0].id;
       await client.query(`UPDATE rental_units SET status='OCCUPIED' WHERE id=$1`, [unitId]);
