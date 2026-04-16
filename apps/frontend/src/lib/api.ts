@@ -2,12 +2,9 @@ import axios from 'axios';
 
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'https://nested-ark-api-v3.onrender.com';
 
-console.log('--- NESTED ARK OS: API INITIALIZED ---');
-console.log('Targeting Backend:', BASE_URL);
-
 const api = axios.create({
   baseURL: BASE_URL,
-  timeout: 30000, // Reduced to 30s so the retry kicks in faster before Vercel kills the connection
+  timeout: 30000,
   headers: {
     'Content-Type': 'application/json',
     'Accept': 'application/json',
@@ -15,9 +12,11 @@ const api = axios.create({
   withCredentials: false,
 });
 
+// ── Request interceptor: attach auth token ────────────────────────────────────
 api.interceptors.request.use((config) => {
   if (typeof window !== 'undefined') {
-    const token = localStorage.getItem('token');
+    // Support both token keys used across the app for backward compat
+    const token = localStorage.getItem('token') || localStorage.getItem('ark_token');
     if (token && config.headers) {
       config.headers.Authorization = `Bearer ${token}`;
     }
@@ -25,42 +24,41 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
+// ── Response interceptor: handle cold starts + 401 ───────────────────────────
 api.interceptors.response.use(
   (response) => response,
   async (error) => {
     const { config, code, response } = error;
-    
-    // Check for Cold Start signatures: Timeout (ECONNABORTED) or Service Unavailable (503/504)
-    const isColdStart = code === 'ECONNABORTED' || response?.status === 503 || response?.status === 504;
+
+    // Cold start: Render free tier sleeps after inactivity (503/504/ECONNABORTED)
+    const isColdStart =
+      code === 'ECONNABORTED' ||
+      response?.status === 503 ||
+      response?.status === 504;
 
     if (config && !config._retried && isColdStart) {
       config._retried = true;
-      console.warn('Backend cold start detected. Waking up server and retrying...');
-      
-      // Short delay to let Render process the "wake up" signal from the first failed request
+      console.warn('[Nested Ark API] Backend waking up — retrying in 5s…');
       await new Promise(r => setTimeout(r, 5000));
-      
-      // Set a longer timeout for the second attempt
-      config.timeout = 60000; 
-      
+      config.timeout = 60000;
       return api(config);
     }
 
-    if (code === 'ECONNABORTED') {
-      console.error('API CRITICAL TIMEOUT: Backend failed to respond.');
-    }
-
+    // Clear stale tokens on 401
     if (response?.status === 401 && typeof window !== 'undefined') {
       localStorage.removeItem('token');
+      localStorage.removeItem('ark_token');
     }
 
     return Promise.reject(error);
   }
 );
 
-// Immediate Wake-up Ping on load
+// ── Immediate wake-up ping on page load (prevents cold-start delay for user) ──
 if (typeof window !== 'undefined') {
-  api.get('/api/health').catch(() => {});
+  api.get('/api/health').catch(() => {
+    // Silent — just waking Render's free tier
+  });
 }
 
 export default api;

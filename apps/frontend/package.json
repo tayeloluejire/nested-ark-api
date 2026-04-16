@@ -2,7 +2,6 @@
   "name": "frontend",
   "version": "0.1.0",
   "private": true,
-  "packageManager": "npm@10",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -19,7 +18,7 @@
     "zustand": "^5.0.3"
   },
   "devDependencies": {
-    "@types/node": "^20",
+    "@types/node": "^22",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "autoprefixer": "^10.4.20",
@@ -30,6 +29,6 @@
     "typescript": "^5"
   },
   "engines": {
-    "node": "20.x"
+    "node": ">=20.0.0"
   }
 }

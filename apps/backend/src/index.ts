@@ -6,6 +6,7 @@ import { v4 as uuidv4 } from "uuid";
 import bcryptjs from "bcryptjs";
 import cors from 'cors';
 import crypto from 'crypto';
+import { startReminderCron } from './cron_scheduler';
 // recovery routes are inline in this file (forgot-password, verify-reset-token, reset-password)
 
 dotenv.config();
@@ -406,7 +407,7 @@ const ensureTablesExist = async () => {
         email VARCHAR(255) UNIQUE NOT NULL,
         password_hash TEXT NOT NULL,
         full_name VARCHAR(255),
-        role VARCHAR(50) CHECK (role IN ('INVESTOR', 'CONTRACTOR', 'GOVERNMENT', 'ADMIN', 'VERIFIER', 'SUPPLIER', 'BANK')),
+        role VARCHAR(50) CHECK (role IN ('INVESTOR', 'CONTRACTOR', 'GOVERNMENT', 'ADMIN', 'VERIFIER', 'SUPPLIER', 'BANK', 'DEVELOPER', 'TENANT')),
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
 
@@ -537,6 +538,28 @@ const ensureTablesExist = async () => {
       ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified    BOOLEAN   DEFAULT false;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified_at TIMESTAMP;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_enabled      BOOLEAN   DEFAULT false;
+
+      -- ── Expand role CHECK constraint to include DEVELOPER and TENANT ────────
+      -- Drop old constraint (name may vary) and recreate with all 9 roles
+      DO $role_fix$
+      BEGIN
+        ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
+        ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_fkey;
+        -- Remove any existing check constraints on the role column
+        DECLARE _cname TEXT;
+        FOR _cname IN
+          SELECT conname FROM pg_constraint
+           WHERE conrelid = 'users'::regclass AND contype = 'c'
+             AND pg_get_constraintdef(oid) LIKE '%role%'
+        LOOP
+          EXECUTE format('ALTER TABLE users DROP CONSTRAINT IF EXISTS %I', _cname);
+        END LOOP;
+      EXCEPTION WHEN OTHERS THEN NULL;
+      END;
+      $role_fix$;
+      ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
+      ALTER TABLE users ADD CONSTRAINT users_role_check
+        CHECK (role IN ('INVESTOR','CONTRACTOR','GOVERNMENT','ADMIN','VERIFIER','SUPPLIER','BANK','DEVELOPER','TENANT'));
 
       CREATE TABLE IF NOT EXISTS email_verification_tokens (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -6375,9 +6398,7 @@ app.use((req: Request, res: Response) => {
 
 // ============================================================================
 // CRON SCHEDULER — Daily 08:00 WAT automated reminders & drawdown
-// Requires: npm install node-cron  (gracefully disabled if not installed)
 // ============================================================================
-import { startReminderCron } from './cron_scheduler';
 
 const PORT = parseInt(process.env.PORT || "10000");
 
