@@ -1,22 +1,16 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // Allow production builds to successfully complete even if
-  // your project has ESLint errors.
-  eslint: {
-    ignoreDuringBuilds: true,
-  },
-  // Same for TypeScript - this ensures the "infrastructure" is live
-  // even if a type is slightly off.
-  typescript: {
-    ignoreBuildErrors: true,
-  },
+  reactStrictMode: true,
+  // Allow images from any Nested Ark backend or CDN
   images: {
     remotePatterns: [
-      {
-        protocol: 'https',
-        hostname: 'images.unsplash.com',
-      },
+      { protocol: 'https', hostname: 'nested-ark-api-v3.onrender.com' },
+      { protocol: 'https', hostname: '*.supabase.co' },
     ],
+  },
+  // Silence the "react" peer dep warning during build on Vercel
+  experimental: {
+    esmExternals: false,
   },
 };
 

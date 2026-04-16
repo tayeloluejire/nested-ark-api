@@ -2,12 +2,14 @@
   "name": "nested-ark-monorepo",
   "version": "1.0.0",
   "private": true,
-  "workspaces": [
-    "apps/*"
-  ],
+  "description": "Nested Ark Infrastructure Platform — Monorepo root",
   "scripts": {
-    "install:all": "npm install --workspaces",
-    "build:frontend": "npm run build --workspace=frontend",
-    "build:backend": "npm run build --workspace=@infrastructure-platform/backend"
+    "dev:backend":  "cd apps/backend && npm run dev",
+    "dev:frontend": "cd frontend && npm run dev",
+    "build:backend":  "cd apps/backend && npm run build",
+    "build:frontend": "cd frontend && npm run build"
+  },
+  "engines": {
+    "node": ">=20.0.0"
   }
 }
