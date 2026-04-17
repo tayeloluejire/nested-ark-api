@@ -7,6 +7,12 @@ import Navbar from '@/components/Navbar';
 import Footer from '@/components/Footer';
 import api from '@/lib/api';
 import {
+
+// ── Defensive numeric helpers — never crash on undefined/null/NaN ──────────
+const safeN = (v: any): number => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
+const safeF = (v: any, fallback = '0'): string => safeN(v).toLocaleString();
+const safeD = (v: any, d = 2): string => safeN(v).toFixed(d);
+
   ShieldCheck, CheckCircle2, Clock, AlertTriangle, Loader2,
   RefreshCw, FileText, Users, BarChart3, Wifi, Globe, Activity,
   ChevronRight, Eye, Database
@@ -108,7 +114,7 @@ export default function GovernmentPortal() {
             { label: 'Active Projects',       value: summary?.projects?.active ?? '—',   icon: Globe,         color: 'text-teal-500' },
             { label: 'Pending Audits',         value: pending.length,                     icon: Clock,         color: 'text-amber-400' },
             { label: 'Release-Ready',          value: readyFull.length,                   icon: CheckCircle2,  color: 'text-emerald-400' },
-            { label: 'Total Invested',         value: `$${((summary?.investments?.total ?? 0)/1000).toFixed(0)}k`, icon: BarChart3, color: 'text-teal-500' },
+            { label: 'Total Invested',         value: `$${(safeN(summary?.investments?.total) / 1000).toFixed(0)}k`, icon: BarChart3, color: 'text-teal-500' },
           ].map(c => { const Icon = c.icon; return (
             <div key={c.label} className="p-5 rounded-2xl border border-zinc-800 bg-zinc-900/30">
               <div className="flex items-center justify-between mb-2"><p className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest">{c.label}</p><Icon size={14} className={c.color}/></div>
@@ -132,7 +138,7 @@ export default function GovernmentPortal() {
                   <div className="flex items-start justify-between mb-3">
                     <div>
                       <p className="font-bold text-xs uppercase tracking-tight">{m.title}</p>
-                      <p className="text-zinc-500 text-[9px]">{m.project_title} · ${Number(m.budget_allocation).toLocaleString()}</p>
+                      <p className="text-zinc-500 text-[9px]">{m.project_title} · ${safeF(m.budget_allocation)}</p>
                     </div>
                     <span className={`text-[8px] px-2 py-1 rounded border font-bold uppercase flex-shrink-0 ${m.release_ready ? 'border-emerald-500/40 text-emerald-400' : m.human_status === 'VERIFIED' ? 'border-teal-500/40 text-teal-500' : 'border-amber-500/40 text-amber-400'}`}>
                       {m.release_ready ? 'RELEASE READY' : m.human_status === 'VERIFIED' ? 'AUDITED' : 'PENDING AUDIT'}
@@ -172,7 +178,7 @@ export default function GovernmentPortal() {
                 <div className="flex items-center justify-between mb-2">
                   <div>
                     <p className="font-bold text-xs uppercase tracking-tight">{p.title}</p>
-                    <p className="text-zinc-500 text-[9px]">{p.location}, {p.country} · ${Number(p.budget).toLocaleString()}</p>
+                    <p className="text-zinc-500 text-[9px]">{p.location}, {p.country} · ${safeF(p.budget)}</p>
                   </div>
                   <span className={`text-[8px] px-2 py-0.5 rounded border font-bold uppercase ${p.gov_verified ? 'border-teal-500/40 text-teal-500' : 'border-zinc-700 text-zinc-500'}`}>
                     {p.gov_verified ? '✓ VERIFIED' : 'UNVERIFIED'}

@@ -7,6 +7,12 @@ import Navbar from '@/components/Navbar';
 import Footer from '@/components/Footer';
 import api from '@/lib/api';
 import {
+
+// ── Defensive numeric helpers — never crash on undefined/null/NaN ──────────
+const safeN = (v: any): number => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
+const safeF = (v: any, fallback = '0'): string => safeN(v).toLocaleString();
+const safeD = (v: any, d = 2): string => safeN(v).toFixed(d);
+
   TrendingUp, DollarSign, Building2, Loader2,
   AlertCircle, ArrowRight, Calendar, ShieldCheck
 } from 'lucide-react';
@@ -74,8 +80,8 @@ export default function RentalPortfolioPage() {
           {[
             {
               label: 'Total Received',
-              value: `₦${Number(summary.total_received_ngn ?? 0).toLocaleString()}`,
-              sub: `≈ $${Number(summary.total_received_usd ?? 0).toFixed(2)} USD`,
+              value: `₦${safeF(summary.total_received_ngn ?? 0)}`,
+              sub: `≈ $${NumbersafeD(summary.total_received_usd ?? 0, 2)} USD`,
               color: 'text-teal-400',
               icon: DollarSign,
             },
@@ -140,7 +146,7 @@ export default function RentalPortfolioPage() {
                   </div>
                   <div className="text-right flex-shrink-0">
                     <p className="font-mono font-bold text-xl text-teal-400">
-                      ₦{Number(p.total_received_ngn ?? 0).toLocaleString()}
+                      ₦{safeF(p.total_received_ngn ?? 0)}
                     </p>
                     <p className="text-[8px] text-zinc-600 uppercase font-bold">received</p>
                   </div>
@@ -191,9 +197,9 @@ export default function RentalPortfolioPage() {
                     </div>
                     <div className="flex items-center gap-3 text-[9px] text-zinc-600 flex-wrap">
                       {d.investment_stake && (
-                        <span>Your stake: {Number(d.investment_stake).toFixed(2)}%</span>
+                        <span>Your stake: {NumbersafeD(d.investment_stake, 2)}%</span>
                       )}
-                      <span>Rent total: ₦{Number(d.rent_total).toLocaleString()}</span>
+                      <span>Rent total: ₦{safeF(d.rent_total)}</span>
                       <span className="flex items-center gap-1">
                         <ShieldCheck size={9} className="text-teal-500/50" /> Ledger verified
                       </span>
@@ -201,7 +207,7 @@ export default function RentalPortfolioPage() {
                   </div>
                   <div className="text-right flex-shrink-0">
                     <p className="font-mono font-bold text-xl text-teal-400">
-                      ₦{Number(d.amount_ngn).toLocaleString()}
+                      ₦{safeF(d.amount_ngn)}
                     </p>
                     <p className="text-[8px] text-zinc-600 uppercase font-bold">your share</p>
                   </div>

@@ -7,6 +7,12 @@ import Navbar from '@/components/Navbar';
 import Footer from '@/components/Footer';
 import api from '@/lib/api';
 import {
+
+// ── Defensive numeric helpers — never crash on undefined/null/NaN ──────────
+const safeN = (v: any): number => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
+const safeF = (v: any, fallback = '0'): string => safeN(v).toLocaleString();
+const safeD = (v: any, d = 2): string => safeN(v).toFixed(d);
+
   TrendingUp, Building2, ShieldCheck, Globe, ArrowRight,
   Search, Zap, DollarSign, Hammer, Home, Users, Lock,
   CheckCircle2, Activity, FileText, Bell, Wallet,
@@ -45,10 +51,11 @@ const COMPLIANCE_COUNTRIES: Record<string, string> = {
 };
 
 // ── Number formatter ─────────────────────────────────────────────────────────
-function fmtNum(n: number, decimals = 0) {
-  if (n >= 1_000_000_000) return `$${(n / 1_000_000_000).toFixed(1)}B`;
-  if (n >= 1_000_000)     return `$${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000)         return `$${(n / 1_000).toFixed(0)}K`;
+function fmtNum(raw: any, decimals = 0) {
+  const n = safeN(raw);
+  if (n >= 1_000_000_000) return `$${safeD(n / 1_000_000_000, 1)}B`;
+  if (n >= 1_000_000)     return `$${safeD(n / 1_000_000, 1)}M`;
+  if (n >= 1_000)         return `$${safeD(n / 1_000, 0)}K`;
   return `$${n.toFixed(decimals)}`;
 }
 
@@ -67,7 +74,7 @@ function Counter({ target, prefix = '', suffix = '', duration = 1800 }: { target
     };
     requestAnimationFrame(animate);
   }, [target, duration]);
-  return <span>{prefix}{val.toLocaleString()}{suffix}</span>;
+  return <span>{prefix}{safeF(val)}{suffix}</span>;
 }
 
 // ── Engine card ───────────────────────────────────────────────────────────────
@@ -121,11 +128,9 @@ function StepCard({ num, title, body }: { num: string; title: string; body: stri
   );
 }
 
-// ── Safe number guard (prevents toLocaleString crash on undefined fields) ─────
-const safeFormat = (val: any, fallback = '0'): string => {
   if (val === null || val === undefined) return fallback;
   const n = Number(val);
-  return isNaN(n) ? fallback : n.toLocaleString();
+  return isNaN(n) ? fallback : safeF(n);
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -646,7 +651,7 @@ export default function HomePage() {
           <div className="space-y-3">
             <div className="flex justify-between items-center">
               <label className="text-[9px] text-zinc-400 uppercase font-bold tracking-widest">Investment Amount</label>
-              <span className="font-mono font-bold text-teal-400 text-lg">₦{roiSlider.toLocaleString()}</span>
+              <span className="font-mono font-bold text-teal-400 text-lg">₦{safeF(roiSlider)}</span>
             </div>
             <input
               type="range" min={100000} max={10000000} step={100000}
@@ -666,12 +671,12 @@ export default function HomePage() {
             </div>
             <div className="p-4 rounded-xl bg-zinc-900/50 border border-teal-500/30 text-center">
               <p className="text-[8px] text-zinc-600 uppercase font-bold mb-2">Monthly Yield</p>
-              <p className="font-black text-xl text-teal-400 font-mono">₦{roiMonthly.toLocaleString()}</p>
+              <p className="font-black text-xl text-teal-400 font-mono">₦{safeF(roiMonthly)}</p>
               <p className="text-[8px] text-zinc-600 mt-1">passive income</p>
             </div>
             <div className="p-4 rounded-xl bg-zinc-900/50 border border-zinc-800 text-center">
               <p className="text-[8px] text-zinc-600 uppercase font-bold mb-2">Annual Return</p>
-              <p className="font-black text-xl text-white font-mono">₦{roiYearly.toLocaleString()}</p>
+              <p className="font-black text-xl text-white font-mono">₦{safeF(roiYearly)}</p>
               <p className="text-[8px] text-zinc-600 mt-1">year 1</p>
             </div>
           </div>

@@ -6,6 +6,12 @@ import { useCurrency } from '@/hooks/useCurrency';
 import CurrencySelector from '@/components/CurrencySelector';
 import { ShieldCheck, Loader2, RefreshCw } from 'lucide-react';
 
+// ── Defensive numeric helpers — never crash on undefined/null/NaN ──────────
+const safeN = (v: any): number => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
+const safeF = (v: any, fallback = '0'): string => safeN(v).toLocaleString();
+const safeD = (v: any, d = 2): string => safeN(v).toFixed(d);
+
+
 // ── Safe number helper ────────────────────────────────────────────────────────
 const safeNum = (v: unknown): number => { const n = Number(v); return isFinite(n) ? n : 0; };
 
@@ -90,7 +96,7 @@ export default function AdminProjectsPage() {
                   <div className="text-right flex-shrink-0">
                     <p className="font-mono text-lg font-bold">{format(budget)}</p>
                     {currency !== 'USD' && (
-                      <p className="text-zinc-600 text-[9px] font-mono">${budget.toLocaleString()} USD</p>
+                      <p className="text-zinc-600 text-[9px] font-mono">${safeF(budget)} USD</p>
                     )}
                   </div>
                 </div>

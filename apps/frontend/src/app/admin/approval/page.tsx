@@ -5,6 +5,12 @@ import { useCurrency } from '@/hooks/useCurrency';
 import CurrencySelector from '@/components/CurrencySelector';
 import { ShieldCheck, Bot, Camera, Users, CheckCircle2, XCircle, AlertTriangle, Loader2, RefreshCw, ArrowUpRight, Clock, DollarSign, Lock, Activity } from 'lucide-react';
 
+// ── Defensive numeric helpers — never crash on undefined/null/NaN ──────────
+const safeN = (v: any): number => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
+const safeF = (v: any, fallback = '0'): string => safeN(v).toLocaleString();
+const safeD = (v: any, d = 2): string => safeN(v).toFixed(d);
+
+
 interface Milestone {
   id: string; title: string; description: string; status: string;
   budget_allocation: number; project_id: string; project_title: string;
@@ -43,11 +49,11 @@ function ApprovalCard({ m, onRefresh }: { m: Milestone; onRefresh: () => void })
   };
 
   const handleRelease = async (skipDrone = false) => {
-    if (!confirm(`AUTHORIZE RELEASE of $${Number(m.budget_allocation).toLocaleString()} for "${m.title}"?\n\nIrreversible — will be logged to immutable ledger.`)) return;
+    if (!confirm(`AUTHORIZE RELEASE of $${safeF(m.budget_allocation)} for "${m.title}"?\n\nIrreversible — will be logged to immutable ledger.`)) return;
     setReleasing(true);
     try {
       const res = await api.post(`/api/admin/milestones/${m.id}/release`, { notes, skip_drone: skipDrone });
-      alert(`Funds released!\nAmount: $${Number(m.budget_allocation).toLocaleString()}\nLedger: ${res.data.ledger_hash?.slice(0, 20)}...`);
+      alert(`Funds released!\nAmount: $${safeF(m.budget_allocation)}\nLedger: ${res.data.ledger_hash?.slice(0, 20)}...`);
       onRefresh();
     } catch (err: any) {
       const gate = err?.response?.data?.gate;
@@ -71,7 +77,7 @@ function ApprovalCard({ m, onRefresh }: { m: Milestone; onRefresh: () => void })
           <div className="text-right flex-shrink-0">
             <p className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest">Allocation</p>
             <p className="font-mono text-xl font-bold">{format(Number(m.budget_allocation))}</p>
-            {currency !== 'USD' && <p className="text-zinc-600 text-[9px] font-mono">${Number(m.budget_allocation).toLocaleString()} USD</p>}
+            {currency !== 'USD' && <p className="text-zinc-600 text-[9px] font-mono">${safeF(m.budget_allocation)} USD</p>}
           </div>
         </div>
         <div className="grid grid-cols-3 gap-2 mb-4">

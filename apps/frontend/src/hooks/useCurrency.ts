@@ -1,3 +1,8 @@
+// ── Defensive numeric helpers ─────────────────────────────────────────────
+const safeN = (v: any): number => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
+const safeF = (v: any): string => safeN(v).toLocaleString();
+const safeD = (v: any, d = 2): string => safeN(v).toFixed(d);
+
 import { useState, useEffect, useCallback } from 'react';
 import api from '@/lib/api';
 import useSWR from 'swr';
@@ -48,14 +53,15 @@ export function useCurrency() {
     return rate ? Math.round(usdAmount * rate) : usdAmount;
   }, [selected, data]);
 
-  const format = useCallback((usdAmount: number): string => {
-    const converted = convert(usdAmount);
+  const format = useCallback((usdAmount: any): string => {
+    const _raw = (usdAmount == null || isNaN(Number(usdAmount))) ? 0 : Number(usdAmount);
+    const converted = isNaN(convert(_raw)) ? 0 : convert(_raw);
     const info = CURRENCIES[selected];
     const symbol = info?.symbol || selected;
-    if (converted >= 1_000_000_000) return `${symbol}${(converted / 1_000_000_000).toFixed(2)}B`;
-    if (converted >= 1_000_000) return `${symbol}${(converted / 1_000_000).toFixed(2)}M`;
-    if (converted >= 1_000) return `${symbol}${(converted / 1_000).toFixed(0)}k`;
-    return `${symbol}${converted.toLocaleString()}`;
+    if (converted >= 1_000_000_000) return `${symbol}${safeD(converted / 1_000_000_000, 2)}B`;
+    if (converted >= 1_000_000) return `${symbol}${safeD(converted / 1_000_000, 2)}M`;
+    if (converted >= 1_000) return `${symbol}${safeD(converted / 1_000, 0)}k`;
+    return `${symbol}${safeF(converted)}`;
   }, [convert, selected]);
 
   return {

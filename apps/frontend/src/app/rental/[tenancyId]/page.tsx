@@ -8,6 +8,12 @@ import Footer from '@/components/Footer';
 import { useAuth } from '@/lib/AuthContext';
 import api from '@/lib/api';
 import {
+
+// ── Defensive numeric helpers — never crash on undefined/null/NaN ──────────
+const safeN = (v: any): number => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
+const safeF = (v: any, fallback = '0'): string => safeN(v).toLocaleString();
+const safeD = (v: any, d = 2): string => safeN(v).toFixed(d);
+
   DollarSign, Calendar, Loader2, AlertCircle,
   CheckCircle2, Zap,
 } from 'lucide-react';
@@ -17,7 +23,7 @@ const safeNum = (v: unknown): number => {
   const n = Number(v);
   return isFinite(n) ? n : 0;
 };
-const fmt = (v: unknown): string => safeNum(v).toLocaleString();
+const fmt = (v: unknown): string => safeNumsafeF(v);
 
 interface Vault {
   id: string;

@@ -7,6 +7,12 @@ import { useContractorProfile } from '@/hooks/useLiveSystem';
 import api from '@/lib/api';
 import { Briefcase, Star, Activity, Loader2, CheckCircle2 } from 'lucide-react';
 
+// ── Defensive numeric helpers — never crash on undefined/null/NaN ──────────
+const safeN = (v: any): number => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
+const safeF = (v: any, fallback = '0'): string => safeN(v).toLocaleString();
+const safeD = (v: any, d = 2): string => safeN(v).toFixed(d);
+
+
 const SPECS = ['Civil Engineering','Road Construction','Bridge Construction','Water Infrastructure','Energy Systems','Housing','Telecommunications','Healthcare Facilities','Education Infrastructure','Agricultural Systems'];
 
 export default function ContractorProfilePage() {
@@ -87,7 +93,7 @@ export default function ContractorProfilePage() {
                   <p className="text-[10px] text-zinc-500 uppercase font-bold tracking-widest mb-1">Rating</p>
                   <div className="flex items-center justify-center gap-1">
                     <Star size={14} className="text-amber-400" />
-                    <p className="text-xl font-bold">{Number(profile.rating || 0).toFixed(1)}</p>
+                    <p className="text-xl font-bold">{NumbersafeD(profile.rating || 0, 1)}</p>
                   </div>
                 </div>
               </div>

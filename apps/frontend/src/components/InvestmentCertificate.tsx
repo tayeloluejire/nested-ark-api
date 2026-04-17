@@ -2,6 +2,12 @@
 import { useState } from 'react';
 import { Download, Loader2, ShieldCheck, FileText } from 'lucide-react';
 
+// ── Defensive numeric helpers — never crash on undefined/null/NaN ──────────
+const safeN = (v: any): number => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
+const safeF = (v: any, fallback = '0'): string => safeN(v).toLocaleString();
+const safeD = (v: any, d = 2): string => safeN(v).toFixed(d);
+
+
 interface CertProps {
   investment: {
     id: string;
@@ -32,7 +38,7 @@ export default function InvestmentCertificate({ investment, ledgerHash, investor
     });
     const shortHash   = ledgerHash ? ledgerHash.slice(0, 16) + '...' + ledgerHash.slice(-8) : 'PENDING';
     const projectRef  = projectNumber ?? investment.project_id.slice(0, 8).toUpperCase();
-    const amountFmt   = `₦${Number(investment.amount).toLocaleString('en-NG', { minimumFractionDigits: 2 })}`;
+    const amountFmt   = `₦${safeF(investment.amount)}`;
 
     const html = `<!DOCTYPE html>
 <html lang="en">

@@ -13,6 +13,12 @@ import ThemeToggle from '@/components/ThemeToggle';
 import NapSearch from '@/components/NapSearch';
 import api from '@/lib/api';
 
+// ── Defensive numeric helpers — never crash on undefined/null/NaN ──────────
+const safeN = (v: any): number => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
+const safeF = (v: any, fallback = '0'): string => safeN(v).toLocaleString();
+const safeD = (v: any, d = 2): string => safeN(v).toFixed(d);
+
+
 // ── Live market stats hook ─────────────────────────────────────────────────────
 function useMarketStats() {
   const [stats, setStats] = useState<any>(null);
@@ -40,7 +46,7 @@ function Counter({ to, prefix = '', suffix = '', duration = 1800 }: {
       if (pct >= 1) clearInterval(iv);
     }, 16);
   }, [to, duration]);
-  return <>{prefix}{val.toLocaleString()}{suffix}</>;
+  return <>{prefix}{safeF(val)}{suffix}</>;
 }
 
 // ── Pill tag ──────────────────────────────────────────────────────────────────
@@ -224,7 +230,7 @@ export default function LandingPage() {
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 max-w-3xl mx-auto pt-4">
               {[
                 { label: 'Active Builds',    value: <Counter to={stats.active_projects} /> },
-                { label: 'Capital Deployed', value: <>${(usdTotal / 1_000_000).toFixed(2)}M</> },
+                { label: 'Capital Deployed', value: <>${safeD(usdTotal / 1_000_000, 2)}M</> },
                 { label: 'Nations Linked',   value: <Counter to={stats.countries_active} /> },
                 { label: 'Operators',        value: <Counter to={stats.total_operators} /> },
               ].map(s => (

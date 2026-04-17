@@ -8,6 +8,12 @@ import Footer from '@/components/Footer';
 import { useAuth } from '@/lib/AuthContext';
 import api from '@/lib/api';
 import {
+
+// ── Defensive numeric helpers — never crash on undefined/null/NaN ──────────
+const safeN = (v: any): number => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
+const safeF = (v: any, fallback = '0'): string => safeN(v).toLocaleString();
+const safeD = (v: any, d = 2): string => safeN(v).toFixed(d);
+
   DollarSign, Calendar, TrendingUp, Loader2, AlertCircle,
   CheckCircle2, Clock, Zap, ArrowRight
 } from 'lucide-react';
@@ -202,11 +208,11 @@ export default function TenantFlexPayPage() {
               <div className="grid grid-cols-2 gap-3">
                 <div className="p-3 bg-zinc-900/50 rounded-xl">
                   <p className="text-[8px] text-zinc-600 uppercase font-bold mb-1">Current Balance</p>
-                  <p className="font-mono font-bold text-lg text-teal-400">₦{Number(vault.vault_balance).toLocaleString()}</p>
+                  <p className="font-mono font-bold text-lg text-teal-400">₦{safeF(vault.vault_balance)}</p>
                 </div>
                 <div className="p-3 bg-zinc-900/50 rounded-xl">
                   <p className="text-[8px] text-zinc-600 uppercase font-bold mb-1">Target</p>
-                  <p className="font-mono font-bold text-lg">₦{Number(vault.target_amount).toLocaleString()}</p>
+                  <p className="font-mono font-bold text-lg">₦{safeF(vault.target_amount)}</p>
                 </div>
                 <div className="p-3 bg-zinc-900/50 rounded-xl">
                   <p className="text-[8px] text-zinc-600 uppercase font-bold mb-1">Frequency</p>
@@ -214,7 +220,7 @@ export default function TenantFlexPayPage() {
                 </div>
                 <div className="p-3 bg-zinc-900/50 rounded-xl">
                   <p className="text-[8px] text-zinc-600 uppercase font-bold mb-1">Installment</p>
-                  <p className="font-mono font-bold text-sm text-amber-400">₦{Number(vault.installment_amount).toLocaleString()}</p>
+                  <p className="font-mono font-bold text-sm text-amber-400">₦{safeF(vault.installment_amount)}</p>
                 </div>
               </div>
 
@@ -246,7 +252,7 @@ export default function TenantFlexPayPage() {
                   {[vault.installment_amount, vault.installment_amount * 2, Math.ceil(vault.target_amount / 4)].map(amt => (
                     <button key={amt} onClick={() => setPayAmount(amt.toString())}
                       className="px-3 py-1.5 border border-zinc-700 text-zinc-400 hover:text-teal-400 font-mono text-[9px] rounded-lg transition-all">
-                      ₦{amt.toLocaleString()}
+                      ₦{safeF(amt)}
                     </button>
                   ))}
                 </div>

@@ -7,6 +7,12 @@ import Footer from '@/components/Footer';
 import api from '@/lib/api';
 import { useLiveProjects } from '@/hooks/useLiveSystem';
 import {
+
+// ── Defensive numeric helpers — never crash on undefined/null/NaN ──────────
+const safeN = (v: any): number => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
+const safeF = (v: any, fallback = '0'): string => safeN(v).toLocaleString();
+const safeD = (v: any, d = 2): string => safeN(v).toFixed(d);
+
   Truck, Package, CheckCircle2, Clock, AlertTriangle,
   Loader2, RefreshCw, QrCode, ShieldCheck, Activity,
   Wifi, Zap, BarChart3, Hash
@@ -172,7 +178,7 @@ export default function SupplierCommandCenter() {
                   <div key={d.id} className="grid grid-cols-5 gap-3 p-3 hover:bg-zinc-900/30 transition-colors font-mono text-[10px]">
                     <span className="text-zinc-300 truncate">{d.project}</span>
                     <span className="text-zinc-400 truncate">{d.material}</span>
-                    <span className="text-white">{d.qty.toLocaleString()}</span>
+                    <span className="text-white">{safeF(d.qty)}</span>
                     <span className={`px-2 py-0.5 rounded border text-[8px] font-bold uppercase w-fit ${STATUS_COLOR[d.status]}`}>{d.status}</span>
                     <span className="text-zinc-600 truncate" title={d.hash}>{d.hash.slice(0, 8)}…</span>
                   </div>

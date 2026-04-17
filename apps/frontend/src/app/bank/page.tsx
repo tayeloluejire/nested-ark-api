@@ -9,6 +9,12 @@ import { useLiveProjects } from '@/hooks/useLiveSystem';
 import { useCurrency } from '@/hooks/useCurrency';
 import CurrencySelector from '@/components/CurrencySelector';
 import {
+
+// ── Defensive numeric helpers — never crash on undefined/null/NaN ──────────
+const safeN = (v: any): number => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
+const safeF = (v: any, fallback = '0'): string => safeN(v).toLocaleString();
+const safeD = (v: any, d = 2): string => safeN(v).toFixed(d);
+
   Landmark, ShieldCheck, DollarSign, TrendingUp, Activity,
   Loader2, RefreshCw, Database, CheckCircle2, Clock,
   AlertTriangle, ArrowUpRight, Wifi, BarChart3, Hash, Lock
@@ -72,15 +78,15 @@ export default function BankCapitalLedger() {
         {lastSync && <span className="text-zinc-600 flex-shrink-0">Last sync: {lastSync}</span>}
         <div className="flex items-center gap-1.5 flex-shrink-0">
           <span className="text-zinc-600">NGN/USD</span>
-          <span className="text-white font-bold">{rates.NGN?.toFixed(0) || '1,379'}</span>
+          <span className="text-white font-bold">{safeD(rates.NGN, 0) || '1,379'}</span>
         </div>
         <div className="flex items-center gap-1.5 flex-shrink-0">
           <span className="text-zinc-600">EUR/USD</span>
-          <span className="text-white font-bold">{rates.EUR?.toFixed(4) || '0.8624'}</span>
+          <span className="text-white font-bold">{safeD(rates.EUR, 4) || '0.8624'}</span>
         </div>
         <div className="flex items-center gap-1.5 flex-shrink-0">
           <span className="text-zinc-600">GBP/USD</span>
-          <span className="text-white font-bold">{rates.GBP?.toFixed(4) || '0.7891'}</span>
+          <span className="text-white font-bold">{safeD(rates.GBP, 4) || '0.7891'}</span>
         </div>
         <div className="flex items-center gap-1.5 flex-shrink-0">
           <span className="text-zinc-600">Ledger events</span>
@@ -110,7 +116,7 @@ export default function BankCapitalLedger() {
           <p className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest mb-4">Capital Stack Overview</p>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             {[
-              { label: 'Total Project Value', value: format(totalProjectValue), sub: '$' + (totalProjectValue/1e6).toFixed(2) + 'M USD', icon: BarChart3, color: 'text-purple-400' },
+              { label: 'Total Project Value', value: format(totalProjectValue), sub: '$' + safeD(totalProjectValue/1e6, 2) + 'M USD', icon: BarChart3, color: 'text-purple-400' },
               { label: 'Total Invested', value: format(totalInvested), sub: summary?.investments?.count + ' investors', icon: TrendingUp, color: 'text-teal-500' },
               { label: 'Escrow Balance', value: format(available > 0 ? available : totalInvested * 0.7), sub: 'Available for release', icon: Lock, color: 'text-emerald-400' },
               { label: 'Milestones Paid', value: summary?.milestones?.paid || '0', sub: 'of ' + (summary?.milestones?.total || '0') + ' total', icon: CheckCircle2, color: 'text-amber-400' },
@@ -131,7 +137,7 @@ export default function BankCapitalLedger() {
         <section className="p-5 rounded-2xl border border-zinc-800 bg-zinc-900/20">
           <div className="flex items-center justify-between mb-4">
             <p className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest">Capital Deployment Progress</p>
-            <span className="text-[9px] text-zinc-600 font-mono">{totalProjectValue > 0 ? ((totalInvested / totalProjectValue) * 100).toFixed(1) : '0'}% funded</span>
+            <span className="text-[9px] text-zinc-600 font-mono">{totalProjectValue > 0 ? safeD((totalInvested / totalProjectValue) * 100, 1) : '0'}% funded</span>
           </div>
           <div className="h-4 bg-zinc-800 rounded-full overflow-hidden relative">
             <div className="h-full bg-gradient-to-r from-purple-500 to-teal-500 transition-all" style={{ width: `${totalProjectValue > 0 ? Math.min((totalInvested / totalProjectValue) * 100, 100) : 0}%` }} />
@@ -161,7 +167,7 @@ export default function BankCapitalLedger() {
                     </div>
                   </div>
                   <div className="text-right">
-                    <p className="font-mono text-sm font-bold text-white">${item.amount.toLocaleString()}</p>
+                    <p className="font-mono text-sm font-bold text-white">${safeF(item.amount)}</p>
                     <span className="text-[8px] text-teal-500 font-bold uppercase">{item.status} ✓</span>
                   </div>
                 </div>
@@ -172,11 +178,11 @@ export default function BankCapitalLedger() {
             <div className="p-5 rounded-2xl border border-zinc-800 bg-zinc-900/20 space-y-3">
               <p className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest">Currency Oracle Hub</p>
               {[
-                { pair: 'USD/NGN', rate: rates.NGN?.toFixed(2) || '1,379.00', change: '+0.3%', up: true },
-                { pair: 'USD/GHS', rate: rates.GHS?.toFixed(4) || '11.07', change: '-0.1%', up: false },
-                { pair: 'USD/KES', rate: rates.KES?.toFixed(2) || '130.00', change: '+0.5%', up: true },
-                { pair: 'USD/EUR', rate: rates.EUR?.toFixed(4) || '0.8624', change: '-0.2%', up: false },
-                { pair: 'USD/GBP', rate: rates.GBP?.toFixed(4) || '0.7891', change: '+0.1%', up: true },
+                { pair: 'USD/NGN', rate: safeD(rates.NGN, 2) || '1,379.00', change: '+0.3%', up: true },
+                { pair: 'USD/GHS', rate: safeD(rates.GHS, 4) || '11.07', change: '-0.1%', up: false },
+                { pair: 'USD/KES', rate: safeD(rates.KES, 2) || '130.00', change: '+0.5%', up: true },
+                { pair: 'USD/EUR', rate: safeD(rates.EUR, 4) || '0.8624', change: '-0.2%', up: false },
+                { pair: 'USD/GBP', rate: safeD(rates.GBP, 4) || '0.7891', change: '+0.1%', up: true },
               ].map(r => (
                 <div key={r.pair} className="flex justify-between items-center py-1.5 border-b border-zinc-800/50">
                   <span className="font-mono text-[10px] text-zinc-400 font-bold">{r.pair}</span>

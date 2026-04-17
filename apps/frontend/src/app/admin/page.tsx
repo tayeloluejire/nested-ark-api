@@ -4,6 +4,12 @@ import api from '@/lib/api';
 import { Activity, Users, Briefcase, ShieldCheck, DollarSign, Database, TrendingUp, AlertTriangle, CheckCircle2, Clock } from 'lucide-react';
 import Link from 'next/link';
 
+// ── Defensive numeric helpers — never crash on undefined/null/NaN ──────────
+const safeN = (v: any): number => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
+const safeF = (v: any, fallback = '0'): string => safeN(v).toLocaleString();
+const safeD = (v: any, d = 2): string => safeN(v).toFixed(d);
+
+
 export default function AdminCommandCenter() {
   const [summary, setSummary] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -60,7 +66,7 @@ export default function AdminCommandCenter() {
             {[
               { label: 'Total Users', value: s.users.total, sub: `${s.users.govts}G · ${s.users.contractors}C · ${s.users.investors}I`, icon: Users, color: 'text-teal-500', href: '/admin/users' },
               { label: 'Active Projects', value: s.projects.active, sub: `${s.projects.verified} verified · ${s.projects.total} total`, icon: Briefcase, color: 'text-emerald-500', href: '/admin/projects' },
-              { label: 'Total Invested', value: `$${(s.investments.total / 1_000_000).toFixed(2)}M`, sub: `${s.investments.count} commitments`, icon: TrendingUp, color: 'text-amber-400', href: '/admin/projects' },
+              { label: 'Total Invested', value: `$${(safeN(s.investments?.total) / 1_000_000).toFixed(2)}M`, sub: `${s.investments.count} commitments`, icon: TrendingUp, color: 'text-amber-400', href: '/admin/projects' },
               { label: 'Ledger Events', value: s.ledger_events, sub: 'Immutable records', icon: Database, color: 'text-teal-500', href: '/admin/ledger' },
             ].map(card => { const Icon = card.icon; return (
               <Link key={card.label} href={card.href} className="p-5 rounded-2xl border border-zinc-800 bg-zinc-900/30 hover:border-zinc-700 transition-all">
@@ -74,7 +80,7 @@ export default function AdminCommandCenter() {
             {[
               { label: 'Milestones', value: s.milestones.total, icon: Clock, color: 'text-zinc-400' },
               { label: 'Paid Out', value: s.milestones.paid, icon: CheckCircle2, color: 'text-teal-500' },
-              { label: 'Milestone Value', value: `$${(s.milestones.total_value / 1_000_000).toFixed(2)}M`, icon: DollarSign, color: 'text-amber-400' },
+              { label: 'Milestone Value', value: `$${(safeN(s.milestones?.total_value) / 1_000_000).toFixed(2)}M`, icon: DollarSign, color: 'text-amber-400' },
             ].map(card => { const Icon = card.icon; return (
               <div key={card.label} className="p-4 rounded-xl border border-zinc-800 bg-zinc-900/20">
                 <div className="flex items-center justify-between mb-2"><p className="text-[10px] text-zinc-500 uppercase font-bold tracking-widest">{card.label}</p><Icon size={13} className={card.color} /></div>
@@ -92,7 +98,7 @@ export default function AdminCommandCenter() {
                       <div className="h-1.5 w-1.5 rounded-full bg-teal-500 animate-pulse flex-shrink-0" />
                       <span className="text-xs font-bold uppercase tracking-widest text-teal-400">{ev.transaction_type.replace(/_/g, ' ')}</span>
                     </div>
-                    <span className="text-[10px] text-zinc-600 font-mono">{new Date(ev.created_at).toLocaleString()}</span>
+                    <span className="text-[10px] text-zinc-600 font-mono">{new DatesafeF(ev.created_at)}</span>
                   </div>
                 ))}
               </div>

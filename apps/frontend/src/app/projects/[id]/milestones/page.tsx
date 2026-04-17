@@ -7,6 +7,12 @@ import Navbar from '@/components/Navbar';
 import Footer from '@/components/Footer';
 import api from '@/lib/api';
 import {
+
+// ── Defensive numeric helpers — never crash on undefined/null/NaN ──────────
+const safeN = (v: any): number => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
+const safeF = (v: any, fallback = '0'): string => safeN(v).toLocaleString();
+const safeD = (v: any, d = 2): string => safeN(v).toFixed(d);
+
   Hammer, ShieldCheck, Loader2, AlertCircle, ArrowLeft,
   CheckCircle2, Clock, Lock, Unlock, TrendingUp, RefreshCw
 } from 'lucide-react';
@@ -171,7 +177,7 @@ export default function MilestonesMobilizationPage() {
                   {m.description && <p className="text-[10px] text-zinc-500 mt-1">{m.description}</p>}
                 </div>
                 <div className="text-right">
-                  <p className="font-mono font-bold text-xl">₦{totalBudget.toLocaleString()}</p>
+                  <p className="font-mono font-bold text-xl">₦{safeF(totalBudget)}</p>
                   <span className={`text-[8px] px-2 py-1 rounded font-bold uppercase ${
                     m.status === 'PAID'        ? 'bg-teal-500/20 text-teal-400' :
                     m.status === 'IN_PROGRESS' ? 'bg-amber-500/10 text-amber-400' :
@@ -189,8 +195,8 @@ export default function MilestonesMobilizationPage() {
                   <div className="bg-zinc-700 rounded-r-full flex-1" />
                 </div>
                 <div className="flex justify-between text-[9px]">
-                  <span className="text-amber-400 font-mono font-bold">{mobilPct}% Mobilization — ₦{mobilAmount.toLocaleString()}</span>
-                  <span className="text-zinc-500 font-mono">{completionPct}% Completion — ₦{completionAmt.toLocaleString()}</span>
+                  <span className="text-amber-400 font-mono font-bold">{mobilPct}% Mobilization — ₦{safeF(mobilAmount)}</span>
+                  <span className="text-zinc-500 font-mono">{completionPct}% Completion — ₦{safeF(completionAmt)}</span>
                 </div>
               </div>
 
@@ -218,7 +224,7 @@ export default function MilestonesMobilizationPage() {
                       : <Lock size={14} className="text-zinc-600" />}
                     <div>
                       <p className="text-xs font-bold">Mobilization Payment</p>
-                      <p className="text-[9px] text-zinc-500">₦{mobilAmount.toLocaleString()} · {mobilPct}%</p>
+                      <p className="text-[9px] text-zinc-500">₦{safeF(mobilAmount)} · {mobilPct}%</p>
                     </div>
                   </div>
                   {m.mobilization_paid ? (
@@ -267,7 +273,7 @@ export default function MilestonesMobilizationPage() {
                   <div className="flex items-center justify-between gap-4 flex-wrap pt-2 border-t border-zinc-800">
                     <div>
                       <p className="text-xs font-bold">Completion Payment</p>
-                      <p className="text-[9px] text-zinc-500">₦{completionAmt.toLocaleString()} · {completionPct}% balance</p>
+                      <p className="text-[9px] text-zinc-500">₦{safeF(completionAmt)} · {completionPct}% balance</p>
                     </div>
                     {m.completion_paid ? (
                       <span className="flex items-center gap-1 text-[9px] text-teal-400 font-bold">

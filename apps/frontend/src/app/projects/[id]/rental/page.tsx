@@ -8,6 +8,12 @@ import Navbar from '@/components/Navbar';
 import Footer from '@/components/Footer';
 import api from '@/lib/api';
 import {
+
+// ── Defensive numeric helpers — never crash on undefined/null/NaN ──────────
+const safeN = (v: any): number => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
+const safeF = (v: any, fallback = '0'): string => safeN(v).toLocaleString();
+const safeD = (v: any, d = 2): string => safeN(v).toFixed(d);
+
   Home, Plus, Users, DollarSign, TrendingUp, Key,
   Loader2, AlertCircle, ArrowLeft, ArrowRight,
   Building2, RefreshCw, X, Calendar, ShieldCheck,
@@ -135,7 +141,7 @@ export default function RentalDashboardPage() {
   const saveSplits = async () => {
     setSaving(true); setSaveErr('');
     const total = splits.reduce((s, r) => s + Number(r.share_pct), 0);
-    if (Math.abs(total - 100) > 0.1) { setSaveErr(`Splits must total 100%. Current: ${total.toFixed(1)}%`); setSaving(false); return; }
+    if (Math.abs(total - 100) > 0.1) { setSaveErr(`Splits must total 100%. Current: ${safeD(total, 1)}%`); setSaving(false); return; }
     try {
       await api.post('/api/rental/stakeholders', { project_id: id, splits });
       setShowSplits(false); load();
@@ -245,8 +251,8 @@ export default function RentalDashboardPage() {
           {[
             { label: 'Total Units',        value: summary.total_units,           icon: Building2,  color: 'text-white' },
             { label: `Occupied (${summary.occupancy_rate}%)`, value: summary.occupied_units, icon: Key, color: 'text-teal-400' },
-            { label: 'Monthly Potential',  value: `₦${Number(summary.monthly_potential_ngn).toLocaleString()}`, icon: TrendingUp, color: 'text-amber-400' },
-            { label: 'Total Distributed',  value: `₦${Number(summary.total_collected_ngn).toLocaleString()}`,  icon: DollarSign, color: 'text-emerald-400' },
+            { label: 'Monthly Potential',  value: `₦${safeF(summary.monthly_potential_ngn)}`, icon: TrendingUp, color: 'text-amber-400' },
+            { label: 'Total Distributed',  value: `₦${safeF(summary.total_collected_ngn)}`,  icon: DollarSign, color: 'text-emerald-400' },
           ].map(s => {
             const Icon = s.icon;
             return (
@@ -271,7 +277,7 @@ export default function RentalDashboardPage() {
             </div>
           ))}
           <span className={`ml-auto text-[9px] font-bold font-mono ${Math.abs(splitTotal - 100) < 0.1 ? 'text-teal-400' : 'text-red-400'}`}>
-            {splitTotal.toFixed(1)}% total
+            {safeD(splitTotal, 1)}% total
           </span>
         </div>
 
@@ -366,7 +372,7 @@ export default function RentalDashboardPage() {
                       </div>
                       <div className="text-right flex-shrink-0">
                         <p className="font-mono font-bold text-xl text-teal-400">
-                          ₦{Number(unit.rent_amount).toLocaleString()}
+                          ₦{safeF(unit.rent_amount)}
                         </p>
                         <p className="text-[8px] text-zinc-600 uppercase font-bold">/ month</p>
                       </div>
@@ -417,7 +423,7 @@ export default function RentalDashboardPage() {
                   </p>
                 </div>
                 <div className="text-right">
-                  <p className="font-mono font-bold text-xl text-teal-400">₦{Number(t.rent_amount).toLocaleString()}</p>
+                  <p className="font-mono font-bold text-xl text-teal-400">₦{safeF(t.rent_amount)}</p>
                   <p className="text-[8px] text-zinc-600 uppercase font-bold">/ month</p>
                 </div>
                 <button onClick={() => collectRent(t.id)} disabled={saving}
@@ -454,7 +460,7 @@ export default function RentalDashboardPage() {
                     </p>
                   )}
                 </div>
-                <p className="font-mono font-bold text-xl text-white">₦{Number(p.amount_ngn).toLocaleString()}</p>
+                <p className="font-mono font-bold text-xl text-white">₦{safeF(p.amount_ngn)}</p>
               </div>
             ))}
           </div>
@@ -481,7 +487,7 @@ export default function RentalDashboardPage() {
               <div className="pt-2 border-t border-zinc-800 flex items-center justify-between">
                 <span className="text-[9px] text-zinc-500">Total</span>
                 <span className={`font-mono font-bold text-sm ${Math.abs(splitTotal - 100) < 0.1 ? 'text-teal-400' : 'text-red-400'}`}>
-                  {splitTotal.toFixed(1)}%
+                  {safeD(splitTotal, 1)}%
                 </span>
               </div>
             </div>
@@ -502,7 +508,7 @@ export default function RentalDashboardPage() {
                       </span>
                       <p className="text-xs text-zinc-300">{d.full_name || d.recipient_name}</p>
                     </div>
-                    <p className="font-mono font-bold text-teal-400">₦{Number(d.amount_ngn).toLocaleString()}</p>
+                    <p className="font-mono font-bold text-teal-400">₦{safeF(d.amount_ngn)}</p>
                   </div>
                 ))}
               </div>
@@ -692,7 +698,7 @@ export default function RentalDashboardPage() {
               <div className="pt-2 border-t border-zinc-800 flex items-center justify-between">
                 <span className="text-[9px] text-zinc-500">Total</span>
                 <span className={`font-mono font-bold text-sm ${Math.abs(splitTotal-100) < 0.1 ? 'text-teal-400' : 'text-red-400'}`}>
-                  {splitTotal.toFixed(1)}%
+                  {safeD(splitTotal, 1)}%
                 </span>
               </div>
             </div>

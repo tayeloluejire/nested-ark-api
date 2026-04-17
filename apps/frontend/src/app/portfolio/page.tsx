@@ -18,6 +18,12 @@ import {
 } from 'lucide-react';
 import InvestmentCertificate from '@/components/InvestmentCertificate';
 
+// ── Defensive numeric helpers — never crash on undefined/null/NaN ──────────
+const safeN = (v: any): number => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
+const safeF = (v: any, fallback = '0'): string => safeN(v).toLocaleString();
+const safeD = (v: any, d = 2): string => safeN(v).toFixed(d);
+
+
 // ── Types ──────────────────────────────────────────────────────────────────────
 interface Summary {
   total_invested_ngn:        number;
@@ -61,11 +67,11 @@ interface Payment {
 function fmtNgn(raw: any): string {
   const n = Number(raw);
   if (!Number.isFinite(n) || isNaN(n) || n === 0) return '₦0';
-  if (n > 0 && n < 100)       return `₦${n.toFixed(2)}`;   // sub-₦100: show paise (tiny daily accruals)
-  if (n >= 1_000_000_000)     return `₦${(n / 1_000_000_000).toFixed(2)}B`;
-  if (n >= 1_000_000)         return `₦${(n / 1_000_000).toFixed(2)}M`;
-  if (n >= 1_000)             return `₦${(n / 1_000).toFixed(1)}k`;
-  return `₦${Math.round(n).toLocaleString()}`;
+  if (n > 0 && n < 100)       return `₦${safeD(n, 2)}`;   // sub-₦100: show paise (tiny daily accruals)
+  if (n >= 1_000_000_000)     return `₦${safeD(n / 1_000_000_000, 2)}B`;
+  if (n >= 1_000_000)         return `₦${safeD(n / 1_000_000, 2)}M`;
+  if (n >= 1_000)             return `₦${safeD(n / 1_000, 1)}k`;
+  return `₦${Math.roundsafeF(n)}`;
 }
 
 function relTime(iso: string): string {
@@ -196,7 +202,7 @@ function RoiCalc({ roiRate }: { roiRate: number }) {
     <div className="space-y-3">
       <div className="flex justify-between items-center">
         <p className="text-[10px] text-zinc-500 uppercase font-bold tracking-widest">Investment Amount (NGN)</p>
-        <p className="font-mono text-teal-500 font-bold">₦{amount.toLocaleString()}</p>
+        <p className="font-mono text-teal-500 font-bold">₦{safeF(amount)}</p>
       </div>
       <input type="range" min={5_000} max={5_000_000} step={5_000} value={amount}
         onChange={e => setAmount(Number(e.target.value))} className="w-full accent-teal-500" />
@@ -206,7 +212,7 @@ function RoiCalc({ roiRate }: { roiRate: number }) {
       <div className="grid grid-cols-2 gap-3 pt-1">
         <div className="p-4 rounded-xl bg-zinc-900 border border-zinc-800 text-center">
           <p className="text-[9px] text-zinc-500 uppercase font-bold">6-month Yield</p>
-          <p className="font-mono text-teal-400 font-black text-lg mt-1">+₦{earn6m.toLocaleString()}</p>
+          <p className="font-mono text-teal-400 font-black text-lg mt-1">+₦{safeF(earn6m)}</p>
         </div>
         <div className="p-4 rounded-xl bg-zinc-900 border border-zinc-800 text-center">
           <p className="text-[9px] text-zinc-500 uppercase font-bold">Annual ROI</p>
@@ -534,7 +540,7 @@ export default function PortfolioPage() {
                       <td className="px-5 py-4 text-white font-bold uppercase text-[10px] max-w-[130px] truncate">
                         {p.project_title ?? '—'}
                       </td>
-                      <td className="px-5 py-4 font-mono text-white">₦{Number(p.amount_ngn).toLocaleString()}</td>
+                      <td className="px-5 py-4 font-mono text-white">₦{safeF(p.amount_ngn)}</td>
                       <td className="px-5 py-4 text-zinc-500 uppercase text-[9px]">
                         {p.payment_channel ?? p.channel ?? 'Paystack'}
                       </td>

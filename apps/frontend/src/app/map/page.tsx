@@ -8,6 +8,12 @@ import { useCurrency } from '@/hooks/useCurrency';
 import CurrencySelector from '@/components/CurrencySelector';
 import { MapPin, TrendingUp, Activity, Loader2 } from 'lucide-react';
 
+// ── Defensive numeric helpers — never crash on undefined/null/NaN ──────────
+const safeN = (v: any): number => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
+const safeF = (v: any, fallback = '0'): string => safeN(v).toLocaleString();
+const safeD = (v: any, d = 2): string => safeN(v).toFixed(d);
+
+
 // Project coordinates (seeded data)
 const PROJECT_COORDS: Record<string, [number, number]> = {
   'Lagos': [6.5244, 3.3792],
@@ -77,7 +83,7 @@ function MapComponent({ projects, format }: { projects: any[]; format: (n: numbe
             <div style="font-size:11px;color:#71717a;">${project.location}, ${project.country}</div>
             <div style="margin-top:8px;padding-top:8px;border-top:1px solid #27272a;">
               <div style="font-size:11px;color:#a1a1aa;">Budget</div>
-              <div style="font-weight:700;font-size:14px;color:${color};">$${Number(project.budget).toLocaleString()}</div>
+              <div style="font-weight:700;font-size:14px;color:${color};">$${safeF(project.budget)}</div>
             </div>
             <div style="margin-top:6px;">
               <div style="background:#27272a;border-radius:4px;height:4px;overflow:hidden;">

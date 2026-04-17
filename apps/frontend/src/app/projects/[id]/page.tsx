@@ -8,6 +8,12 @@ import Footer from '@/components/Footer';
 import { useCurrency } from '@/hooks/useCurrency';
 import api from '@/lib/api';
 import {
+
+// ── Defensive numeric helpers — never crash on undefined/null/NaN ──────────
+const safeN = (v: any): number => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
+const safeF = (v: any, fallback = '0'): string => safeN(v).toLocaleString();
+const safeD = (v: any, d = 2): string => safeN(v).toFixed(d);
+
   MapPin, Calendar, DollarSign, Building2, ShieldCheck,
   CheckCircle2, Clock, AlertCircle, Loader2, ArrowLeft,
   FileText, TrendingUp, Users, Image as ImageIcon,
@@ -162,7 +168,7 @@ export default function ProjectPitchPage() {
             <div>
               <p className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest mb-1">Project Budget</p>
               <p className="text-3xl font-black font-mono text-white">{format(budget)}</p>
-              <p className="text-zinc-600 text-[9px] font-mono">₦{(budget * 1381).toLocaleString(undefined,{maximumFractionDigits:0})} NGN</p>
+              <p className="text-zinc-600 text-[9px] font-mono">₦{safeF(budget * 1381)} NGN</p>
             </div>
             <div className="space-y-1.5">
               <div className="flex justify-between text-[9px] font-bold uppercase tracking-widest">
@@ -273,7 +279,7 @@ export default function ProjectPitchPage() {
                         </div>
                         <div>
                           <p className="text-xs font-bold uppercase tracking-tight">{m.title}</p>
-                          <p className="text-[9px] text-zinc-500 font-mono">${Number(m.budget_allocation).toLocaleString()}</p>
+                          <p className="text-[9px] text-zinc-500 font-mono">${safeF(m.budget_allocation)}</p>
                         </div>
                       </div>
                       {isOpen ? <ChevronUp size={14} className="text-zinc-500"/> : <ChevronDown size={14} className="text-zinc-500"/>}
@@ -317,7 +323,7 @@ export default function ProjectPitchPage() {
             <div className="p-6 rounded-2xl border border-zinc-800 bg-zinc-900/20 space-y-5">
               <h3 className="text-sm font-bold uppercase tracking-widest text-zinc-400">Financial Breakdown</h3>
               {[
-                { label: 'Total Project Budget',   value: format(budget), sub: `₦${(budget*1381).toLocaleString(undefined,{maximumFractionDigits:0})}`, hi: true },
+                { label: 'Total Project Budget',   value: format(budget), sub: `₦${safeF(budget*1381)}`, hi: true },
                 { label: 'Capital Raised to Date', value: format(raised), sub: `${fillPct}% funded` },
                 { label: 'Remaining to Raise',     value: format(budget - raised), sub: 'Open for investment' },
                 { label: 'Estimated Annual Return',value: '12% p.a.',      sub: 'Over 24-month tenure' },

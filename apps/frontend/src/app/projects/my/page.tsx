@@ -7,6 +7,12 @@ import Footer from '@/components/Footer';
 import { useCurrency } from '@/hooks/useCurrency';
 import api from '@/lib/api';
 import {
+
+// ── Defensive numeric helpers — never crash on undefined/null/NaN ──────────
+const safeN = (v: any): number => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
+const safeF = (v: any, fallback = '0'): string => safeN(v).toLocaleString();
+const safeD = (v: any, d = 2): string => safeN(v).toFixed(d);
+
   Plus, Eye, Briefcase, TrendingUp, Edit3, Trash2, Copy,
   Loader2, CheckCircle2, Wifi, ShieldCheck, FileText,
   Building2, BarChart3, Share2, X, Link2, MessageCircle, Linkedin
@@ -372,7 +378,7 @@ export default function MyProjectsPage() {
                 <div className="space-y-1">
                   <div className="flex justify-between text-[9px] font-bold uppercase">
                     <span className="text-zinc-500">Capital Raised</span>
-                    <span className="text-teal-500">{pct.toFixed(1)}% · {format(raised)}</span>
+                    <span className="text-teal-500">{safeD(pct, 1)}% · {format(raised)}</span>
                   </div>
                   <div className="h-1.5 w-full bg-zinc-800 rounded-full overflow-hidden">
                     <div className="h-full bg-teal-500 transition-all duration-700" style={{ width: `${pct}%` }} />

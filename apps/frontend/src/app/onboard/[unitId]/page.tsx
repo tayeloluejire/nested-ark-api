@@ -3,6 +3,12 @@
 import { useState, useRef, useEffect } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 
+// ── Defensive numeric helpers — never crash on undefined/null/NaN ──────────
+const safeN = (v: any): number => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
+const safeF = (v: any, fallback = '0'): string => safeN(v).toLocaleString();
+const safeD = (v: any, d = 2): string => safeN(v).toFixed(d);
+
+
 const API = process.env.NEXT_PUBLIC_API_URL || 'https://nested-ark-api.onrender.com';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -482,7 +488,7 @@ export default function OnboardPage() {
               <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 mb-6">
                 <p className="text-xs text-zinc-500 uppercase tracking-widest font-bold mb-1">Annual Rent</p>
                 <p className="text-2xl font-black text-teal-400 font-mono">
-                  {unit.currency} {Number(unit.rent_amount).toLocaleString()}
+                  {unit.currency} {safeF(unit.rent_amount)}
                 </p>
                 <p className="text-xs text-zinc-500 mt-1">{unit.unit_name} · {unit.project_title}</p>
               </div>
@@ -514,7 +520,7 @@ export default function OnboardPage() {
                       </div>
                       <div className="text-right">
                         <p className={`font-black font-mono text-sm ${selected ? 'text-teal-400' : 'text-zinc-300'}`}>
-                          {unit ? `${unit.currency} ${installment.toLocaleString()}` : '—'}
+                          {unit ? `${unit.currency} ${safeF(installment)}` : '—'}
                         </p>
                         <p className="text-xs text-zinc-600">per {opt.label.toLowerCase().replace('ly', '')}</p>
                       </div>

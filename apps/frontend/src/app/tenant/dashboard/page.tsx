@@ -3,6 +3,12 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
+// ── Defensive numeric helpers — never crash on undefined/null/NaN ──────────
+const safeN = (v: any): number => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
+const safeF = (v: any, fallback = '0'): string => safeN(v).toLocaleString();
+const safeD = (v: any, d = 2): string => safeN(v).toFixed(d);
+
+
 const API = process.env.NEXT_PUBLIC_API_URL || 'https://nested-ark-api.onrender.com';
 
 interface Tenancy {
@@ -260,10 +266,10 @@ export default function TenantDashboardPage() {
                     <div>
                       <p className="text-xs text-zinc-500 uppercase tracking-widest font-bold mb-1">Flex-Pay Vault</p>
                       <p className="text-3xl font-black text-teal-400 font-mono">
-                        {vault.currency} {Number(vault.vault_balance).toLocaleString()}
+                        {vault.currency} {safeF(vault.vault_balance)}
                       </p>
                       <p className="text-xs text-zinc-500 mt-1">
-                        of {vault.currency} {Number(vault.target_amount).toLocaleString()} target
+                        of {vault.currency} {safeF(vault.target_amount)} target
                       </p>
                     </div>
                     <div className={`text-xs font-bold px-3 py-1 rounded-full border ${
@@ -282,7 +288,7 @@ export default function TenantDashboardPage() {
                       style={{ width: `${funded}%` }}
                     />
                   </div>
-                  <p className="text-xs text-zinc-500">{funded.toFixed(1)}% funded</p>
+                  <p className="text-xs text-zinc-500">{safeD(funded, 1)}% funded</p>
 
                   <div className="grid grid-cols-3 gap-3 mt-4">
                     <div className="bg-zinc-800 rounded-lg p-3">
@@ -292,7 +298,7 @@ export default function TenantDashboardPage() {
                     <div className="bg-zinc-800 rounded-lg p-3">
                       <p className="text-xs text-zinc-500 mb-1">Installment</p>
                       <p className="text-sm font-bold text-white font-mono">
-                        {vault.currency} {Number(vault.installment_amount).toLocaleString()}
+                        {vault.currency} {safeF(vault.installment_amount)}
                       </p>
                     </div>
                     <div className="bg-zinc-800 rounded-lg p-3">
@@ -309,7 +315,7 @@ export default function TenantDashboardPage() {
                   disabled={payLoading}
                   className="w-full bg-teal-500 hover:bg-teal-400 text-black font-black py-4 rounded-xl text-sm transition disabled:opacity-50"
                 >
-                  {payLoading ? '⏳ Initializing…' : `💳 Pay ${vault.currency} ${Number(vault.installment_amount).toLocaleString()} Now`}
+                  {payLoading ? '⏳ Initializing…' : `💳 Pay ${vault.currency} ${safeF(vault.installment_amount)} Now`}
                 </button>
 
                 <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 text-xs text-zinc-500">
@@ -338,7 +344,7 @@ export default function TenantDashboardPage() {
                   <div key={c.id} className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 flex items-center justify-between">
                     <div>
                       <p className="text-sm font-bold text-white font-mono">
-                        {c.currency} {Number(c.amount).toLocaleString()}
+                        {c.currency} {safeF(c.amount)}
                       </p>
                       <p className="text-xs text-zinc-500 mt-0.5">{c.period_label}</p>
                       <p className="text-xs text-zinc-600">
@@ -485,7 +491,7 @@ export default function TenantDashboardPage() {
                     <div className="grid grid-cols-2 gap-3 text-xs">
                       <div>
                         <p className="opacity-60 uppercase tracking-widest text-[10px] mb-0.5">Amount Overdue</p>
-                        <p className="font-bold font-mono">₦{Number(n.amount_overdue || 0).toLocaleString()}</p>
+                        <p className="font-bold font-mono">₦{safeF(n.amount_overdue || 0)}</p>
                       </div>
                       <div>
                         <p className="opacity-60 uppercase tracking-widest text-[10px] mb-0.5">Days Overdue</p>

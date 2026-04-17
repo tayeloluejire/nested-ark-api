@@ -7,6 +7,12 @@ import Footer from '@/components/Footer';
 import { useCurrency } from '@/hooks/useCurrency';
 import api from '@/lib/api';
 import {
+
+// ── Defensive numeric helpers — never crash on undefined/null/NaN ──────────
+const safeN = (v: any): number => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
+const safeF = (v: any, fallback = '0'): string => safeN(v).toLocaleString();
+const safeD = (v: any, d = 2): string => safeN(v).toFixed(d);
+
   Search, Filter, MapPin, Calendar, TrendingUp, ShieldCheck,
   Loader2, Plus, Eye, Heart, Briefcase, Star, Globe, Building2,
   User, RefreshCw, ChevronRight, X, Bookmark, Tag, LayoutGrid, List
@@ -204,7 +210,7 @@ export default function MarketplacePage() {
 
         {/* Stats row */}
         <div className="flex items-center gap-3 text-[9px] text-zinc-500 uppercase font-bold tracking-widest">
-          <span>{total.toLocaleString()} project{total !== 1 ? 's' : ''}</span>
+          <span>{safeF(total)} project{total !== 1 ? 's' : ''}</span>
           <span className="text-zinc-700">·</span>
           <button onClick={() => load(true)} className="hover:text-teal-500 flex items-center gap-1 transition-colors">
             <RefreshCw size={9} /> Refresh
@@ -299,7 +305,7 @@ function ProjectCard({ p, format, saved, onSave }: { p: Project; format: (n: num
         {/* Funding bar */}
         <div className="space-y-1">
           <div className="flex justify-between text-[8px] text-zinc-500 font-bold uppercase">
-            <span>Funding</span><span className="text-teal-500">{pct.toFixed(0)}%</span>
+            <span>Funding</span><span className="text-teal-500">{safeD(pct, 0)}%</span>
           </div>
           <div className="h-1 w-full bg-zinc-800 rounded-full overflow-hidden">
             <div className="h-full bg-teal-500" style={{ width: `${pct}%` }} />

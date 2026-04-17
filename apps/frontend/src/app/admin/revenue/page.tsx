@@ -7,6 +7,12 @@ import { useAuth } from '@/lib/AuthContext';
 import api from '@/lib/api';
 import { Loader2, TrendingUp, RefreshCw, Save, AlertCircle, CheckCircle2, Globe, DollarSign } from 'lucide-react';
 
+// ── Defensive numeric helpers — never crash on undefined/null/NaN ──────────
+const safeN = (v: any): number => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
+const safeF = (v: any, fallback = '0'): string => safeN(v).toLocaleString();
+const safeD = (v: any, d = 2): string => safeN(v).toFixed(d);
+
+
 // ── Safe number helper ────────────────────────────────────────────────────────
 const safeNum = (v: unknown): number => { const n = Number(v); return isFinite(n) ? n : 0; };
 
@@ -82,10 +88,10 @@ export default function AdminRevenueEnginePage() {
     const meta = KEY_META[key];
     if (!meta?.incomeBase) return '';
     const v = safeNum(val);
-    if (meta.unit === 'USD') return `≈ $${Math.round(v * meta.incomeBase).toLocaleString()}`;
+    if (meta.unit === 'USD') return `≈ $${Math.roundsafeF(v * meta.incomeBase)}`;
     const rate   = v / 100;
     const factor = key === 'platform_investment_fee' ? 0.08 : key === 'platform_supply_fee' ? 0.05 : 0.15;
-    return `≈ $${Math.round(meta.incomeBase * rate * factor).toLocaleString()}/mo`;
+    return `≈ $${Math.roundsafeF(meta.incomeBase * rate * factor)}/mo`;
   };
 
   const totalRevenue = Object.entries(editing).reduce((sum, [key, val]) => {
@@ -144,7 +150,7 @@ export default function AdminRevenueEnginePage() {
         <DollarSign className="text-amber-400 flex-shrink-0" size={24} />
         <div>
           <p className="text-[9px] text-amber-500 uppercase font-bold tracking-widest">Estimated Monthly Platform Revenue</p>
-          <p className="text-3xl font-black font-mono text-amber-400">${Math.round(totalRevenue).toLocaleString()}</p>
+          <p className="text-3xl font-black font-mono text-amber-400">${Math.roundsafeF(totalRevenue)}</p>
           <p className="text-zinc-600 text-xs mt-1">Based on current fee config × $18.4M AUM</p>
         </div>
       </div>
@@ -171,7 +177,7 @@ export default function AdminRevenueEnginePage() {
                     {income && <p className="text-[9px] text-emerald-500 font-bold mt-2 font-mono">{income}</p>}
                     {meta?.incomeLabel && <p className="text-[8px] text-zinc-600 font-mono mt-0.5">{meta.incomeLabel}</p>}
                     <p className="text-[8px] text-zinc-700 mt-1 font-mono">
-                      Last updated: {row.updated_at ? new Date(row.updated_at).toLocaleString() : '—'}
+                      Last updated: {row.updated_at ? new DatesafeF(row.updated_at) : '—'}
                     </p>
                   </div>
                   <div className="flex items-center gap-3 flex-shrink-0">

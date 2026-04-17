@@ -10,6 +10,12 @@ import { useLiveProjects, useLiveInvestments } from '@/hooks/useLiveSystem';
 import { useCurrency } from '@/hooks/useCurrency';
 import api from '@/lib/api';
 import {
+
+// ── Defensive numeric helpers — never crash on undefined/null/NaN ──────────
+const safeN = (v: any): number => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
+const safeF = (v: any, fallback = '0'): string => safeN(v).toLocaleString();
+const safeD = (v: any, d = 2): string => safeN(v).toFixed(d);
+
   TrendingUp, Calculator, Loader2, RefreshCw,
   ShieldCheck, CreditCard, Wifi, WifiOff, Activity
 } from 'lucide-react';
@@ -69,13 +75,13 @@ export default function InvestmentCorner() {
    */
   const handleFund = async (projectId: string, projectTitle: string) => {
     if (amountNgn < MIN_NGN) {
-      alert(`Minimum investment is ₦${MIN_NGN.toLocaleString()}`);
+      alert(`Minimum investment is ₦${safeF(MIN_NGN)}`);
       return;
     }
     const confirmed = confirm(
       `CONFIRM INVESTMENT\n\n` +
       `Project: ${projectTitle}\n` +
-      `Amount: ₦${amountNgn.toLocaleString()} (~$${approxUsd.toFixed(0)} USD)\n\n` +
+      `Amount: ₦${safeF(amountNgn)} (~$${safeD(approxUsd, 0)} USD)\n\n` +
       `You will be redirected to Paystack's secure checkout.\n` +
       `Accepted: Card · Bank Transfer · USSD`
     );
@@ -152,10 +158,10 @@ export default function InvestmentCorner() {
                 onChange={e => setAmountNgn(Number(e.target.value))}
               />
               <div className="flex justify-between font-mono text-xl mb-1">
-                <span>₦{amountNgn.toLocaleString()}</span>
+                <span>₦{safeF(amountNgn)}</span>
                 <span className="text-teal-500 text-sm">+12% Est.</span>
               </div>
-              <p className="text-zinc-600 text-[9px] font-mono mb-5">≈ ${approxUsd.toFixed(0)} USD</p>
+              <p className="text-zinc-600 text-[9px] font-mono mb-5">≈ ${safeD(approxUsd, 0)} USD</p>
 
               {/* Manual input */}
               <div className="mb-5">
@@ -178,8 +184,8 @@ export default function InvestmentCorner() {
               <div className="pt-5 border-t border-zinc-800/50 space-y-3">
                 <div>
                   <p className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest">Projected Net Return</p>
-                  <h4 className="text-2xl font-bold text-teal-500">₦{projectedROI.toLocaleString(undefined, { maximumFractionDigits: 0 })}</h4>
-                  <p className="text-zinc-600 text-[9px] font-mono">≈ ${(projectedROI / APPROX_RATE).toFixed(0)} USD</p>
+                  <h4 className="text-2xl font-bold text-teal-500">₦{safeN(projectedROI).toLocaleString(undefined, { maximumFractionDigits: 0 })}</h4>
+                  <p className="text-zinc-600 text-[9px] font-mono">≈ ${safeD(projectedROI / APPROX_RATE, 0)} USD</p>
                 </div>
                 <p className="flex items-center gap-1.5 text-zinc-600 text-[9px]">
                   <ShieldCheck size={10} className="text-teal-500" />
@@ -220,7 +226,7 @@ export default function InvestmentCorner() {
               <div>
                 <h2 className="text-2xl font-bold tracking-tight uppercase italic">Infrastructure Nodes</h2>
                 <p className="text-zinc-500 text-xs mt-1">
-                  Direct investment · {projects.length} nodes live · min ₦{MIN_NGN.toLocaleString()}
+                  Direct investment · {projects.length} nodes live · min ₦{safeF(MIN_NGN)}
                 </p>
               </div>
               <button onClick={() => mutate()} className="p-2 rounded-lg border border-zinc-800 text-zinc-500 hover:text-teal-500 hover:border-teal-500/50 transition-all">

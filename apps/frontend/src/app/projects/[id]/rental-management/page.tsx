@@ -9,6 +9,12 @@ import Footer from '@/components/Footer';
 import { useAuth } from '@/lib/AuthContext';
 import api from '@/lib/api';
 import {
+
+// ── Defensive numeric helpers — never crash on undefined/null/NaN ──────────
+const safeN = (v: any): number => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
+const safeF = (v: any, fallback = '0'): string => safeN(v).toLocaleString();
+const safeD = (v: any, d = 2): string => safeN(v).toFixed(d);
+
   ShieldCheck, Bell, FileText, DollarSign, Building2, Users,
   Loader2, AlertCircle, ArrowLeft, CheckCircle2, Clock,
   TrendingDown, Zap, RefreshCw, Download, Send, ToggleLeft,
@@ -173,8 +179,8 @@ export default function RentalManagementPage() {
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           {[
             { label: 'Occupancy',        value: `${s.occupancy_pct}%`,      sub: `${s.occupied_units}/${s.total_units} units`,  color: 'text-teal-400',  border: 'border-teal-500/30' },
-            { label: 'Monthly Rent',     value: `₦${Number(s.monthly_rent_ngn).toLocaleString()}`, sub: 'Total contracted', color: 'text-amber-400', border: 'border-amber-500/30' },
-            { label: 'Vault Balance',    value: `₦${Number(s.total_vault_balance_ngn).toLocaleString()}`, sub: `${s.active_vaults} active vaults`, color: 'text-blue-400', border: 'border-blue-500/30' },
+            { label: 'Monthly Rent',     value: `₦${safeF(s.monthly_rent_ngn)}`, sub: 'Total contracted', color: 'text-amber-400', border: 'border-amber-500/30' },
+            { label: 'Vault Balance',    value: `₦${safeF(s.total_vault_balance_ngn)}`, sub: `${s.active_vaults} active vaults`, color: 'text-blue-400', border: 'border-blue-500/30' },
             { label: 'Overdue',          value: s.overdue_tenancies,        sub: `${s.pending_notices} notices issued`, color: 'text-red-400',   border: 'border-red-500/30' },
           ].map(k => (
             <div key={k.label} className={`p-4 rounded-2xl border ${k.border} bg-zinc-900/20 space-y-1`}>
@@ -243,12 +249,12 @@ export default function RentalManagementPage() {
                   </div>
                   <div className="flex items-center gap-4 text-right">
                     <div>
-                      <p className="font-mono font-bold text-sm text-teal-400">₦{Number(u.rent_amount).toLocaleString()}</p>
+                      <p className="font-mono font-bold text-sm text-teal-400">₦{safeF(u.rent_amount)}</p>
                       <p className="text-[8px] text-zinc-600 uppercase">per annum</p>
                     </div>
                     {u.vault_balance && (
                       <div>
-                        <p className="font-mono text-xs text-blue-400">₦{Number(u.vault_balance).toLocaleString()}</p>
+                        <p className="font-mono text-xs text-blue-400">₦{safeF(u.vault_balance)}</p>
                         <p className="text-[8px] text-zinc-600 uppercase">vault</p>
                       </div>
                     )}
@@ -296,7 +302,7 @@ export default function RentalManagementPage() {
                       <p className="text-[9px] text-zinc-500">{t.unit_name} · {Math.round(t.days_since_payment)}d overdue</p>
                     </div>
                     <div className="flex items-center gap-2">
-                      <span className="font-mono text-sm text-red-400">₦{Number(t.rent_amount).toLocaleString()}</span>
+                      <span className="font-mono text-sm text-red-400">₦{safeF(t.rent_amount)}</span>
                       <button onClick={() => setNoticeModal({ tenancy_id: t.id, tenant_name: t.tenant_name, unit_name: t.unit_name, rent_amount: t.rent_amount, days_overdue: Math.round(t.days_since_payment) })}
                         className="px-3 py-1.5 bg-red-500/20 border border-red-500/30 text-red-400 font-bold text-[8px] uppercase tracking-widest rounded-lg hover:bg-red-500/30 transition-all">
                         Issue Notice
@@ -319,7 +325,7 @@ export default function RentalManagementPage() {
                   </div>
                 </div>
                 <div className="flex items-center gap-2 flex-wrap">
-                  <span className="font-mono text-sm text-teal-400">₦{Number(t.rent_amount).toLocaleString()}</span>
+                  <span className="font-mono text-sm text-teal-400">₦{safeF(t.rent_amount)}</span>
                   <button onClick={() => setNoticeModal({ tenancy_id: t.id, tenant_name: t.tenant_name, unit_name: t.unit_name, rent_amount: t.rent_amount })}
                     className="px-3 py-1.5 border border-zinc-700 text-zinc-400 hover:text-white font-bold text-[8px] uppercase tracking-widest rounded-lg transition-all">
                     <FileText size={9} />
@@ -356,8 +362,8 @@ export default function RentalManagementPage() {
                         <p className="text-[9px] text-zinc-500">{v.unit_name} · {v.frequency} · {v.cashout_mode} mode</p>
                       </div>
                       <div className="text-right">
-                        <p className="font-mono font-bold text-lg text-blue-400">₦{Number(v.vault_balance).toLocaleString()}</p>
-                        <p className="text-[8px] text-zinc-600 uppercase">of ₦{Number(v.target_amount).toLocaleString()} target</p>
+                        <p className="font-mono font-bold text-lg text-blue-400">₦{safeF(v.vault_balance)}</p>
+                        <p className="text-[8px] text-zinc-600 uppercase">of ₦{safeF(v.target_amount)} target</p>
                       </div>
                     </div>
                     <div>
@@ -381,7 +387,7 @@ export default function RentalManagementPage() {
                             alert(res.data.message); load();
                           } catch (ex: any) { alert(ex?.response?.data?.error ?? 'Cashout failed'); }
                         }} className="flex items-center gap-1.5 px-4 py-2 bg-teal-500 text-black font-bold text-[9px] uppercase tracking-widest rounded-xl hover:bg-white transition-all">
-                          <DollarSign size={10} /> Cash Out ₦{Number(parseFloat(v.vault_balance) * 0.98).toLocaleString()}
+                          <DollarSign size={10} /> Cash Out ₦{safeF(parseFloat(v.vault_balance) * 0.98)}
                         </button>
                       )}
                     </div>
@@ -424,7 +430,7 @@ export default function RentalManagementPage() {
                     </div>
                     <p className="font-bold text-sm">{n.tenant_name} · {n.unit_name}</p>
                     <p className="text-[9px] text-zinc-500">
-                      {n.notice_type.replace(/_/g,' ')} · ₦{Number(n.amount_overdue).toLocaleString()} · {new Date(n.issued_at).toLocaleDateString()}
+                      {n.notice_type.replace(/_/g,' ')} · ₦{safeF(n.amount_overdue)} · {new Date(n.issued_at).toLocaleDateString()}
                     </p>
                   </div>
                   <button onClick={() => downloadNotice(n.id, n.notice_number)}
@@ -452,7 +458,7 @@ export default function RentalManagementPage() {
                   <div className={`w-2 h-2 rounded-full flex-shrink-0 ${r.was_delivered ? 'bg-teal-500' : 'bg-red-500'}`} />
                   <div className="flex-1 min-w-0">
                     <p className="font-bold text-xs truncate">{r.tenant_name} · {r.unit_name}</p>
-                    <p className="text-[9px] text-zinc-500 font-mono">{r.reminder_type} · {new Date(r.sent_at).toLocaleString()}</p>
+                    <p className="text-[9px] text-zinc-500 font-mono">{r.reminder_type} · {new DatesafeF(r.sent_at)}</p>
                   </div>
                   <span className={`text-[8px] font-bold px-2 py-1 rounded ${r.was_delivered ? 'text-teal-400' : 'text-red-400'}`}>
                     {r.was_delivered ? '✓ Delivered' : '✗ Failed'}
@@ -475,7 +481,7 @@ export default function RentalManagementPage() {
             </div>
             <div className="p-3 bg-zinc-800 rounded-xl text-xs text-zinc-400">
               <p className="font-bold text-white">{noticeModal.tenant_name}</p>
-              <p>{noticeModal.unit_name} · ₦{Number(noticeModal.rent_amount).toLocaleString()}</p>
+              <p>{noticeModal.unit_name} · ₦{safeF(noticeModal.rent_amount)}</p>
             </div>
             <div className="space-y-3">
               <div>

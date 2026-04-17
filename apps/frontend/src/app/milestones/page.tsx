@@ -8,6 +8,12 @@ import Footer from '@/components/Footer';
 import { useLiveMilestones } from '@/hooks/useLiveSystem';
 import api from '@/lib/api';
 import {
+
+// ── Defensive numeric helpers — never crash on undefined/null/NaN ──────────
+const safeN = (v: any): number => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
+const safeF = (v: any, fallback = '0'): string => safeN(v).toLocaleString();
+const safeD = (v: any, d = 2): string => safeN(v).toFixed(d);
+
   CheckCircle2, Clock, ShieldAlert, ArrowUpRight, Lock,
   Activity, RefreshCw, Shield, Camera, Bot, Users,
   AlertTriangle, Upload, Loader2
@@ -163,7 +169,7 @@ export default function MilestonesPage() {
       const bypass = confirm(`⚠ WARNING: Not all verification layers complete.\nMissing: ${missing}\n\nProceed anyway?`);
       if (!bypass) return;
     } else {
-      const ok = confirm(`AUTHORIZE RELEASE of $${Number(m.budget_allocation).toLocaleString()} for "${m.title}"?\n\nAll 3 verification layers passed. This is irreversible.`);
+      const ok = confirm(`AUTHORIZE RELEASE of $${safeF(m.budget_allocation)} for "${m.title}"?\n\nAll 3 verification layers passed. This is irreversible.`);
       if (!ok) return;
     }
 
@@ -274,7 +280,7 @@ export default function MilestonesPage() {
                   <div className="flex flex-col justify-between items-end gap-4 min-w-[160px]">
                     <div className="text-right">
                       <p className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest mb-1">Allocation</p>
-                      <p className="font-mono text-xl font-light"><span className="text-zinc-500 text-sm mr-1">$</span>{amount.toLocaleString()}</p>
+                      <p className="font-mono text-xl font-light"><span className="text-zinc-500 text-sm mr-1">$</span>{safeF(amount)}</p>
                     </div>
                     <div className="flex flex-col gap-2 w-full">
                       {canSubmitEvidence && (
