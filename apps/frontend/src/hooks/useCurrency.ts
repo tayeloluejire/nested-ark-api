@@ -1,11 +1,12 @@
-// ── Defensive numeric helpers ─────────────────────────────────────────────
+import { useState, useEffect, useCallback } from 'react';
+import api from '@/lib/api';
+import useSWR from 'swr';
+
+// ── Defensive numeric helpers ──────────────────────────────────────────────
 const safeN = (v: any): number => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
 const safeF = (v: any): string => safeN(v).toLocaleString();
 const safeD = (v: any, d = 2): string => safeN(v).toFixed(d);
 
-import { useState, useEffect, useCallback } from 'react';
-import api from '@/lib/api';
-import useSWR from 'swr';
 
 const fetcher = (url: string) => api.get(url).then(r => r.data);
 
@@ -55,7 +56,7 @@ export function useCurrency() {
 
   const format = useCallback((usdAmount: any): string => {
     const _raw = (usdAmount == null || isNaN(Number(usdAmount))) ? 0 : Number(usdAmount);
-    const converted = isNaN(convert(_raw)) ? 0 : convert(_raw);
+    const converted = (() => { const c = convert(_raw); return isNaN(c) ? 0 : c; })();
     const info = CURRENCIES[selected];
     const symbol = info?.symbol || selected;
     if (converted >= 1_000_000_000) return `${symbol}${safeD(converted / 1_000_000_000, 2)}B`;

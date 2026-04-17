@@ -20,7 +20,7 @@ import InvestmentCertificate from '@/components/InvestmentCertificate';
 
 // ── Defensive numeric helpers — never crash on undefined/null/NaN ──────────
 const safeN = (v: any): number => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
-const safeF = (v: any, fallback = '0'): string => safeN(v).toLocaleString();
+const safeF = (v: any): string => safeN(v).toLocaleString();
 const safeD = (v: any, d = 2): string => safeN(v).toFixed(d);
 
 

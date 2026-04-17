@@ -10,15 +10,15 @@ import { useLiveProjects, useLiveInvestments } from '@/hooks/useLiveSystem';
 import { useCurrency } from '@/hooks/useCurrency';
 import api from '@/lib/api';
 import {
-
-// ── Defensive numeric helpers — never crash on undefined/null/NaN ──────────
-const safeN = (v: any): number => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
-const safeF = (v: any, fallback = '0'): string => safeN(v).toLocaleString();
-const safeD = (v: any, d = 2): string => safeN(v).toFixed(d);
-
   TrendingUp, Calculator, Loader2, RefreshCw,
   ShieldCheck, CreditCard, Wifi, WifiOff, Activity
 } from 'lucide-react';
+
+// ── Defensive numeric helpers — never crash on undefined/null/NaN ──────────
+const safeN = (v: any): number => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
+const safeF = (v: any): string => safeN(v).toLocaleString();
+const safeD = (v: any, d = 2): string => safeN(v).toFixed(d);
+
 
 const MIN_NGN = 5000;
 const MAX_NGN = 5_000_000;
@@ -184,7 +184,7 @@ export default function InvestmentCorner() {
               <div className="pt-5 border-t border-zinc-800/50 space-y-3">
                 <div>
                   <p className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest">Projected Net Return</p>
-                  <h4 className="text-2xl font-bold text-teal-500">₦{safeN(projectedROI).toLocaleString(undefined, { maximumFractionDigits: 0 })}</h4>
+                  <h4 className="text-2xl font-bold text-teal-500">₦{safeNsafeF(projectedROI)}</h4>
                   <p className="text-zinc-600 text-[9px] font-mono">≈ ${safeD(projectedROI / APPROX_RATE, 0)} USD</p>
                 </div>
                 <p className="flex items-center gap-1.5 text-zinc-600 text-[9px]">

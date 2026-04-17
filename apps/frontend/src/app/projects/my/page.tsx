@@ -7,16 +7,16 @@ import Footer from '@/components/Footer';
 import { useCurrency } from '@/hooks/useCurrency';
 import api from '@/lib/api';
 import {
-
-// ── Defensive numeric helpers — never crash on undefined/null/NaN ──────────
-const safeN = (v: any): number => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
-const safeF = (v: any, fallback = '0'): string => safeN(v).toLocaleString();
-const safeD = (v: any, d = 2): string => safeN(v).toFixed(d);
-
   Plus, Eye, Briefcase, TrendingUp, Edit3, Trash2, Copy,
   Loader2, CheckCircle2, Wifi, ShieldCheck, FileText,
   Building2, BarChart3, Share2, X, Link2, MessageCircle, Linkedin
 } from 'lucide-react';
+
+// ── Defensive numeric helpers — never crash on undefined/null/NaN ──────────
+const safeN = (v: any): number => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
+const safeF = (v: any): string => safeN(v).toLocaleString();
+const safeD = (v: any, d = 2): string => safeN(v).toFixed(d);
+
 
 // ── types ─────────────────────────────────────────────────────────────────────
 interface MyProject {

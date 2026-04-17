@@ -8,18 +8,18 @@ import Footer from '@/components/Footer';
 import { useCurrency } from '@/hooks/useCurrency';
 import api from '@/lib/api';
 import {
-
-// ── Defensive numeric helpers — never crash on undefined/null/NaN ──────────
-const safeN = (v: any): number => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
-const safeF = (v: any, fallback = '0'): string => safeN(v).toLocaleString();
-const safeD = (v: any, d = 2): string => safeN(v).toFixed(d);
-
   MapPin, Calendar, DollarSign, Building2, ShieldCheck,
   CheckCircle2, Clock, AlertCircle, Loader2, ArrowLeft,
   FileText, TrendingUp, Users, Image as ImageIcon,
   Globe, Cpu, Zap, CreditCard, ChevronDown, ChevronUp,
   BarChart3, Target, Award, Hash
 } from 'lucide-react';
+
+// ── Defensive numeric helpers — never crash on undefined/null/NaN ──────────
+const safeN = (v: any): number => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
+const safeF = (v: any): string => safeN(v).toLocaleString();
+const safeD = (v: any, d = 2): string => safeN(v).toFixed(d);
+
 
 const CAT_ICON: Record<string,string> = {
   Roads:'🛣️', Energy:'⚡', Water:'💧', Bridges:'🌉', Technology:'💻', Railways:'🚆', Ports:'⚓', Healthcare:'🏥'

@@ -9,16 +9,16 @@ import { useLiveProjects } from '@/hooks/useLiveSystem';
 import { useCurrency } from '@/hooks/useCurrency';
 import CurrencySelector from '@/components/CurrencySelector';
 import {
-
-// ── Defensive numeric helpers — never crash on undefined/null/NaN ──────────
-const safeN = (v: any): number => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
-const safeF = (v: any, fallback = '0'): string => safeN(v).toLocaleString();
-const safeD = (v: any, d = 2): string => safeN(v).toFixed(d);
-
   Landmark, ShieldCheck, DollarSign, TrendingUp, Activity,
   Loader2, RefreshCw, Database, CheckCircle2, Clock,
   AlertTriangle, ArrowUpRight, Wifi, BarChart3, Hash, Lock
 } from 'lucide-react';
+
+// ── Defensive numeric helpers — never crash on undefined/null/NaN ──────────
+const safeN = (v: any): number => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
+const safeF = (v: any): string => safeN(v).toLocaleString();
+const safeD = (v: any, d = 2): string => safeN(v).toFixed(d);
+
 
 // Proof of Reserve ticker items — sourced from ledger in real implementation
 const POR_ITEMS = [
