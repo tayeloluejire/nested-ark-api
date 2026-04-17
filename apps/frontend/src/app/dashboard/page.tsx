@@ -7,17 +7,22 @@ import { useLiveProjects, useLiveMilestones, useLiveInvestments } from '@/hooks/
 import { Activity, Briefcase, TrendingUp, CheckCircle2, Clock, DollarSign, Database, ShieldCheck, Loader2, Crown } from 'lucide-react';
 import Link from 'next/link';
 
+// ── Safe number helpers ───────────────────────────────────────────────────────
+const safeNum = (v: unknown): number => {
+  const n = Number(v);
+  return isFinite(n) ? n : 0;
+};
+const fmtNum = (v: unknown): string => safeNum(v).toLocaleString();
+
 export default function DashboardPage() {
   const { user, isLoading: authLoading } = useAuth();
   const router = useRouter();
-  const { projects, isLoading: projLoading } = useLiveProjects();
-  const { milestones, isLoading: mileLoading } = useLiveMilestones();
-  const { investments } = useLiveInvestments();
+  const { projects,    isLoading: projLoading } = useLiveProjects();
+  const { milestones,  isLoading: mileLoading } = useLiveMilestones();
+  const { investments }                          = useLiveInvestments();
 
   useEffect(() => {
     if (!authLoading && !user) { router.replace('/login'); return; }
-    // Non-generic roles get redirected to their specific portal
-    // ADMIN and GOVERNMENT should be at /admin, but if they land here, show them the way
   }, [user, authLoading, router]);
 
   if (authLoading || !user) return (
@@ -26,18 +31,22 @@ export default function DashboardPage() {
     </div>
   );
 
-  const totalInvested = investments.reduce((s: number, i: any) => s + Number(i.amount), 0);
-  const activeProjects = projects.filter((p: any) => p.status === 'ACTIVE').length;
-  const completedMilestones = milestones.filter((m: any) => m.status === 'PAID' || m.status === 'COMPLETED').length;
+  // ── Safe aggregations ─────────────────────────────────────────────────────
+  const safeInvestments   = Array.isArray(investments) ? investments : [];
+  const safeProjects      = Array.isArray(projects)    ? projects    : [];
+  const safeMilestones    = Array.isArray(milestones)  ? milestones  : [];
+
+  const totalInvested       = safeInvestments.reduce((s: number, i: any) => s + safeNum(i?.amount), 0);
+  const activeProjects      = safeProjects.filter((p: any) => p?.status === 'ACTIVE').length;
+  const completedMilestones = safeMilestones.filter((m: any) => m?.status === 'PAID' || m?.status === 'COMPLETED').length;
 
   const statCards = [
-    { label: 'Total Projects', value: projLoading ? '…' : projects.length, icon: Briefcase, color: 'text-teal-500' },
-    { label: 'Active Nodes', value: projLoading ? '…' : activeProjects, icon: Activity, color: 'text-emerald-500' },
-    { label: 'Milestones', value: mileLoading ? '…' : milestones.length, icon: Clock, color: 'text-amber-500' },
-    { label: 'Completed', value: mileLoading ? '…' : completedMilestones, icon: CheckCircle2, color: 'text-teal-500' },
+    { label: 'Total Projects', value: projLoading ? '…' : safeProjects.length, icon: Briefcase,    color: 'text-teal-500' },
+    { label: 'Active Nodes',   value: projLoading ? '…' : activeProjects,      icon: Activity,     color: 'text-emerald-500' },
+    { label: 'Milestones',     value: mileLoading ? '…' : safeMilestones.length, icon: Clock,      color: 'text-amber-500' },
+    { label: 'Completed',      value: mileLoading ? '…' : completedMilestones, icon: CheckCircle2, color: 'text-teal-500' },
   ];
 
-  // ADMIN and GOVERNMENT — show a prominent link to their command center
   const isElevated = user.role === 'ADMIN' || user.role === 'GOVERNMENT';
 
   return (
@@ -75,9 +84,7 @@ export default function DashboardPage() {
                   </p>
                 </div>
               </div>
-              <span className="text-red-400 text-xs font-bold uppercase tracking-widest flex-shrink-0">
-                Open →
-              </span>
+              <span className="text-red-400 text-xs font-bold uppercase tracking-widest flex-shrink-0">Open →</span>
             </Link>
           </div>
         )}
@@ -98,11 +105,11 @@ export default function DashboardPage() {
           })}
         </div>
 
-        {/* Investor committed capital */}
+        {/* Investor committed capital — safe guard on totalInvested */}
         {user.role === 'INVESTOR' && totalInvested > 0 && (
           <div className="mb-8 p-6 rounded-2xl border border-teal-500/30 bg-teal-500/5">
             <p className="text-[10px] text-teal-500 uppercase font-bold tracking-widest mb-1">Your Total Committed Capital</p>
-            <p className="text-3xl font-black font-mono text-teal-500">${totalInvested.toLocaleString()}</p>
+            <p className="text-3xl font-black font-mono text-teal-500">${fmtNum(totalInvested)}</p>
           </div>
         )}
 

@@ -1,221 +1,168 @@
 'use client';
-export const dynamic = 'force-dynamic';
-
+import { useEffect, useState } from 'react';
+import api from '@/lib/api';
+import { Activity, Users, Briefcase, DollarSign, Database, TrendingUp, AlertTriangle, CheckCircle2, Clock } from 'lucide-react';
 import Link from 'next/link';
-import { useLiveOverview } from '@/hooks/useLiveOverview';
-import Navbar from '@/components/Navbar';
-import Footer from '@/components/Footer';
-import {
-  TrendingUp, DollarSign, Users, ShieldCheck, Globe,
-  ArrowRight, RefreshCw, Activity, Loader2
-} from 'lucide-react';
 
-const TX_BADGE: Record<string, string> = {
-  INVESTMENT: 'bg-teal-500/10 text-teal-400 border border-teal-500/20',
-  RENTAL:     'bg-amber-500/10 text-amber-400 border border-amber-500/20',
-  BID:        'bg-blue-500/10 text-blue-400 border border-blue-500/20',
-  ESCROW:     'bg-green-500/10 text-green-400 border border-green-500/20',
-};
+// ── Safe number helpers ───────────────────────────────────────────────────────
+const safeNum = (v: unknown): number => { const n = Number(v); return isFinite(n) ? n : 0; };
+const safeMil = (v: unknown): string  => (safeNum(v) / 1_000_000).toFixed(2);
+const safeInt = (v: unknown): number  => Math.floor(safeNum(v));
 
-const FLAGS: Record<string, string> = {
-  Nigeria: '🇳🇬', 'United Kingdom': '🇬🇧', USA: '🇺🇸',
-  'United Arab Emirates': '🇦🇪', Kenya: '🇰🇪', Singapore: '🇸🇬',
-  Germany: '🇩🇪', Australia: '🇦🇺', Canada: '🇨🇦', India: '🇮🇳',
-  Brazil: '🇧🇷', 'South Africa': '🇿🇦',
-};
+export default function AdminCommandCenter() {
+  const [summary, setSummary] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
 
-const LIFECYCLE = [
-  { key: 'PENDING',      label: 'Initialize', num: '01', sub: 'Nodes submitted' },
-  { key: 'ACTIVE',       label: 'Fund',       num: '02', sub: 'Crowdfunding' },
-  { key: 'CONSTRUCTION', label: 'Build',      num: '03', sub: 'Under construction' },
-  { key: 'VERIFICATION', label: 'Verify',     num: '04', sub: 'Awaiting audit' },
-  { key: 'OPERATIONAL',  label: 'Yield',      num: '05', sub: 'Paying rent' },
-];
+  const load = () =>
+    api.get('/api/admin/summary')
+      .then(r => setSummary(r.data?.summary ?? null))
+      .catch(console.error)
+      .finally(() => setLoading(false));
 
-export default function AdminOverviewPage() {
-  const { data, isLoading, error, mutate } = useLiveOverview();
+  useEffect(() => {
+    load();
+    const iv = setInterval(() => {
+      api.get('/api/admin/summary')
+        .then(r => setSummary(r.data?.summary ?? null))
+        .catch(() => {});
+    }, 15000);
+    return () => clearInterval(iv);
+  }, []);
 
-  const kpis = data ? [
-    {
-      label: 'Assets Under Management',
-      value: `$${Number(data.aum_usd).toLocaleString(undefined, { maximumFractionDigits: 0 })}`,
-      sub: 'All operational nodes', delta: '↑ Growing', color: 'teal',
-      icon: Globe,
-    },
-    {
-      label: 'Platform Revenue (MTD)',
-      value: `$${Number(data.revenue_mtd_usd).toLocaleString(undefined, { maximumFractionDigits: 0 })}`,
-      sub: 'Your 2% toll gate', delta: 'All fee verticals', color: 'amber',
-      icon: DollarSign,
-    },
-    {
-      label: 'Active Stakeholders',
-      value: Number(data.active_stakeholders).toLocaleString(),
-      sub: 'Investors · Contractors · Tenants', delta: 'All roles', color: 'blue',
-      icon: Users,
-    },
-    {
-      label: 'Pending Escrow',
-      value: `$${Number(data.pending_escrow_usd).toLocaleString(undefined, { maximumFractionDigits: 0 })}`,
-      sub: 'Awaiting milestone release', delta: 'Tri-layer protected', color: 'rose',
-      icon: ShieldCheck,
-    },
-  ] : [];
+  if (loading) return (
+    <div className="flex items-center justify-center h-64">
+      <Activity className="animate-spin text-teal-500 mx-auto" size={28} />
+    </div>
+  );
 
-  const colorMap: Record<string, { border: string; text: string }> = {
-    teal:  { border: 'border-teal-500/30',  text: 'text-teal-400' },
-    amber: { border: 'border-amber-500/30', text: 'text-amber-400' },
-    blue:  { border: 'border-blue-500/30',  text: 'text-blue-400' },
-    rose:  { border: 'border-rose-500/30',  text: 'text-rose-400' },
-  };
+  const s = summary;
+  if (!s) return (
+    <div className="text-center py-20 text-zinc-500 text-sm">
+      No summary data available. Is the backend running?
+    </div>
+  );
+
+  // ── Safe derived values ───────────────────────────────────────────────────
+  const readyForRelease  = safeInt(s.ready_for_release);
+  const pendingApprovals = safeInt(s.pending_approvals);
+  const totalUsers       = safeInt(s.users?.total);
+  const govCount         = safeInt(s.users?.govts);
+  const contractorCount  = safeInt(s.users?.contractors);
+  const investorCount    = safeInt(s.users?.investors);
+  const activeProjects   = safeInt(s.projects?.active);
+  const verifiedProjects = safeInt(s.projects?.verified);
+  const totalProjects    = safeInt(s.projects?.total);
+  const investTotal      = safeNum(s.investments?.total);
+  const investCount      = safeInt(s.investments?.count);
+  const ledgerEvents     = safeInt(s.ledger_events);
+  const milestonesTotal  = safeInt(s.milestones?.total);
+  const milestonesPaid   = safeInt(s.milestones?.paid);
+  const milestonesValue  = safeNum(s.milestones?.total_value);
+  const recentActivity   = Array.isArray(s.recent_activity) ? s.recent_activity : [];
 
   return (
-    <div className="min-h-screen bg-[#050505] text-white">
-      <Navbar />
-      <main className="max-w-6xl mx-auto px-6 py-10 space-y-8">
+    <div className="space-y-8">
+      <header className="border-l-2 border-red-500 pl-6">
+        <p className="text-[10px] text-red-400 uppercase font-bold tracking-[0.2em] mb-1">Admin Command Center</p>
+        <h1 className="text-3xl font-black tracking-tighter uppercase italic">System Overview</h1>
+        <p className="text-zinc-500 text-sm mt-1">Live infrastructure OS status</p>
+      </header>
 
-        {/* Header */}
-        <div className="flex items-start justify-between flex-wrap gap-4">
-          <div className="border-l-2 border-teal-500 pl-5">
-            <p className="text-[9px] text-teal-500 font-mono font-black tracking-widest uppercase mb-1">
-              Admin · Control Center
-            </p>
-            <h1 className="text-3xl font-black uppercase tracking-tighter">Global Overview</h1>
-            <p className="text-zinc-500 text-xs mt-1">
-              Real-time health of the Nested Ark infrastructure OS
-            </p>
-          </div>
-          <button onClick={() => mutate()} disabled={isLoading}
-            className="flex items-center gap-2 px-4 py-2 border border-zinc-800 rounded-xl text-zinc-500 hover:text-teal-500 hover:border-teal-500/40 text-xs font-bold uppercase tracking-widest transition-all">
-            <RefreshCw size={12} className={isLoading ? 'animate-spin' : ''} /> Refresh
-          </button>
-        </div>
-
-        {isLoading && !data && (
-          <div className="py-24 flex items-center justify-center">
-            <Loader2 className="animate-spin text-teal-500" size={28} />
-          </div>
-        )}
-
-        {error && (
-          <div className="p-5 rounded-2xl border border-red-500/20 bg-red-500/5 text-red-400 text-sm font-bold">
-            {error}
-          </div>
-        )}
-
-        {data && (
-          <>
-            {/* KPI grid */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              {kpis.map(k => {
-                const Icon = k.icon;
-                const c = colorMap[k.color];
-                return (
-                  <div key={k.label}
-                    className={`p-5 rounded-2xl border ${c.border} bg-zinc-900/20 space-y-2`}>
-                    <Icon size={14} className="text-zinc-600" />
-                    <p className={`text-2xl font-black font-mono tabular-nums ${c.text}`}>{k.value}</p>
-                    <p className="text-[8px] text-zinc-600 uppercase font-bold tracking-widest">{k.label}</p>
-                    <p className="text-[9px] text-zinc-700">{k.sub}</p>
-                    <p className={`text-[9px] font-bold ${c.text}`}>{k.delta}</p>
-                  </div>
-                );
-              })}
-            </div>
-
-            {/* All-time revenue badge */}
-            <div className="flex items-center gap-3 px-5 py-3 rounded-2xl border border-amber-500/20 bg-amber-500/5 w-fit">
-              <TrendingUp size={14} className="text-amber-400" />
-              <span className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest">All-time revenue</span>
-              <span className="font-mono font-bold text-amber-400">
-                ${Number(data.revenue_all_time_usd).toLocaleString(undefined, { maximumFractionDigits: 0 })}
-              </span>
-            </div>
-
-            {/* Lifecycle pipeline */}
-            <div>
-              <p className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest mb-3">
-                Asset Lifecycle Pipeline
-              </p>
-              <div className="flex overflow-x-auto">
-                {LIFECYCLE.map((stage, idx) => (
-                  <div key={stage.key}
-                    className={`
-                      flex-1 min-w-[110px] p-4 border border-zinc-800 bg-zinc-900/20
-                      hover:bg-zinc-900/40 transition-all
-                      ${idx === 0 ? 'rounded-l-2xl' : ''}
-                      ${idx === LIFECYCLE.length - 1 ? 'rounded-r-2xl border-l-0' : 'border-r-0'}
-                    `}>
-                    <p className="text-[9px] text-teal-500 font-mono font-black mb-1">{stage.num}</p>
-                    <p className="text-xs font-black uppercase tracking-tight">{stage.label}</p>
-                    <p className="text-2xl font-black font-mono text-teal-400 mt-1">
-                      {data.projects_by_status[stage.key as keyof typeof data.projects_by_status] ?? 0}
-                    </p>
-                    <p className="text-[9px] text-zinc-600 mt-1">{stage.sub}</p>
-                  </div>
-                ))}
+      {/* Urgent action banners */}
+      {(readyForRelease > 0 || pendingApprovals > 0) && (
+        <div className="space-y-3">
+          {readyForRelease > 0 && (
+            <Link href="/admin/approval" className="flex items-center justify-between p-4 rounded-xl border border-emerald-500/30 bg-emerald-500/5 hover:bg-emerald-500/10 transition-all">
+              <div className="flex items-center gap-3">
+                <CheckCircle2 className="text-emerald-500 flex-shrink-0" size={18} />
+                <div>
+                  <p className="text-emerald-400 text-sm font-bold">
+                    {readyForRelease} milestone{readyForRelease !== 1 ? 's' : ''} ready for release
+                  </p>
+                  <p className="text-zinc-500 text-[10px]">All 3 verification layers complete — awaiting your authorization</p>
+                </div>
               </div>
-            </div>
+              <span className="text-emerald-400 text-xs font-bold uppercase tracking-widest">Review →</span>
+            </Link>
+          )}
+          {pendingApprovals > 0 && (
+            <Link href="/admin/approval" className="flex items-center justify-between p-4 rounded-xl border border-amber-500/30 bg-amber-500/5 hover:bg-amber-500/10 transition-all">
+              <div className="flex items-center gap-3">
+                <AlertTriangle className="text-amber-400 flex-shrink-0" size={18} />
+                <div>
+                  <p className="text-amber-400 text-sm font-bold">
+                    {pendingApprovals} milestone{pendingApprovals !== 1 ? 's' : ''} awaiting verification
+                  </p>
+                  <p className="text-zinc-500 text-[10px]">Evidence submitted — human audit or drone sync needed</p>
+                </div>
+              </div>
+              <span className="text-amber-400 text-xs font-bold uppercase tracking-widest">Review →</span>
+            </Link>
+          )}
+        </div>
+      )}
 
-            {/* Live transaction feed */}
-            <div>
-              <div className="flex items-center justify-between mb-3">
-                <p className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest">
-                  Live Transaction Feed
-                </p>
-                <span className="flex items-center gap-1.5 text-[9px] text-teal-500 font-bold">
-                  <Activity size={9} className="animate-pulse" /> Live
+      {/* Top stats */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        {[
+          { label: 'Total Users',     value: totalUsers,                           sub: `${govCount}G · ${contractorCount}C · ${investorCount}I`,    icon: Users,     color: 'text-teal-500',   href: '/admin/users' },
+          { label: 'Active Projects', value: activeProjects,                        sub: `${verifiedProjects} verified · ${totalProjects} total`,    icon: Briefcase, color: 'text-emerald-500', href: '/admin/projects' },
+          { label: 'Total Invested',  value: `$${safeMil(investTotal)}M`,           sub: `${investCount} commitments`,                               icon: TrendingUp,color: 'text-amber-400',   href: '/admin/projects' },
+          { label: 'Ledger Events',   value: ledgerEvents,                          sub: 'Immutable records',                                         icon: Database,  color: 'text-teal-500',   href: '/admin/ledger' },
+        ].map(card => { const Icon = card.icon; return (
+          <Link key={card.label} href={card.href}
+            className="p-5 rounded-2xl border border-zinc-800 bg-zinc-900/30 hover:border-zinc-700 transition-all">
+            <div className="flex items-center justify-between mb-3">
+              <p className="text-[10px] text-zinc-500 uppercase font-bold tracking-widest">{card.label}</p>
+              <Icon size={14} className={card.color} />
+            </div>
+            <p className="text-2xl font-black font-mono">{card.value}</p>
+            <p className="text-zinc-600 text-[9px] mt-1 font-mono">{card.sub}</p>
+          </Link>
+        ); })}
+      </div>
+
+      {/* Milestone stats */}
+      <div className="grid grid-cols-3 gap-4">
+        {[
+          { label: 'Milestones',      value: milestonesTotal,                icon: Clock,        color: 'text-zinc-400' },
+          { label: 'Paid Out',        value: milestonesPaid,                  icon: CheckCircle2, color: 'text-teal-500' },
+          { label: 'Milestone Value', value: `$${safeMil(milestonesValue)}M`, icon: DollarSign,   color: 'text-amber-400' },
+        ].map(card => { const Icon = card.icon; return (
+          <div key={card.label} className="p-4 rounded-xl border border-zinc-800 bg-zinc-900/20">
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-[10px] text-zinc-500 uppercase font-bold tracking-widest">{card.label}</p>
+              <Icon size={13} className={card.color} />
+            </div>
+            <p className="text-xl font-black font-mono">{card.value}</p>
+          </div>
+        ); })}
+      </div>
+
+      {/* Recent ledger activity */}
+      {recentActivity.length > 0 && (
+        <div>
+          <h2 className="text-sm font-bold uppercase tracking-widest text-zinc-400 mb-3">Recent Ledger Activity</h2>
+          <div className="space-y-2">
+            {recentActivity.slice(0, 5).map((ev: any, i: number) => (
+              <div key={i} className="flex items-center justify-between p-3 rounded-lg border border-zinc-800 bg-zinc-900/20">
+                <div className="flex items-center gap-3">
+                  <div className="h-1.5 w-1.5 rounded-full bg-teal-500 animate-pulse flex-shrink-0" />
+                  <span className="text-xs font-bold uppercase tracking-widest text-teal-400">
+                    {(ev.transaction_type ?? '').replace(/_/g, ' ')}
+                  </span>
+                </div>
+                <span className="text-[10px] text-zinc-600 font-mono">
+                  {ev.created_at ? new Date(ev.created_at).toLocaleString() : '—'}
                 </span>
               </div>
-
-              {data.recent_transactions.length === 0 ? (
-                <div className="py-12 text-center border border-dashed border-zinc-800 rounded-2xl">
-                  <p className="text-zinc-600 text-sm">No transactions yet</p>
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  {data.recent_transactions.map(tx => (
-                    <div key={tx.id}
-                      className="p-4 rounded-2xl border border-zinc-800 bg-zinc-900/20 flex items-center gap-4 flex-wrap">
-                      <span className="text-xl flex-shrink-0">{FLAGS[tx.country] ?? '🌍'}</span>
-                      <div className="flex-1 min-w-0">
-                        <p className="font-bold text-sm truncate">{tx.project_title}</p>
-                        <p className="text-[9px] text-zinc-500 font-mono">
-                          {tx.project_number} · {tx.user_name}
-                        </p>
-                      </div>
-                      <div className="flex items-center gap-3 flex-shrink-0 text-right">
-                        <span className={`text-[8px] px-2 py-1 rounded font-black uppercase ${TX_BADGE[tx.type]}`}>
-                          {tx.type}
-                        </span>
-                        <span className="font-mono font-bold text-sm text-teal-400">
-                          {tx.currency} {Number(tx.amount).toLocaleString()}
-                        </span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {/* Quick nav */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-2">
-              {[
-                { href: '/admin/projects',  label: 'Manage Projects' },
-                { href: '/admin/revenue',   label: 'Revenue Engine' },
-                { href: '/explore',         label: 'Project Explorer' },
-                { href: '/projects/submit', label: 'Submit Node' },
-              ].map(l => (
-                <Link key={l.href} href={l.href}
-                  className="flex items-center justify-between gap-2 p-4 rounded-2xl border border-zinc-800 hover:border-teal-500/40 hover:bg-teal-500/5 transition-all text-xs font-bold uppercase tracking-widest text-zinc-400 hover:text-teal-400">
-                  {l.label} <ArrowRight size={10} />
-                </Link>
-              ))}
-            </div>
-          </>
-        )}
-      </main>
-      <Footer />
+            ))}
+          </div>
+          <Link href="/admin/ledger" className="mt-3 block text-center text-teal-500 text-xs uppercase font-bold tracking-widest hover:underline">
+            View Full Ledger →
+          </Link>
+        </div>
+      )}
     </div>
   );
 }
