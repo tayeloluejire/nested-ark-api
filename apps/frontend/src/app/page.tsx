@@ -121,6 +121,12 @@ function StepCard({ num, title, body }: { num: string; title: string; body: stri
   );
 }
 
+// ── Safe number guard (prevents toLocaleString crash on undefined fields) ─────
+const safeNum = (val: any): number => {
+  const n = Number(val);
+  return isNaN(n) ? 0 : n;
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 export default function HomePage() {
   const [stats,          setStats]         = useState<Stats | null>(null);
@@ -214,7 +220,7 @@ export default function HomePage() {
               {[
                 { label: 'Active Projects',  value: stats ? stats.active_projects.toLocaleString() : '—' },
                 { label: 'Countries',        value: stats ? stats.countries_active.toLocaleString() : '—' },
-                { label: 'Ledger Events',    value: stats ? stats.ledger_events.toLocaleString() : '—' },
+                { label: 'Ledger Events',    value: stats ? safeNum(stats.ledger_events).toLocaleString() : '—' },
                 { label: 'Investors',        value: stats ? stats.total_investors.toLocaleString() : '—' },
               ].map(s => (
                 <div key={s.label} className="flex items-center gap-2 px-3 py-2 rounded-lg bg-zinc-900 border border-zinc-800">
@@ -322,7 +328,7 @@ export default function HomePage() {
                 { label: 'Infrastructure AUM',   value: fmtNum(stats.total_project_value_usd),    color: 'text-teal-400' },
                 { label: 'Capital Committed',    value: fmtNum(stats.total_committed_usd),         color: 'text-amber-400' },
                 { label: 'Milestones Completed', value: `${stats.milestones_paid}/${stats.milestones_total}`, color: 'text-white' },
-                { label: 'Ledger Immutable Hashes', value: stats.ledger_events.toLocaleString(), color: 'text-zinc-400' },
+                { label: 'Ledger Immutable Hashes', value: safeNum(stats.ledger_events).toLocaleString(), color: 'text-zinc-400' },
               ].map(s => (
                 <div key={s.label} className="text-center space-y-1">
                   <p className={`text-2xl font-black font-mono tabular-nums ${s.color}`}>{s.value}</p>
@@ -737,7 +743,7 @@ export default function HomePage() {
             { icon: Globe,        label: 'Countries Active',       value: stats ? String(stats.countries_active)   : '—', color: 'text-teal-400' },
             { icon: Building2,    label: 'Projects on Platform',   value: stats ? String(stats.active_projects)    : '—', color: 'text-amber-400' },
             { icon: Users,        label: 'Verified Investors',     value: stats ? String(stats.total_investors)    : '—', color: 'text-blue-400' },
-            { icon: ShieldCheck,  label: 'Ledger Events',          value: stats ? stats.ledger_events.toLocaleString() : '—', color: 'text-zinc-400' },
+            { icon: ShieldCheck,  label: 'Ledger Events',          value: stats ? safeNum(stats.ledger_events).toLocaleString() : '—', color: 'text-zinc-400' },
           ].map(s => (
             <div key={s.label}
               className="p-5 rounded-2xl border border-zinc-800 bg-zinc-900/20 text-center space-y-2">
@@ -755,7 +761,7 @@ export default function HomePage() {
             {Object.entries(stats.key_rates).slice(0, 6).map(([cur, rate]) => (
               <div key={cur} className="flex items-center gap-2 text-[9px]">
                 <span className="text-zinc-600 font-mono">{cur}</span>
-                <span className="text-zinc-400 font-bold font-mono">{Number(rate).toLocaleString()}</span>
+                <span className="text-zinc-400 font-bold font-mono">{safeNum(rate).toLocaleString()}</span>
               </div>
             ))}
           </div>
