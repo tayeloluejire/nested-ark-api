@@ -499,6 +499,100 @@ export default function HomePage() {
         </div>
       </section>
 
+
+      {/* ══════════════════════════════════════════════════════════════════════
+          LANDLORD CAPABILITIES — Feature Discovery Grid
+          So users immediately see litigation, receipting, ejection
+      ══════════════════════════════════════════════════════════════════════ */}
+      <section className="border-b border-zinc-900 bg-zinc-950">
+        <div className="max-w-6xl mx-auto px-6 py-16 space-y-10">
+          <div className="flex items-end justify-between flex-wrap gap-4">
+            <div>
+              <p className="text-[9px] text-teal-500 uppercase font-bold tracking-[0.3em] mb-2">Property Management Suite</p>
+              <h2 className="text-3xl font-black uppercase tracking-tighter">
+                Every Tool a Landlord Needs
+              </h2>
+              <p className="text-zinc-500 text-sm mt-2 max-w-lg">
+                From the first WhatsApp invite to formal court-admissible ejection proceedings — Nested Ark handles every stage of property management.
+              </p>
+            </div>
+            <Link href="/register?role=landlord"
+              className="flex items-center gap-2 px-6 py-3.5 bg-teal-500 text-black font-black text-xs uppercase tracking-[0.15em] rounded-xl hover:bg-teal-400 transition-all flex-shrink-0">
+              <Home size={14} /> Get Started Free
+            </Link>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
+            {[
+              {
+                icon: Users, accent: 'teal', title: 'Digital Tenant Onboarding',
+                desc: 'KYC-verified tenant onboarding via WhatsApp link. Tenant self-registers in 60 seconds — guarantor details, digital lease execution, and Flex-Pay vault initialization all automated.',
+                badge: null,
+                tags: ['WhatsApp Invite', 'KYC Verification', 'Lease Execution', 'Instant Activation'],
+              },
+              {
+                icon: Gavel, accent: 'red', title: 'Litigation & Notice Generator',
+                desc: 'Issue court-admissible Notice to Pay, Notice to Quit, Final Warning, and Eviction Warning. Every notice is SHA-256 hashed, logged immutably, and auto-emailed as a signed PDF.',
+                badge: 'Critical Feature',
+                tags: ['Notice to Quit', 'Notice to Pay', 'Eviction Warning', 'SHA-256 Hashed'],
+              },
+              {
+                icon: Receipt, accent: 'blue', title: 'Instant Smart Receipting',
+                desc: 'Every Flex-Pay contribution generates a ledger-backed PDF receipt automatically sent to the tenant via email. Permanent, tamper-proof, court-admissible.',
+                badge: null,
+                tags: ['Auto PDF Receipt', 'Email Delivery', 'Ledger-Backed', 'Downloadable'],
+              },
+              {
+                icon: Wallet, accent: 'amber', title: 'Flex-Pay Vault System',
+                desc: 'Bridging the upfront vs monthly rent gap. Tenants pay weekly, monthly, or quarterly into a secure vault — landlord receives full annual rent or monthly drawdown on demand.',
+                badge: null,
+                tags: ['Weekly / Monthly', 'Annual Lumpsum', 'Drawdown Mode', '2% Platform Fee'],
+              },
+              {
+                icon: Bell, accent: 'zinc', title: 'Automated Reminder Engine',
+                desc: 'Cron-scheduled payment reminders fire automatically at 30 days, 7 days, and 48h overdue thresholds. Zero landlord involvement required.',
+                badge: null,
+                tags: ['30-Day Courtesy', '7-Day Urgent', '48h Overdue', 'Auto Legal Notice'],
+              },
+              {
+                icon: ShieldCheck, accent: 'purple', title: 'Ejection Proceedings',
+                desc: 'When informal notices fail, escalate to formal ejection. Generate legally-formatted ejection proceedings documentation complete with ledger hash as evidence trail.',
+                badge: 'Legal Grade',
+                tags: ['Court-Admissible', 'Evidence Trail', 'Ledger Proof', 'PDF Export'],
+              },
+            ].map((f) => {
+              const Icon = f.icon;
+              const accentMap: Record<string, { border: string; iconBg: string; iconC: string; badgeC: string }> = {
+                teal:   { border: 'border-teal-500/20 hover:border-teal-500/40',   iconBg: 'bg-teal-500/10',   iconC: 'text-teal-400',   badgeC: 'bg-teal-500/10 text-teal-400 border-teal-500/20' },
+                red:    { border: 'border-red-500/25 hover:border-red-500/50',     iconBg: 'bg-red-500/10',    iconC: 'text-red-400',    badgeC: 'bg-red-500/10 text-red-400 border-red-500/20' },
+                blue:   { border: 'border-blue-500/20 hover:border-blue-500/40',   iconBg: 'bg-blue-500/10',   iconC: 'text-blue-400',   badgeC: 'bg-blue-500/10 text-blue-400 border-blue-500/20' },
+                amber:  { border: 'border-amber-500/20 hover:border-amber-500/40', iconBg: 'bg-amber-500/10',  iconC: 'text-amber-400',  badgeC: 'bg-amber-500/10 text-amber-400 border-amber-500/20' },
+                zinc:   { border: 'border-zinc-700 hover:border-zinc-600',         iconBg: 'bg-zinc-800',      iconC: 'text-zinc-400',   badgeC: 'bg-zinc-800 text-zinc-400 border-zinc-700' },
+                purple: { border: 'border-purple-500/20 hover:border-purple-500/40', iconBg: 'bg-purple-500/10', iconC: 'text-purple-400', badgeC: 'bg-purple-500/10 text-purple-400 border-purple-500/20' },
+              };
+              const a = accentMap[f.accent];
+              return (
+                <div key={f.title} className={`p-6 rounded-3xl border bg-zinc-950 transition-all space-y-4 ${a.border}`}>
+                  <div className="flex items-start justify-between">
+                    <div className={`p-3 rounded-2xl ${a.iconBg}`}><Icon size={20} className={a.iconC} /></div>
+                    {f.badge && <span className={`text-[7px] font-black uppercase tracking-[0.2em] px-2 py-1 rounded-full border ${a.badgeC}`}>{f.badge}</span>}
+                  </div>
+                  <div>
+                    <h3 className="font-black text-sm uppercase tracking-tight text-white">{f.title}</h3>
+                    <p className="text-[11px] text-zinc-500 mt-2 leading-relaxed">{f.desc}</p>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {f.tags.map(t => (
+                      <span key={t} className="text-[8px] px-2 py-1 rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-500 font-bold uppercase tracking-wide">{t}</span>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </section>
+
       {/* ── TRUST PROTOCOL ───────────────────────────────────────────────── */}
       <section className="border-y border-zinc-900 bg-zinc-950">
         <div className="max-w-6xl mx-auto px-6 py-16">

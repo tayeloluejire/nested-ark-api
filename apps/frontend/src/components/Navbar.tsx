@@ -13,7 +13,7 @@ import {
   Menu, X, LayoutDashboard, Briefcase, PieChart,
   Milestone, LogOut, ChevronRight, ChevronDown, Database,
   Search, TrendingUp, ShieldCheck, Building2, Map, User,
-  Home, Globe, HardHat, Landmark, Hammer, Wallet,
+  Home, Globe, HardHat, Landmark, Hammer, Wallet, Gavel,
 } from 'lucide-react';
 
 // ── Solutions menu items (public-facing, role-based) ─────────────────────────
@@ -150,9 +150,16 @@ export default function Navbar() {
                             <div className="flex-shrink-0 w-8 h-8 rounded-xl bg-zinc-900 flex items-center justify-center">
                               <Icon size={15} className={s.accent} />
                             </div>
-                            <div>
+                            <div className="flex-1 min-w-0">
                               <p className="text-xs font-bold text-white">{s.label}</p>
                               <p className="text-[9px] text-zinc-500 mt-0.5">{s.sub}</p>
+                              {(s as any).suite && (
+                                <div className="flex flex-wrap gap-1 mt-1.5">
+                                  {(s as any).suite.map((f: string) => (
+                                    <span key={f} className="text-[7px] px-1.5 py-0.5 rounded bg-teal-500/10 text-teal-500 border border-teal-500/20 font-bold uppercase tracking-wide">{f}</span>
+                                  ))}
+                                </div>
+                              )}
                             </div>
                             <ChevronRight size={12} className="text-zinc-700 ml-auto flex-shrink-0" />
                           </Link>
