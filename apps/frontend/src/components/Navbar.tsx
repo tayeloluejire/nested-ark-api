@@ -14,6 +14,7 @@ import {
   Milestone, LogOut, ChevronRight, ChevronDown, Database,
   Search, TrendingUp, ShieldCheck, Building2, Map, User,
   Home, Globe, HardHat, Landmark, Hammer, Wallet, Gavel,
+  Users, Share2, MessageCircle, Copy, Bell, FileText, ArrowRight,
 } from 'lucide-react';
 
 // ── Solutions menu items (public-facing, role-based) ─────────────────────────
@@ -25,6 +26,7 @@ const SOLUTIONS = [
     bg: 'hover:bg-teal-500/8',
     label: 'Landlords & Property Owners',
     sub: 'Automate rent, Flex-Pay vaults & legal notices',
+    suite: ['Tenant Onboarding', 'Notice to Quit Generator', 'Auto Receipting', 'Ejection Proceedings'],
   },
   {
     href: '/register?role=investor',
@@ -68,11 +70,138 @@ const SOLUTIONS = [
   },
 ];
 
+// ── Landlord Quick Panel ──────────────────────────────────────────────────────
+// Floating dropdown that gives DEVELOPER/landlord role one-click access to
+// tenant onboarding, notice generation, and referral sharing.
+function LandlordQuickPanel({ onClose }: { onClose: () => void }) {
+  const [copied, setCopied] = useState(false);
+  const [shareTab, setShareTab] = useState<'tenant'|'landlord'>('tenant');
+
+  const BASE_URL = typeof window !== 'undefined' ? window.location.origin : 'https://nested-ark-frontend.vercel.app';
+  const tenantInviteUrl  = `${BASE_URL}/onboard?ref=landlord`;
+  const landlordShareUrl = `${BASE_URL}/register?role=landlord&ref=nested-ark`;
+
+  const copyLink = async (url: string) => {
+    try { await navigator.clipboard.writeText(url); } catch { prompt('Copy this link:', url); }
+    setCopied(true); setTimeout(() => setCopied(false), 2500);
+  };
+
+  const whatsappShare = (url: string, msg: string) => {
+    window.open(`https://wa.me/?text=${encodeURIComponent(msg + '\n' + url)}`, '_blank');
+  };
+
+  const emailShare = (url: string, subject: string, body: string) => {
+    window.open(`mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body + '\n\n' + url)}`, '_blank');
+  };
+
+  const tenantMsg  = "You've been invited to join as a tenant on Nested Ark. Set up your Flex-Pay vault and manage your tenancy digitally in 60 seconds.";
+  const landlordMsg = "Nested Ark OS automates rent collection, legal notices, and tenant onboarding for landlords. Join free and manage your property with zero hassle.";
+
+  return (
+    <div className="absolute top-full right-0 mt-2 w-[340px] bg-zinc-950 border border-zinc-800 rounded-2xl shadow-2xl overflow-hidden z-[200]">
+      {/* Header */}
+      <div className="p-4 border-b border-zinc-900 flex items-center justify-between">
+        <div>
+          <p className="text-[8px] text-teal-500 uppercase font-black tracking-[0.25em]">Landlord Command</p>
+          <p className="text-xs font-bold text-white mt-0.5">Quick Actions</p>
+        </div>
+        <button onClick={onClose} className="p-1.5 rounded-lg text-zinc-600 hover:text-white hover:bg-zinc-800 transition-all"><X size={14} /></button>
+      </div>
+
+      {/* Quick nav actions */}
+      <div className="p-3 space-y-1 border-b border-zinc-900">
+        {[
+          { href: '/projects/my',                icon: Building2,    label: 'My Properties',         sub: 'View all project units',             accent: 'text-teal-400',   bg: 'hover:bg-teal-500/8' },
+          { href: '/projects/my',                icon: Users,        label: 'Manage Tenants',         sub: 'Onboard, view & manage tenants',    accent: 'text-blue-400',   bg: 'hover:bg-blue-500/8' },
+          { href: '/projects/my',                icon: Gavel,        label: 'Issue Legal Notice',     sub: 'Notice to Quit / Pay / Eviction',   accent: 'text-red-400',    bg: 'hover:bg-red-500/8'  },
+          { href: '/tenant/dashboard',           icon: FileText,     label: 'View Receipts & Ledger', sub: 'Court-admissible payment history',   accent: 'text-amber-400',  bg: 'hover:bg-amber-500/8'},
+        ].map(item => {
+          const Icon = item.icon;
+          return (
+            <Link key={item.label} href={item.href} onClick={onClose}
+              className={`flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all ${item.bg} group`}>
+              <div className="w-7 h-7 rounded-lg bg-zinc-900 border border-zinc-800 flex items-center justify-center flex-shrink-0 group-hover:border-zinc-700">
+                <Icon size={13} className={item.accent} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-[11px] font-bold text-white">{item.label}</p>
+                <p className="text-[9px] text-zinc-600">{item.sub}</p>
+              </div>
+              <ArrowRight size={11} className="text-zinc-700 group-hover:text-zinc-400 flex-shrink-0" />
+            </Link>
+          );
+        })}
+      </div>
+
+      {/* Invite & Share Panel */}
+      <div className="p-3">
+        <p className="text-[8px] text-zinc-600 uppercase font-black tracking-[0.25em] mb-2">Invite & Share Links</p>
+
+        {/* Tab toggle */}
+        <div className="flex gap-1 mb-3 p-1 bg-zinc-900 rounded-xl border border-zinc-800">
+          {(['tenant', 'landlord'] as const).map(tab => (
+            <button key={tab} onClick={() => setShareTab(tab)}
+              className={`flex-1 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-wider transition-all ${shareTab === tab ? 'bg-teal-500 text-black' : 'text-zinc-500 hover:text-white'}`}>
+              {tab === 'tenant' ? '🏠 Invite Tenant' : '🤝 Invite Landlord'}
+            </button>
+          ))}
+        </div>
+
+        {shareTab === 'tenant' ? (
+          <div className="space-y-2">
+            <p className="text-[9px] text-zinc-500 leading-relaxed">Send this link to your tenant — they self-register, sign their digital lease, and activate their Flex-Pay vault in 60 seconds.</p>
+            <div className="flex items-center gap-1.5 p-2 bg-zinc-900 border border-zinc-800 rounded-xl font-mono text-[8px] text-zinc-500 truncate">
+              <span className="flex-1 truncate">{tenantInviteUrl}</span>
+            </div>
+            <div className="grid grid-cols-3 gap-1.5">
+              <button onClick={() => whatsappShare(tenantInviteUrl, tenantMsg)}
+                className="flex flex-col items-center gap-1 py-2 bg-[#25D366]/10 border border-[#25D366]/30 text-[#25D366] rounded-xl text-[8px] font-black uppercase hover:bg-[#25D366]/20 transition-all">
+                <MessageCircle size={13} /> WhatsApp
+              </button>
+              <button onClick={() => emailShare(tenantInviteUrl, 'Your Nested Ark Tenant Invitation', tenantMsg)}
+                className="flex flex-col items-center gap-1 py-2 bg-blue-500/10 border border-blue-500/30 text-blue-400 rounded-xl text-[8px] font-black uppercase hover:bg-blue-500/20 transition-all">
+                <Bell size={13} /> Email
+              </button>
+              <button onClick={() => copyLink(tenantInviteUrl)}
+                className={`flex flex-col items-center gap-1 py-2 border rounded-xl text-[8px] font-black uppercase transition-all ${copied ? 'bg-teal-500/20 border-teal-500/40 text-teal-400' : 'bg-zinc-900 border-zinc-700 text-zinc-400 hover:text-white'}`}>
+                <Copy size={13} /> {copied ? 'Copied!' : 'Copy'}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            <p className="text-[9px] text-zinc-500 leading-relaxed">Know another landlord? Share this link — when they sign up, they get instant access to the full Property Suite.</p>
+            <div className="flex items-center gap-1.5 p-2 bg-zinc-900 border border-zinc-800 rounded-xl font-mono text-[8px] text-zinc-500 truncate">
+              <span className="flex-1 truncate">{landlordShareUrl}</span>
+            </div>
+            <div className="grid grid-cols-3 gap-1.5">
+              <button onClick={() => whatsappShare(landlordShareUrl, landlordMsg)}
+                className="flex flex-col items-center gap-1 py-2 bg-[#25D366]/10 border border-[#25D366]/30 text-[#25D366] rounded-xl text-[8px] font-black uppercase hover:bg-[#25D366]/20 transition-all">
+                <MessageCircle size={13} /> WhatsApp
+              </button>
+              <button onClick={() => emailShare(landlordShareUrl, 'Manage Your Properties on Nested Ark', landlordMsg)}
+                className="flex flex-col items-center gap-1 py-2 bg-blue-500/10 border border-blue-500/30 text-blue-400 rounded-xl text-[8px] font-black uppercase hover:bg-blue-500/20 transition-all">
+                <Bell size={13} /> Email
+              </button>
+              <button onClick={() => copyLink(landlordShareUrl)}
+                className={`flex flex-col items-center gap-1 py-2 border rounded-xl text-[8px] font-black uppercase transition-all ${copied ? 'bg-teal-500/20 border-teal-500/40 text-teal-400' : 'bg-zinc-900 border-zinc-700 text-zinc-400 hover:text-white'}`}>
+                <Copy size={13} /> {copied ? 'Copied!' : 'Copy'}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function Navbar() {
-  const [isOpen,        setIsOpen]        = useState(false);
-  const [showSearch,    setShowSearch]    = useState(false);
-  const [solutionsOpen, setSolutionsOpen] = useState(false);
-  const solutionsRef = useRef<HTMLDivElement>(null);
+  const [isOpen,           setIsOpen]           = useState(false);
+  const [showSearch,       setShowSearch]       = useState(false);
+  const [solutionsOpen,    setSolutionsOpen]    = useState(false);
+  const [landlordPanelOpen, setLandlordPanelOpen] = useState(false);
+  const solutionsRef   = useRef<HTMLDivElement>(null);
+  const landlordRef    = useRef<HTMLDivElement>(null);
   const { user, logout } = useAuth();
   const pathname = usePathname();
   const { currency, setCurrency } = useCurrency();
@@ -82,6 +211,9 @@ export default function Navbar() {
     const handler = (e: MouseEvent) => {
       if (solutionsRef.current && !solutionsRef.current.contains(e.target as Node)) {
         setSolutionsOpen(false);
+      }
+      if (landlordRef.current && !landlordRef.current.contains(e.target as Node)) {
+        setLandlordPanelOpen(false);
       }
     };
     document.addEventListener('mousedown', handler);
@@ -94,6 +226,7 @@ export default function Navbar() {
     { name: 'Projects',    href: '/projects',    icon: Briefcase,       roles: ['DEVELOPER','GOVERNMENT','CONTRACTOR','SUPPLIER','ADMIN','INVESTOR','VERIFIER','BANK'] },
     { name: 'Investments', href: '/investments', icon: TrendingUp,      roles: ['INVESTOR','ADMIN'] },
     { name: 'My Projects', href: '/projects/my', icon: Building2,       roles: ['DEVELOPER','GOVERNMENT','ADMIN'] },
+    { name: 'Tenants',     href: '/projects/my', icon: Users,           roles: ['DEVELOPER'] },
     { name: 'Milestones',  href: '/milestones',  icon: Milestone,       roles: ['GOVERNMENT','DEVELOPER','CONTRACTOR','ADMIN','VERIFIER'] },
     { name: 'Portfolio',   href: '/portfolio',   icon: PieChart,        roles: ['INVESTOR','ADMIN'] },
     { name: 'Ledger',      href: '/ledger',      icon: Database,        roles: ['ADMIN','GOVERNMENT','BANK','INVESTOR','VERIFIER','DEVELOPER'] },
@@ -237,6 +370,24 @@ export default function Navbar() {
               </span>
             )}
 
+            {/* Landlord quick-panel button — DEVELOPER role only */}
+            {user && (user.role === 'DEVELOPER') && (
+              <div className="relative" ref={landlordRef}>
+                <button
+                  onClick={() => setLandlordPanelOpen(v => !v)}
+                  title="Landlord Command Centre"
+                  className={`hidden md:flex items-center gap-1.5 px-3 py-2 rounded-lg border text-[10px] font-bold uppercase tracking-widest transition-all ${
+                    landlordPanelOpen
+                      ? 'bg-teal-500/10 border-teal-500/40 text-teal-400'
+                      : 'border-zinc-800 text-zinc-500 hover:border-teal-500/40 hover:text-teal-400'
+                  }`}>
+                  <Home size={13} /> Landlord
+                  <ChevronDown size={10} className={`transition-transform ${landlordPanelOpen ? 'rotate-180' : ''}`} />
+                </button>
+                {landlordPanelOpen && <LandlordQuickPanel onClose={() => setLandlordPanelOpen(false)} />}
+              </div>
+            )}
+
             {/* Public CTA */}
             {!user && (
               <>
@@ -342,6 +493,53 @@ export default function Navbar() {
           </div>
 
           <div className="mt-6 space-y-2">
+            {/* Landlord mobile quick-actions */}
+            {user?.role === 'DEVELOPER' && (
+              <div className="p-4 rounded-2xl border border-teal-500/20 bg-teal-500/5 space-y-3">
+                <p className="text-[8px] text-teal-500 uppercase font-black tracking-[0.25em]">Landlord Command</p>
+                <div className="space-y-1.5">
+                  {[
+                    { href: '/projects/my', icon: Building2,    label: 'My Properties & Units' },
+                    { href: '/projects/my', icon: Users,        label: 'Onboard Tenants' },
+                    { href: '/projects/my', icon: Gavel,        label: 'Issue Legal Notice' },
+                  ].map(item => {
+                    const Icon = item.icon;
+                    return (
+                      <Link key={item.label} href={item.href} onClick={() => setIsOpen(false)}
+                        className="flex items-center justify-between p-3 rounded-xl border border-zinc-800 bg-zinc-900/50 text-white hover:border-teal-500/30 transition-all">
+                        <div className="flex items-center gap-3">
+                          <Icon size={15} className="text-teal-400" />
+                          <span className="text-xs font-bold uppercase tracking-tight">{item.label}</span>
+                        </div>
+                        <ChevronRight size={14} className="text-zinc-600" />
+                      </Link>
+                    );
+                  })}
+                </div>
+                {/* Mobile share links */}
+                <div className="pt-2 border-t border-zinc-800 space-y-2">
+                  <p className="text-[8px] text-zinc-600 uppercase font-black tracking-[0.25em]">Share & Invite</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      onClick={() => {
+                        const url = `${window.location.origin}/onboard?ref=landlord`;
+                        window.open(`https://wa.me/?text=${encodeURIComponent("You've been invited to join as a tenant on Nested Ark.\n" + url)}`, '_blank');
+                      }}
+                      className="flex items-center justify-center gap-1.5 py-2.5 bg-[#25D366]/10 border border-[#25D366]/30 text-[#25D366] rounded-xl text-[9px] font-black uppercase">
+                      <MessageCircle size={12} /> Invite Tenant
+                    </button>
+                    <button
+                      onClick={() => {
+                        const url = `${window.location.origin}/register?role=landlord&ref=nested-ark`;
+                        window.open(`https://wa.me/?text=${encodeURIComponent("Manage your property on Nested Ark.\n" + url)}`, '_blank');
+                      }}
+                      className="flex items-center justify-center gap-1.5 py-2.5 bg-teal-500/10 border border-teal-500/30 text-teal-400 rounded-xl text-[9px] font-black uppercase">
+                      <Share2 size={12} /> Invite Landlord
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
             {user?.role === 'ADMIN' && (
               <Link href="/admin" onClick={() => setIsOpen(false)}
                 className="flex items-center justify-between p-4 rounded-2xl border border-red-500/30 bg-red-500/10 text-red-400">

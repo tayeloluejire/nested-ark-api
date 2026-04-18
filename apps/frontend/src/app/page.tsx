@@ -10,8 +10,7 @@ import {
   TrendingUp, Building2, ShieldCheck, Globe, ArrowRight,
   Search, Home, Users, Lock, CheckCircle2, Activity,
   FileText, Bell, Wallet, ChevronRight, MessageCircle,
-  RefreshCw, MapPin, HardHat, Landmark, Layers,
-  Gavel, Receipt,
+  RefreshCw, MapPin, HardHat, Landmark, Layers, Gavel, Receipt,
 } from 'lucide-react';
 
 // ── Defensive numeric helpers ─────────────────────────────────────────────────
