@@ -1,6 +1,18 @@
 import axios from 'axios';
 
-const BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'https://nested-ark-api-v3.onrender.com';
+// ── BASE_URL strategy ─────────────────────────────────────────────────────────
+// In the browser  → '' (empty = same origin).  All /api/* requests go to the
+//   Next.js server which proxies them to Render via next.config.js rewrites.
+//   This eliminates CORS completely — the browser never makes a cross-origin call.
+//
+// In SSR / Node   → full Render URL so server-side fetches still work directly.
+//
+// To change the backend, update NEXT_PUBLIC_API_URL in Vercel → Settings → Env Vars.
+// Do NOT hardcode the Render URL anywhere in client code.
+const BASE_URL =
+  typeof window === 'undefined'
+    ? (process.env.NEXT_PUBLIC_API_URL || 'https://nested-ark-api-v3.onrender.com')
+    : ''; // browser always uses same-origin proxy
 
 const api = axios.create({
   baseURL: BASE_URL,

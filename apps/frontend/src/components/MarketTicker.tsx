@@ -10,7 +10,7 @@
  * • Seamless infinite loop (items doubled, animates to -50%)
  * • Refreshes data from /api/ticker every 30s without interrupting the animation
  */
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import Link from 'next/link';
 import api from '@/lib/api';
 
@@ -49,19 +49,23 @@ export default function MarketTicker() {
   const [items, setItems]       = useState<TickerItem[]>(FALLBACK);
   const [paused, setPaused]     = useState(false);
   const animRef                 = useRef<HTMLDivElement>(null);
+  // ── Use a ref so fetchTicker is never re-created, preventing duplicate intervals ──
+  const fetchRef = useRef<() => Promise<void>>();
 
-  const fetchTicker = useCallback(async () => {
+  fetchRef.current = async () => {
     try {
       const res = await api.get('/api/ticker');
       if (res.data.items?.length > 0) setItems(res.data.items);
     } catch { /* silent — fallback items stay */ }
-  }, []);
+  };
 
   useEffect(() => {
-    fetchTicker();
-    const iv = setInterval(fetchTicker, 30000);
+    // Fire immediately on mount
+    fetchRef.current?.();
+    // Poll every 60s (was 30s — halved to reduce Render free-tier load)
+    const iv = setInterval(() => fetchRef.current?.(), 60_000);
     return () => clearInterval(iv);
-  }, [fetchTicker]);
+  }, []); // ← empty deps: only ever runs once, interval never duplicates
 
   // Seamless loop: double the items, animate translateX(0 → -50%)
   const display = [...items, ...items];
