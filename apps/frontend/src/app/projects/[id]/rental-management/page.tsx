@@ -16,8 +16,8 @@ export const dynamic = 'force-dynamic';
  *   GET  /api/rental/project/:id/summary         → { summary }
  */
 
-import { useState, useEffect, useCallback } from 'react';
-import { useParams } from 'next/navigation';
+import { Suspense, useState, useEffect, useCallback } from 'react';
+import { useParams, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import Navbar from '@/components/Navbar';
 import Footer from '@/components/Footer';
@@ -251,11 +251,17 @@ function NoticeModal({
   );
 }
 
-// ── Main Page ─────────────────────────────────────────────────────────────────
-export default function RentalManagementPage() {
+// ── Main Page (inner — needs Suspense for useSearchParams) ───────────────────
+function RentalManagementContent() {
   const { id: projectId } = useParams<{ id: string }>();
+  const searchParams = useSearchParams();
 
-  const [tab,         setTab]         = useState<'overview'|'tenants'|'litigation'|'receipts'>('overview');
+  // Read ?tab=tenants|litigation|receipts from redirect links in Navbar
+  const tabParam = searchParams.get('tab') as 'overview'|'tenants'|'litigation'|'receipts' | null;
+
+  const [tab,         setTab]         = useState<'overview'|'tenants'|'litigation'|'receipts'>(
+    tabParam && ['overview','tenants','litigation','receipts'].includes(tabParam) ? tabParam : 'overview'
+  );
   const [units,       setUnits]       = useState<Unit[]>([]);
   const [tenancies,   setTenancies]   = useState<Tenancy[]>([]);
   const [receipts,    setReceipts]    = useState<RentalReceipt[]>([]);
@@ -719,5 +725,20 @@ export default function RentalManagementPage() {
       </main>
       <Footer />
     </div>
+  );
+}
+
+// ── Exported page — Suspense required because useSearchParams is used above ──
+export default function RentalManagementPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen bg-[#050505] flex items-center justify-center">
+          <Loader2 className="animate-spin text-teal-500" size={28} />
+        </div>
+      }
+    >
+      <RentalManagementContent />
+    </Suspense>
   );
 }

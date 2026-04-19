@@ -111,10 +111,10 @@ function LandlordQuickPanel({ onClose }: { onClose: () => void }) {
       {/* Quick nav actions */}
       <div className="p-3 space-y-1 border-b border-zinc-900">
         {[
-          { href: '/projects/my',                icon: Building2,    label: 'My Properties',         sub: 'View all project units',             accent: 'text-teal-400',   bg: 'hover:bg-teal-500/8' },
-          { href: '/projects/my',                icon: Users,        label: 'Manage Tenants',         sub: 'Onboard, view & manage tenants',    accent: 'text-blue-400',   bg: 'hover:bg-blue-500/8' },
-          { href: '/projects/my',                icon: Gavel,        label: 'Issue Legal Notice',     sub: 'Notice to Quit / Pay / Eviction',   accent: 'text-red-400',    bg: 'hover:bg-red-500/8'  },
-          { href: '/tenant/dashboard',           icon: FileText,     label: 'View Receipts & Ledger', sub: 'Court-admissible payment history',   accent: 'text-amber-400',  bg: 'hover:bg-amber-500/8'},
+          { href: '/projects/my',                    icon: Building2,    label: 'My Properties',         sub: 'View all project units',             accent: 'text-teal-400',   bg: 'hover:bg-teal-500/8' },
+          { href: '/landlord/tenants',               icon: Users,        label: 'Manage Tenants',         sub: 'Onboard, view & manage tenants',    accent: 'text-blue-400',   bg: 'hover:bg-blue-500/8' },
+          { href: '/landlord/notices',               icon: Gavel,        label: 'Issue Legal Notice',     sub: 'Notice to Quit / Pay / Eviction',   accent: 'text-red-400',    bg: 'hover:bg-red-500/8'  },
+          { href: '/landlord/receipts',              icon: FileText,     label: 'View Receipts & Ledger', sub: 'Court-admissible payment history',   accent: 'text-amber-400',  bg: 'hover:bg-amber-500/8'},
         ].map(item => {
           const Icon = item.icon;
           return (
@@ -226,7 +226,7 @@ export default function Navbar() {
     { name: 'Projects',    href: '/projects',    icon: Briefcase,       roles: ['DEVELOPER','GOVERNMENT','CONTRACTOR','SUPPLIER','ADMIN','INVESTOR','VERIFIER','BANK'] },
     { name: 'Investments', href: '/investments', icon: TrendingUp,      roles: ['INVESTOR','ADMIN'] },
     { name: 'My Projects', href: '/projects/my', icon: Building2,       roles: ['DEVELOPER','GOVERNMENT','ADMIN'] },
-    { name: 'Tenants',     href: '/projects/my', icon: Users,           roles: ['DEVELOPER'] },
+    { name: 'Tenants',     href: '/landlord/tenants', icon: Users,           roles: ['DEVELOPER'] },
     { name: 'Milestones',  href: '/milestones',  icon: Milestone,       roles: ['GOVERNMENT','DEVELOPER','CONTRACTOR','ADMIN','VERIFIER'] },
     { name: 'Portfolio',   href: '/portfolio',   icon: PieChart,        roles: ['INVESTOR','ADMIN'] },
     { name: 'Ledger',      href: '/ledger',      icon: Database,        roles: ['ADMIN','GOVERNMENT','BANK','INVESTOR','VERIFIER','DEVELOPER'] },
@@ -499,9 +499,9 @@ export default function Navbar() {
                 <p className="text-[8px] text-teal-500 uppercase font-black tracking-[0.25em]">Landlord Command</p>
                 <div className="space-y-1.5">
                   {[
-                    { href: '/projects/my', icon: Building2,    label: 'My Properties & Units' },
-                    { href: '/projects/my', icon: Users,        label: 'Onboard Tenants' },
-                    { href: '/projects/my', icon: Gavel,        label: 'Issue Legal Notice' },
+                    { href: '/projects/my',        icon: Building2,    label: 'My Properties & Units' },
+                    { href: '/landlord/tenants',   icon: Users,        label: 'Onboard Tenants' },
+                    { href: '/landlord/notices',   icon: Gavel,        label: 'Issue Legal Notice' },
                   ].map(item => {
                     const Icon = item.icon;
                     return (
