@@ -52,7 +52,7 @@ export default function InvestmentCertificate({ investment, ledgerHash, investor
   .cert { max-width: 760px; margin: 0 auto; border: 1px solid #14b8a630; border-radius: 16px; overflow: hidden; }
   .header { background: #0a0a0a; border-bottom: 1px solid #14b8a620; padding: 40px; display: flex; justify-content: space-between; align-items: flex-start; }
   .logo { display: flex; align-items: center; gap: 10px; }
-  .logo-icon { width: 20px; height: 20px; background: #14b8a6; transform: rotate(45deg); border-radius: 3px; }
+  .logo-icon { width: 28px; height: 28px; object-fit: contain; }
   .logo-text { font-size: 12px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.15em; }
   .os-tag { color: #14b8a6; }
   .badge { font-family: 'Space Mono', monospace; font-size: 8px; color: #14b8a6; border: 1px solid #14b8a630; padding: 4px 10px; border-radius: 4px; text-transform: uppercase; letter-spacing: 0.2em; }
@@ -83,7 +83,7 @@ export default function InvestmentCertificate({ investment, ledgerHash, investor
 <div class="cert">
   <div class="header">
     <div class="logo">
-      <div class="logo-icon"></div>
+      <img src="https://nested-ark-frontend.vercel.app/nested_ark_icon.png" alt="Nested Ark OS" class="logo-icon" />
       <div>
         <div class="logo-text">Nested Ark <span class="os-tag">OS</span></div>
         <div style="font-size:7px;color:#52525b;text-transform:uppercase;letter-spacing:0.2em;margin-top:2px;">Infrastructure Exchange Platform</div>
