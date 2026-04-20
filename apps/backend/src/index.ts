@@ -729,7 +729,6 @@ const ensureTablesExist = async () => {
         created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
       CREATE INDEX IF NOT EXISTS idx_ten_unit    ON tenancies(unit_id);
-      CREATE INDEX IF NOT EXISTS idx_ten_project ON tenancies(project_id);
       CREATE INDEX IF NOT EXISTS idx_ten_status  ON tenancies(status);
     `);
 
@@ -920,6 +919,7 @@ const ensureTablesExist = async () => {
       ALTER TABLE rent_payments ADD COLUMN IF NOT EXISTS tenant_id     UUID REFERENCES users(id);
       ALTER TABLE rent_payments ADD COLUMN IF NOT EXISTS period_month  VARCHAR(7);
       ALTER TABLE rent_payments ADD COLUMN IF NOT EXISTS distributed_at TIMESTAMP;
+      CREATE INDEX IF NOT EXISTS idx_ten_project    ON tenancies(project_id) WHERE project_id IS NOT NULL;
       CREATE INDEX IF NOT EXISTS idx_ten_project_bp ON tenancies(project_id) WHERE project_id IS NOT NULL;
       CREATE INDEX IF NOT EXISTS idx_rp_tenant_bp   ON rent_payments(tenant_id) WHERE tenant_id IS NOT NULL;
 
@@ -1095,7 +1095,18 @@ app.post("/api/auth/login", async (req: Request, res: Response): Promise<any> =>
     );
     
     console.log(`✅ User logged in: ${email}`);
-    
+
+    // ── Auto-link tenant_user_id for TENANT users on every login ──────────
+    // Ensures tenancies created before user account (or before column was added)
+    // get linked so the dashboard resolves correctly on first login.
+    if (user.role === 'TENANT') {
+      pool.query(
+        `UPDATE tenancies SET tenant_user_id = $1
+         WHERE tenant_email = $2 AND tenant_user_id IS NULL AND status = 'ACTIVE'`,
+        [user.id, user.email]
+      ).catch(() => {}); // non-blocking, non-fatal
+    }
+
     return res.json({ 
       success: true, 
       user: { id: user.id, email: user.email, full_name: user.full_name, role: user.role }, 
@@ -5699,7 +5710,7 @@ app.post('/api/reminders/send-bulk', authenticate, async (req: Request, res: Res
     if (!pRes.rows.length) return res.status(404).json({ error: 'Project not found' });
     const roleCheck = await pool.query(`SELECT role FROM users WHERE id=$1`, [userId]);
     if (pRes.rows[0].sponsor_id !== userId && !['ADMIN'].includes(roleCheck.rows[0]?.role)) return res.status(403).json({ error: 'Only project owner or admin can send reminders' });
-    const tenancies = await pool.query(`SELECT t.*, ru.unit_name, ru.rent_amount, p.title AS project_title, p.project_number FROM tenancies t JOIN rental_units ru ON ru.id = t.unit_id JOIN projects p ON p.id = t.project_id WHERE t.project_id = $1 AND t.status = 'ACTIVE'`, [project_id]);
+    const tenancies = await pool.query(`SELECT t.*, ru.unit_name, ru.rent_amount, p.title AS project_title, p.project_number FROM tenancies t JOIN rental_units ru ON ru.id = t.unit_id LEFT JOIN projects p ON p.id = t.project_id WHERE t.project_id = $1 AND t.status = 'ACTIVE'`, [project_id]);
     const mailer = getMailer();
     const results: any[] = [];
     for (const t of tenancies.rows) {
@@ -5733,7 +5744,7 @@ app.post('/api/notices/generate', authenticate, async (req: Request, res: Respon
   const { tenancy_id, notice_type, amount_overdue, days_overdue, notes } = req.body;
   if (!tenancy_id || !notice_type) return res.status(400).json({ error: 'tenancy_id and notice_type required' });
   try {
-    const tenRes = await pool.query(`SELECT t.*, ru.unit_name, ru.rent_amount, p.title AS project_title, p.project_number, p.sponsor_id FROM tenancies t JOIN rental_units ru ON ru.id = t.unit_id JOIN projects p ON p.id = t.project_id WHERE t.id = $1`, [tenancy_id]);
+    const tenRes = await pool.query(`SELECT t.*, ru.unit_name, ru.rent_amount, p.title AS project_title, p.project_number, p.sponsor_id FROM tenancies t JOIN rental_units ru ON ru.id = t.unit_id LEFT JOIN projects p ON p.id = t.project_id WHERE t.id = $1`, [tenancy_id]);
     if (!tenRes.rows.length) return res.status(404).json({ error: 'Tenancy not found' });
     const t = tenRes.rows[0];
     const roleCheck = await pool.query(`SELECT role FROM users WHERE id=$1`, [userId]);
@@ -5781,7 +5792,7 @@ app.get('/api/notices/:projectId', authenticate, async (req: Request, res: Respo
 // GET /api/notices/download/:noticeId
 app.get('/api/notices/download/:noticeId', authenticate, async (req: Request, res: Response): Promise<any> => {
   try {
-    const r = await pool.query(`SELECT ln.*, t.tenant_name, t.tenant_email, ru.unit_name, p.title AS project_title, p.project_number FROM legal_notices ln JOIN tenancies t ON t.id = ln.tenancy_id JOIN rental_units ru ON ru.id = ln.unit_id JOIN projects p ON p.id = ln.project_id WHERE ln.id = $1`, [req.params.noticeId]);
+    const r = await pool.query(`SELECT ln.*, t.tenant_name, t.tenant_email, ru.unit_name, p.title AS project_title, p.project_number FROM legal_notices ln JOIN tenancies t ON t.id = ln.tenancy_id JOIN rental_units ru ON ru.id = ln.unit_id LEFT JOIN projects p ON p.id = ln.project_id WHERE ln.id = $1`, [req.params.noticeId]);
     if (!r.rows.length) return res.status(404).json({ error: 'Notice not found' });
     const n = r.rows[0];
     const noticeHtml = buildNoticeHTML({ noticeNumber: n.notice_number, noticeType: n.notice_type, tenantName: n.tenant_name, tenantEmail: n.tenant_email, unitName: n.unit_name, projectTitle: n.project_title, projectNumber: n.project_number, amountOverdue: parseFloat(n.amount_overdue), daysOverdue: n.days_overdue, responseDeadline: new Date(n.response_deadline).toLocaleDateString('en-GB', { day:'2-digit', month:'long', year:'numeric' }), issuedAt: new Date(n.issued_at).toLocaleDateString('en-GB', { day:'2-digit', month:'long', year:'numeric' }), ledgerHash: n.ledger_hash });
@@ -6062,7 +6073,7 @@ app.get('/api/flex-pay/receipt/:contributionId', authenticate, async (req: Reque
        JOIN flex_pay_vaults fpv ON fpv.id   = fc.vault_id
        JOIN tenancies t          ON t.id    = fpv.tenancy_id
        JOIN rental_units ru      ON ru.id   = fpv.unit_id
-       JOIN projects p           ON p.id    = fpv.project_id
+       LEFT JOIN projects p      ON p.id    = fpv.project_id
        WHERE fc.id = $1`,
       [contributionId]
     );
@@ -6128,14 +6139,17 @@ app.get('/api/tenant/my-tenancy', authenticate, async (req: Request, res: Respon
   const userId = (req as any).userId;
   try {
     // First try tenant_user_id link
+    // LEFT JOIN projects so tenancies where project_id is NULL (legacy or not yet backfilled) still return
     let tenancy = await pool.query(
       `SELECT t.id AS tenancy_id, t.unit_id, t.project_id, t.tenant_name, t.tenant_email,
               t.guarantor_json, t.digital_signature_url, t.tenant_score,
               t.former_landlord_contact, t.reason_for_quit, t.litigation_history,
-              ru.unit_name, p.title AS project_title, p.project_number
+              ru.unit_name,
+              COALESCE(p.title, 'N/A')          AS project_title,
+              COALESCE(p.project_number, 'N/A') AS project_number
        FROM tenancies t
-       JOIN rental_units ru ON ru.id = t.unit_id
-       JOIN projects     p  ON p.id  = t.project_id
+       JOIN      rental_units ru ON ru.id = t.unit_id
+       LEFT JOIN projects     p  ON p.id  = t.project_id
        WHERE t.tenant_user_id = $1 AND t.status = 'ACTIVE'
        ORDER BY t.created_at DESC LIMIT 1`,
       [userId]
@@ -6148,10 +6162,12 @@ app.get('/api/tenant/my-tenancy', authenticate, async (req: Request, res: Respon
           `SELECT t.id AS tenancy_id, t.unit_id, t.project_id, t.tenant_name, t.tenant_email,
                   t.guarantor_json, t.digital_signature_url, t.tenant_score,
                   t.former_landlord_contact, t.reason_for_quit, t.litigation_history,
-                  ru.unit_name, p.title AS project_title, p.project_number
+                  ru.unit_name,
+                  COALESCE(p.title, 'N/A')          AS project_title,
+                  COALESCE(p.project_number, 'N/A') AS project_number
            FROM tenancies t
-           JOIN rental_units ru ON ru.id = t.unit_id
-           JOIN projects     p  ON p.id  = t.project_id
+           JOIN      rental_units ru ON ru.id = t.unit_id
+           LEFT JOIN projects     p  ON p.id  = t.project_id
            WHERE t.tenant_email = $1 AND t.status = 'ACTIVE'
            ORDER BY t.created_at DESC LIMIT 1`,
           [userRes.rows[0].email]
@@ -6192,7 +6208,7 @@ app.post('/api/messaging/send', authenticate, async (req: Request, res: Response
               ru.unit_name, p.title AS project_title, p.project_number, p.sponsor_id
        FROM tenancies t
        JOIN rental_units ru ON ru.id = t.unit_id
-       JOIN projects     p  ON p.id  = t.project_id
+       LEFT JOIN projects p ON p.id  = t.project_id
        WHERE t.id = $1`,
       [tenancy_id]
     );
@@ -6286,7 +6302,7 @@ app.post('/api/flex-pay/contribute', authenticate, async (req: Request, res: Res
            FROM flex_pay_vaults fpv
            JOIN tenancies    t   ON t.id   = fpv.tenancy_id
            JOIN rental_units ru  ON ru.id  = fpv.unit_id
-           JOIN projects     p   ON p.id   = fpv.project_id
+           LEFT JOIN projects p  ON p.id   = fpv.project_id
            WHERE fpv.id = $1`,
           [vault_id]
         );
@@ -6859,6 +6875,19 @@ app.post('/api/tenant/onboard', async (req: Request, res: Response): Promise<any
       );
       tenancyId = tenRes.rows[0].id;
       await client.query(`UPDATE rental_units SET status='OCCUPIED' WHERE id=$1`, [unitId]);
+    }
+    // ── Auto-link tenant_user_id if a user account exists with this email ──
+    // This ensures dashboard works immediately after onboarding even if user
+    // registered before being assigned to a unit.
+    const userLink = await client.query(
+      `SELECT id FROM users WHERE email = $1 AND role = 'TENANT' LIMIT 1`,
+      [email.toLowerCase().trim()]
+    );
+    if (userLink.rows.length) {
+      await client.query(
+        `UPDATE tenancies SET tenant_user_id = $1 WHERE id = $2 AND tenant_user_id IS NULL`,
+        [userLink.rows[0].id, tenancyId]
+      );
     }
     const existingVault = await client.query(`SELECT id FROM flex_pay_vaults WHERE tenancy_id=$1 AND status IN ('ACTIVE','FUNDED_READY')`, [tenancyId]);
     let vaultId: string | null = null;
