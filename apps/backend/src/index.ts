@@ -538,26 +538,30 @@ const ensureTablesExist = async () => {
       ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified    BOOLEAN   DEFAULT false;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified_at TIMESTAMP;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_enabled      BOOLEAN   DEFAULT false;
-
-      -- ── Expand role CHECK constraint to include DEVELOPER and TENANT ────────
-      -- Drop old constraint (name may vary) and recreate with all 9 roles
+-- ── Expand role CHECK constraint to include DEVELOPER and TENANT ────────
       DO $$ 
-DECLARE 
-    _cname RECORD; -- ✅ Must be RECORD type for a FOR loop in PL/pgSQL
-BEGIN 
-    FOR _cname IN 
-        SELECT column_name 
-        FROM information_schema.columns 
-        WHERE table_name = 'tenancies' AND column_name = 'tenant_user_id'
-    LOOP 
-        -- logic here
-    END LOOP; 
-END $$;
-      $role_fix$;
+      DECLARE 
+          _cname RECORD; 
+      BEGIN 
+          -- Logic to verify the column exists before we attempt to use it
+          FOR _cname IN 
+              SELECT column_name 
+              FROM information_schema.columns 
+              WHERE table_name = 'tenancies' AND column_name = 'tenant_user_id'
+          LOOP 
+              RAISE NOTICE 'Verified column: %', _cname.column_name;
+          END LOOP; 
+      END $$;
+
+      -- Recreate role constraint with all 9 active roles
       ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
       ALTER TABLE users ADD CONSTRAINT users_role_check
         CHECK (role IN ('INVESTOR','CONTRACTOR','GOVERNMENT','ADMIN','VERIFIER','SUPPLIER','BANK','DEVELOPER','TENANT'));
 
+      -- ── Add project_id to tenancies if missing ─────────────────────────────
+      ALTER TABLE tenancies ADD COLUMN IF NOT EXISTS project_id UUID REFERENCES projects(id);
+      CREATE INDEX IF NOT EXISTS idx_ten_project ON tenancies(project_id);
+      
       CREATE TABLE IF NOT EXISTS email_verification_tokens (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
