@@ -542,7 +542,6 @@ const ensureTablesExist = async () => {
       -- ── Expand role CHECK constraint to include DEVELOPER and TENANT ────────
       -- Drop old constraint (name may vary) and recreate with all 9 roles
       DO $role_fix$
-      DECLARE _cname TEXT;
       BEGIN
         ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
         ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_fkey;
