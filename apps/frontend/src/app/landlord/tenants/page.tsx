@@ -1,15 +1,10 @@
 'use client';
 /**
  * /landlord/tenants
- *
- * Smart redirect page for the Navbar "Manage Tenants" link.
- *
- * Behaviour:
- *  • 1 project  → redirect straight to /projects/[id]/rental-management (Tenants tab pre-selected)
- *  • 2+ projects → show a project picker so the landlord selects which property to manage
- *  • 0 projects  → prompt to submit first project
+ * Smart redirect — 1 project → go straight to rental-management?tab=tenants
+ *                  2+ projects → project picker
+ *                  0 projects  → prompt to submit
  */
-
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
@@ -20,17 +15,13 @@ import { useAuth } from '@/lib/AuthContext';
 import { Users, Building2, Loader2, ArrowRight, Plus, ChevronRight } from 'lucide-react';
 
 interface Project {
-  id: string;
-  project_number: string;
-  title: string;
-  location: string;
-  country: string;
-  status: string;
+  id: string; project_number: string; title: string;
+  location: string; country: string; status: string;
 }
 
 export default function LandlordTenantsPage() {
   const router = useRouter();
-  const { user, isLoading: authLoading } = useAuth();
+  const { isLoading: authLoading } = useAuth();
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading,  setLoading]  = useState(true);
 
@@ -40,10 +31,7 @@ export default function LandlordTenantsPage() {
       .then(res => {
         const list: Project[] = res.data.projects ?? [];
         setProjects(list);
-        // Auto-redirect if only one project
-        if (list.length === 1) {
-          router.replace(`/projects/${list[0].id}/rental-management?tab=tenants`);
-        }
+        if (list.length === 1) router.replace(`/projects/${list[0].id}/rental-management?tab=tenants`);
       })
       .catch(() => setProjects([]))
       .finally(() => setLoading(false));
@@ -55,7 +43,6 @@ export default function LandlordTenantsPage() {
     </div>
   );
 
-  // 0 projects
   if (projects.length === 0) return (
     <div className="min-h-screen bg-[#050505] text-white flex flex-col">
       <Navbar />
@@ -68,8 +55,7 @@ export default function LandlordTenantsPage() {
             <h1 className="text-xl font-black uppercase tracking-tight">No Projects Yet</h1>
             <p className="text-zinc-500 text-sm mt-2">Submit your first property project to start onboarding tenants and managing units.</p>
           </div>
-          <Link href="/projects/submit"
-            className="inline-flex items-center gap-2 px-6 py-3 bg-teal-500 text-black font-black text-xs uppercase tracking-widest rounded-xl hover:bg-teal-400 transition-all">
+          <Link href="/projects/submit" className="inline-flex items-center gap-2 px-6 py-3 bg-teal-500 text-black font-black text-xs uppercase tracking-widest rounded-xl hover:bg-teal-400 transition-all">
             <Plus size={13} /> Submit Your First Project
           </Link>
         </div>
@@ -78,7 +64,6 @@ export default function LandlordTenantsPage() {
     </div>
   );
 
-  // Multiple projects — show picker
   return (
     <div className="min-h-screen bg-[#050505] text-white flex flex-col">
       <Navbar />
@@ -88,14 +73,10 @@ export default function LandlordTenantsPage() {
           <h1 className="text-2xl font-black uppercase tracking-tight">Manage Tenants</h1>
           <p className="text-zinc-500 text-sm mt-1">Select a property to manage its tenants</p>
         </div>
-
         <div className="space-y-3">
           {projects.map(p => (
-            <Link
-              key={p.id}
-              href={`/projects/${p.id}/rental-management?tab=tenants`}
-              className="flex items-center justify-between p-5 rounded-2xl border border-zinc-800 bg-zinc-900/20 hover:border-teal-500/40 hover:bg-teal-500/5 transition-all group"
-            >
+            <Link key={p.id} href={`/projects/${p.id}/rental-management?tab=tenants`}
+              className="flex items-center justify-between p-5 rounded-2xl border border-zinc-800 bg-zinc-900/20 hover:border-teal-500/40 hover:bg-teal-500/5 transition-all group">
               <div className="flex items-center gap-4">
                 <div className="w-10 h-10 rounded-xl bg-zinc-800 border border-zinc-700 flex items-center justify-center flex-shrink-0 group-hover:border-teal-500/40">
                   <Users size={16} className="text-teal-500" />
@@ -106,9 +87,7 @@ export default function LandlordTenantsPage() {
                 </div>
               </div>
               <div className="flex items-center gap-3 flex-shrink-0">
-                <span className={`text-[8px] px-2 py-0.5 rounded border font-bold uppercase ${
-                  p.status === 'ACTIVE' ? 'border-teal-500/40 text-teal-500' : 'border-zinc-700 text-zinc-500'
-                }`}>{p.status}</span>
+                <span className={`text-[8px] px-2 py-0.5 rounded border font-bold uppercase ${p.status === 'ACTIVE' ? 'border-teal-500/40 text-teal-500' : 'border-zinc-700 text-zinc-500'}`}>{p.status}</span>
                 <ChevronRight size={16} className="text-zinc-600 group-hover:text-teal-500 transition-colors" />
               </div>
             </Link>

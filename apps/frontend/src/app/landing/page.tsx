@@ -1,6 +1,7 @@
 'use client';
 import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
+import Image from 'next/image';
 import {
   ArrowRight, ShieldCheck, TrendingUp, Building2, Users, Globe,
   CheckCircle2, Lock, Eye, Cpu, Scale, FileText, MapPin,
@@ -145,7 +146,9 @@ export default function LandingPage() {
       <nav className="sticky top-0 z-50 border-b border-zinc-900 bg-black/75 backdrop-blur-xl">
         <div className="max-w-7xl mx-auto px-6 py-3.5 flex items-center justify-between gap-4">
           <Link href="/" className="flex items-center gap-2.5 flex-shrink-0">
-            <div className="w-5 h-5 bg-teal-500 rounded-sm rotate-45 flex-shrink-0" />
+            <div className="relative w-6 h-6 flex-shrink-0">
+              <Image src="/nested_ark_icon.png" alt="Nested Ark OS" fill sizes="24px" className="object-contain" priority />
+            </div>
             <span className="text-sm font-black tracking-[0.15em] uppercase hidden sm:block">
               Nested Ark <span className="text-teal-500 text-[10px] align-top">OS</span>
             </span>
@@ -690,7 +693,9 @@ export default function LandingPage() {
         <div className="max-w-7xl mx-auto grid md:grid-cols-5 gap-8 mb-10">
           <div className="md:col-span-2 space-y-4">
             <div className="flex items-center gap-2">
-              <div className="w-4 h-4 bg-teal-500 rounded-sm rotate-45" />
+              <div className="relative w-5 h-5 flex-shrink-0">
+                <Image src="/nested_ark_icon.png" alt="Nested Ark OS" fill sizes="20px" className="object-contain" />
+              </div>
               <p className="text-sm font-black uppercase tracking-widest">Nested Ark OS</p>
             </div>
             <p className="text-zinc-600 text-xs leading-relaxed max-w-xs">

@@ -1,14 +1,10 @@
 'use client';
 /**
  * /landlord/receipts
- *
- * Smart redirect for the Navbar "View Receipts & Ledger" link.
- *
- *  • 1 project  → redirect straight to /projects/[id]/rental-management?tab=receipts
- *  • 2+ projects → project picker
- *  • 0 projects  → prompt to submit
+ * Smart redirect — 1 project → rental-management?tab=receipts
+ *                  2+ projects → project picker
+ *                  0 projects  → prompt to submit
  */
-
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
@@ -19,17 +15,13 @@ import { useAuth } from '@/lib/AuthContext';
 import { Receipt, Building2, Loader2, Plus, ChevronRight } from 'lucide-react';
 
 interface Project {
-  id: string;
-  project_number: string;
-  title: string;
-  location: string;
-  country: string;
-  status: string;
+  id: string; project_number: string; title: string;
+  location: string; country: string; status: string;
 }
 
 export default function LandlordReceiptsPage() {
   const router = useRouter();
-  const { user, isLoading: authLoading } = useAuth();
+  const { isLoading: authLoading } = useAuth();
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading,  setLoading]  = useState(true);
 
@@ -39,9 +31,7 @@ export default function LandlordReceiptsPage() {
       .then(res => {
         const list: Project[] = res.data.projects ?? [];
         setProjects(list);
-        if (list.length === 1) {
-          router.replace(`/projects/${list[0].id}/rental-management?tab=receipts`);
-        }
+        if (list.length === 1) router.replace(`/projects/${list[0].id}/rental-management?tab=receipts`);
       })
       .catch(() => setProjects([]))
       .finally(() => setLoading(false));
@@ -65,8 +55,7 @@ export default function LandlordReceiptsPage() {
             <h1 className="text-xl font-black uppercase tracking-tight">No Projects Yet</h1>
             <p className="text-zinc-500 text-sm mt-2">Submit your first property project to start seeing rent receipts and payment history.</p>
           </div>
-          <Link href="/projects/submit"
-            className="inline-flex items-center gap-2 px-6 py-3 bg-teal-500 text-black font-black text-xs uppercase tracking-widest rounded-xl hover:bg-teal-400 transition-all">
+          <Link href="/projects/submit" className="inline-flex items-center gap-2 px-6 py-3 bg-teal-500 text-black font-black text-xs uppercase tracking-widest rounded-xl hover:bg-teal-400 transition-all">
             <Plus size={13} /> Submit Your First Project
           </Link>
         </div>
@@ -84,14 +73,10 @@ export default function LandlordReceiptsPage() {
           <h1 className="text-2xl font-black uppercase tracking-tight">Receipts & Ledger</h1>
           <p className="text-zinc-500 text-sm mt-1">Select the property whose payment history you want to view</p>
         </div>
-
         <div className="space-y-3">
           {projects.map(p => (
-            <Link
-              key={p.id}
-              href={`/projects/${p.id}/rental-management?tab=receipts`}
-              className="flex items-center justify-between p-5 rounded-2xl border border-zinc-800 bg-zinc-900/20 hover:border-amber-500/30 hover:bg-amber-500/5 transition-all group"
-            >
+            <Link key={p.id} href={`/projects/${p.id}/rental-management?tab=receipts`}
+              className="flex items-center justify-between p-5 rounded-2xl border border-zinc-800 bg-zinc-900/20 hover:border-amber-500/30 hover:bg-amber-500/5 transition-all group">
               <div className="flex items-center gap-4">
                 <div className="w-10 h-10 rounded-xl bg-zinc-800 border border-zinc-700 flex items-center justify-center flex-shrink-0 group-hover:border-amber-500/30">
                   <Receipt size={16} className="text-amber-400" />
@@ -102,9 +87,7 @@ export default function LandlordReceiptsPage() {
                 </div>
               </div>
               <div className="flex items-center gap-3 flex-shrink-0">
-                <span className={`text-[8px] px-2 py-0.5 rounded border font-bold uppercase ${
-                  p.status === 'ACTIVE' ? 'border-teal-500/40 text-teal-500' : 'border-zinc-700 text-zinc-500'
-                }`}>{p.status}</span>
+                <span className={`text-[8px] px-2 py-0.5 rounded border font-bold uppercase ${p.status === 'ACTIVE' ? 'border-teal-500/40 text-teal-500' : 'border-zinc-700 text-zinc-500'}`}>{p.status}</span>
                 <ChevronRight size={16} className="text-zinc-600 group-hover:text-amber-400 transition-colors" />
               </div>
             </Link>

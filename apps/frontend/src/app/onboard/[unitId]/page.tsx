@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { useParams, useRouter } from 'next/navigation';
+import BrandLogo from '@/components/BrandLogo';
 
 // ── Defensive numeric helpers — never crash on undefined/null/NaN ──────────
 const safeN = (v: any): number => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
@@ -307,10 +308,13 @@ export default function OnboardPage() {
     <div className="min-h-screen bg-black text-white">
       {/* Header */}
       <div className="border-b border-zinc-900 px-4 py-4 flex items-center justify-between">
-        <div>
-          <p className="text-xs text-teal-500 font-bold uppercase tracking-widest">Nested Ark</p>
-          <p className="text-sm font-bold text-white">{unit?.unit_name}</p>
-          <p className="text-xs text-zinc-500">{unit?.project_title}</p>
+        <div className="flex items-center gap-3">
+          <BrandLogo size={24} showText={false} />
+          <div>
+            <p className="text-xs text-teal-500 font-bold uppercase tracking-widest">Nested Ark</p>
+            <p className="text-sm font-bold text-white">{unit?.unit_name}</p>
+            <p className="text-xs text-zinc-500">{unit?.project_title}</p>
+          </div>
         </div>
         <div className="text-right">
           <p className="text-xs text-zinc-500">Step {step} of {STEPS.length}</p>

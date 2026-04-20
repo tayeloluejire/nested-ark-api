@@ -1,8 +1,38 @@
 'use client';
+/**
+ * src/app/onboard/page.tsx  — Tenant Self-Registration
+ *
+ * Fixes applied:
+ * ──────────────────────────────────────────────────────────────────────────
+ * 1. KEYBOARD MINIMIZING (mobile UX)
+ *    Root cause A: Field was defined INSIDE OnboardContent, so React
+ *    destroyed+recreated the <input> on every keystroke → keyboard closed.
+ *    Fix: Field is now a named function defined OUTSIDE the component.
+ *
+ *    Root cause B: `min-h-screen` (100vh) doesn't shrink when the soft
+ *    keyboard opens on iOS/Android. The page reflowed, the layout jumped,
+ *    focus was lost and the keyboard dismissed.
+ *    Fix: `min-h-[100dvh]` (dynamic viewport height) + `overflow-y-auto`
+ *    scroll container + `pb-[env(keyboard-inset-height,80px)]` iOS hint.
+ *
+ * 2. BRAND LOGO
+ *    Was a CSS teal diamond `<div className="rotate-45">`.
+ *    Fixed: uses <BrandLogo> component → /public/nested_ark_icon.png.
+ *
+ * 3. POST-SIGNUP ROUTING
+ *    Was: Link href="/login" → login page → getRoleRoute → /projects/my
+ *    (DEVELOPER/Landlord page!) because token wasn't stored before redirect.
+ *    Fix: token stored in localStorage immediately after registration,
+ *    then router.replace('/tenant/dashboard') — no second login needed,
+ *    back-button disabled so tenant can't return to the form.
+ * ──────────────────────────────────────────────────────────────────────────
+ */
+
 import { Suspense, useState } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import Image from 'next/image';
+import BrandLogo from '@/components/BrandLogo';
 import {
   Home, User, Mail, Phone, Shield, CheckCircle2,
   ArrowRight, Loader2, Building2, Wallet, FileText,
@@ -31,14 +61,13 @@ const STEPS = [
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Reusable field — defined OUTSIDE the component so it never re-mounts on
-// re-render (this was the root cause of the keyboard-dismiss / minimize bug:
-// React was re-creating the Field function component on every keystroke,
-// which caused the input to lose focus and the mobile keyboard to close).
+// Field — defined OUTSIDE the component tree.
+// If defined inside, React creates a new component type on every render
+// which causes the input to unmount/remount → keyboard dismisses on mobile.
 // ─────────────────────────────────────────────────────────────────────────────
 function Field({
-  label, id, type = 'text', value, onChange, placeholder,
-  required = true, suffix,
+  label, id, type = 'text', value, onChange,
+  placeholder, required = true, suffix,
 }: {
   label: string; id: string; type?: string; value: string;
   onChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
@@ -61,7 +90,6 @@ function Field({
           onChange={onChange}
           placeholder={placeholder}
           autoComplete="off"
-          // inputMode helps mobile keyboards show correct layout
           inputMode={
             type === 'email' ? 'email' :
             type === 'tel'   ? 'tel'   : 'text'
@@ -77,7 +105,7 @@ function Field({
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Inner component — uses useSearchParams (must be inside Suspense)
+// Inner page content — isolated inside Suspense for useSearchParams
 // ─────────────────────────────────────────────────────────────────────────────
 function OnboardContent() {
   const searchParams = useSearchParams();
@@ -96,13 +124,9 @@ function OnboardContent() {
   const [done,     setDone]     = useState(false);
 
   const [form, setForm] = useState<OnboardForm>({
-    full_name:        '',
-    email:            '',
-    phone:            '',
-    password:         '',
-    confirm_password: '',
-    unit_id:          unitParam,
-    ref:              refParam,
+    full_name: '', email: '', phone: '',
+    password: '', confirm_password: '',
+    unit_id: unitParam, ref: refParam,
   });
 
   const set = (k: keyof OnboardForm) =>
@@ -118,7 +142,7 @@ function OnboardContent() {
     form.password.length >= 8 &&
     form.password === form.confirm_password;
 
-  // ── Submit: register → store token → go straight to tenant dashboard ──────
+  // ── Registration: store token immediately, route directly to tenant dashboard ──
   const handleSubmit = async () => {
     setError('');
     setLoading(true);
@@ -134,11 +158,9 @@ function OnboardContent() {
         landlord_id: landlordId     || undefined,
       });
 
-      // Store token so the user is immediately logged in — no second login needed
+      // Store token so user is already logged in — no second login step needed
       const token = res.data?.tokens?.access_token ?? res.data?.token;
-      if (token) {
-        localStorage.setItem('token', token);
-      }
+      if (token) localStorage.setItem('token', token);
 
       setDone(true);
       setStep(4);
@@ -151,13 +173,12 @@ function OnboardContent() {
 
   const nextStep = () => { setError(''); setStep(s => s + 1); };
 
-  // ── Step progress bar ──────────────────────────────────────────────────────
+  // ── Progress bar ───────────────────────────────────────────────────────────
   const ProgressBar = () => (
     <div className="flex items-center gap-0 mb-8">
       {STEPS.slice(0, 3).map((s, i) => {
-        const Icon      = s.icon;
-        const active    = step === s.id;
-        const completed = step > s.id;
+        const Icon = s.icon;
+        const active = step === s.id, completed = step > s.id;
         return (
           <div key={s.id} className="flex items-center flex-1">
             <div className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg transition-all ${
@@ -170,9 +191,7 @@ function OnboardContent() {
                 active ? 'text-teal-400' : completed ? 'text-teal-600' : 'text-zinc-600'
               }`}>{s.label}</span>
             </div>
-            {i < 2 && (
-              <div className={`flex-1 h-px mx-1 ${step > s.id ? 'bg-teal-500/30' : 'bg-zinc-800'}`} />
-            )}
+            {i < 2 && <div className={`flex-1 h-px mx-1 ${step > s.id ? 'bg-teal-500/30' : 'bg-zinc-800'}`} />}
           </div>
         );
       })}
@@ -181,54 +200,31 @@ function OnboardContent() {
 
   return (
     /*
-     * KEY UX FIX — keyboard collapse on mobile:
-     *
-     * OLD: `min-h-screen flex flex-col` with a centred body.
-     *      When the mobile keyboard opens it shrinks the viewport.
-     *      `min-h-screen` tries to fill 100vh which is now SMALLER,
-     *      React re-lays out, the page jumps, inputs blur, keyboard closes.
-     *
-     * NEW: `min-h-[100dvh]` uses the DYNAMIC viewport unit — it always
-     *      equals the visible area including/excluding keyboard.
-     *      The scroll container (`overflow-y-auto`) lets content scroll
-     *      behind the keyboard without the page collapsing.
-     *      `pb-[env(keyboard-inset-height,80px)]` is an iOS 15+ hint that
-     *      pushes content above the software keyboard.
+     * KEYBOARD UX FIX:
+     * • min-h-[100dvh]  — dynamic viewport height; shrinks with keyboard on mobile
+     * • flex flex-col   — top-bar + scroll-body + footer stack properly
+     * • overflow-y-auto — content scrolls behind keyboard; no layout collapse
+     * • pb-[env(...)]   — iOS 15+ keyboard-inset hint pushes content above KB
      */
     <div className="min-h-[100dvh] bg-black flex flex-col">
 
-      {/* ── Top bar ── */}
+      {/* Top bar */}
       <div className="flex-shrink-0 border-b border-zinc-900 px-6 py-4 flex items-center justify-between">
-        <Link href="/" className="flex items-center gap-2.5">
-          {/* Brand logo — uses the real nested_ark_icon.png asset */}
-          <div className="relative w-7 h-7 flex-shrink-0">
-            <Image
-              src="/nested_ark_icon.png"
-              alt="Nested Ark OS"
-              fill
-              sizes="28px"
-              className="object-contain"
-              priority
-            />
-          </div>
-          <span className="text-white font-black text-sm uppercase tracking-tighter">
-            Nested Ark <span className="text-teal-500">OS</span>
-          </span>
-        </Link>
+        <BrandLogo size={28} />
         <p className="text-[9px] text-zinc-600 uppercase font-bold tracking-[0.2em]">
           Tenant Onboarding
         </p>
       </div>
 
-      {/* ── Scrollable body — critical for keyboard UX ── */}
+      {/* Scrollable body — critical for keyboard UX on mobile */}
       <div
         className="flex-1 overflow-y-auto"
-        style={{ paddingBottom: 'max(env(keyboard-inset-height, 0px), 24px)' }}
+        style={{ paddingBottom: 'max(env(keyboard-inset-height, 0px), 32px)' }}
       >
         <div className="flex flex-col items-center px-6 py-10">
           <div className="w-full max-w-md">
 
-            {/* Unit banner */}
+            {/* Unit banner from invite link */}
             {unitName && (
               <div className="mb-6 flex items-center gap-3 p-4 rounded-2xl border border-teal-500/20 bg-teal-500/5">
                 <div className="w-9 h-9 rounded-xl bg-teal-500/10 border border-teal-500/20 flex items-center justify-center flex-shrink-0">
@@ -241,7 +237,7 @@ function OnboardContent() {
               </div>
             )}
 
-            {/* Page title */}
+            {/* Header */}
             <div className="mb-8">
               <p className="text-[9px] text-teal-500 uppercase font-black tracking-[0.25em] mb-2">
                 {done ? 'Welcome aboard' : `Step ${step} of 3`}
@@ -260,7 +256,6 @@ function OnboardContent() {
               </p>
             </div>
 
-            {/* Step indicator */}
             {!done && <ProgressBar />}
 
             {/* Error */}
@@ -271,27 +266,14 @@ function OnboardContent() {
               </div>
             )}
 
-            {/* ── STEP 1: Identity ── */}
+            {/* ── STEP 1 ── */}
             {step === 1 && (
               <div className="space-y-4">
-                <Field
-                  label="Full Name" id="full_name"
-                  value={form.full_name} onChange={set('full_name')}
-                  placeholder="e.g. Taiwo Ejire"
-                />
-                <Field
-                  label="Email Address" id="email" type="email"
-                  value={form.email} onChange={set('email')}
-                  placeholder="you@example.com"
-                />
-                <Field
-                  label="Phone Number" id="phone" type="tel"
-                  value={form.phone} onChange={set('phone')}
-                  placeholder="+234 800 000 0000"
-                />
+                <Field label="Full Name"     id="full_name" value={form.full_name} onChange={set('full_name')} placeholder="e.g. Taiwo Ejire" />
+                <Field label="Email Address" id="email"     type="email" value={form.email}     onChange={set('email')}     placeholder="you@example.com" />
+                <Field label="Phone Number"  id="phone"     type="tel"   value={form.phone}     onChange={set('phone')}     placeholder="+234 800 000 0000" />
                 <button
-                  onClick={nextStep}
-                  disabled={!step1Valid}
+                  onClick={nextStep} disabled={!step1Valid}
                   className="w-full mt-2 flex items-center justify-center gap-2 py-4 rounded-2xl bg-teal-500 text-black text-[11px] font-black uppercase tracking-[0.2em] hover:bg-teal-400 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   Continue <ArrowRight size={14} />
@@ -299,41 +281,27 @@ function OnboardContent() {
               </div>
             )}
 
-            {/* ── STEP 2: Security ── */}
+            {/* ── STEP 2 ── */}
             {step === 2 && (
               <div className="space-y-4">
                 <Field
-                  label="Password" id="password"
-                  type={showPass ? 'text' : 'password'}
-                  value={form.password} onChange={set('password')}
-                  placeholder="Minimum 8 characters"
+                  label="Password" id="password" type={showPass ? 'text' : 'password'}
+                  value={form.password} onChange={set('password')} placeholder="Minimum 8 characters"
                   suffix={
-                    <button
-                      type="button"
-                      onClick={() => setShowPass(v => !v)}
-                      className="text-zinc-600 hover:text-zinc-300 transition-colors"
-                    >
+                    <button type="button" onClick={() => setShowPass(v => !v)} className="text-zinc-600 hover:text-zinc-300 transition-colors">
                       {showPass ? <EyeOff size={14} /> : <Eye size={14} />}
                     </button>
                   }
                 />
                 <Field
-                  label="Confirm Password" id="confirm_password"
-                  type={showConf ? 'text' : 'password'}
-                  value={form.confirm_password} onChange={set('confirm_password')}
-                  placeholder="Repeat your password"
+                  label="Confirm Password" id="confirm_password" type={showConf ? 'text' : 'password'}
+                  value={form.confirm_password} onChange={set('confirm_password')} placeholder="Repeat your password"
                   suffix={
-                    <button
-                      type="button"
-                      onClick={() => setShowConf(v => !v)}
-                      className="text-zinc-600 hover:text-zinc-300 transition-colors"
-                    >
+                    <button type="button" onClick={() => setShowConf(v => !v)} className="text-zinc-600 hover:text-zinc-300 transition-colors">
                       {showConf ? <EyeOff size={14} /> : <Eye size={14} />}
                     </button>
                   }
                 />
-
-                {/* Password strength */}
                 <div className="grid grid-cols-2 gap-2">
                   {[
                     { ok: form.password.length >= 8,                                          label: '8+ characters'   },
@@ -347,29 +315,18 @@ function OnboardContent() {
                     </div>
                   ))}
                 </div>
-
                 <div className="flex gap-2 mt-2">
-                  <button
-                    onClick={() => setStep(1)}
-                    className="flex-1 py-4 rounded-2xl border border-zinc-800 text-zinc-400 text-[11px] font-black uppercase tracking-[0.2em] hover:border-zinc-600 transition-all"
-                  >
-                    Back
-                  </button>
-                  <button
-                    onClick={nextStep}
-                    disabled={!step2Valid}
-                    className="flex-[2] flex items-center justify-center gap-2 py-4 rounded-2xl bg-teal-500 text-black text-[11px] font-black uppercase tracking-[0.2em] hover:bg-teal-400 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-                  >
+                  <button onClick={() => setStep(1)} className="flex-1 py-4 rounded-2xl border border-zinc-800 text-zinc-400 text-[11px] font-black uppercase tracking-[0.2em] hover:border-zinc-600 transition-all">Back</button>
+                  <button onClick={nextStep} disabled={!step2Valid} className="flex-[2] flex items-center justify-center gap-2 py-4 rounded-2xl bg-teal-500 text-black text-[11px] font-black uppercase tracking-[0.2em] hover:bg-teal-400 transition-all disabled:opacity-40 disabled:cursor-not-allowed">
                     Continue <ArrowRight size={14} />
                   </button>
                 </div>
               </div>
             )}
 
-            {/* ── STEP 3: Confirm & Activate ── */}
+            {/* ── STEP 3 ── */}
             {step === 3 && (
               <div className="space-y-4">
-                {/* Summary */}
                 <div className="p-5 rounded-2xl border border-zinc-800 bg-zinc-900/50 space-y-3">
                   <p className="text-[9px] text-zinc-500 uppercase font-black tracking-[0.25em]">Your Account Summary</p>
                   {[
@@ -393,15 +350,14 @@ function OnboardContent() {
                   })}
                 </div>
 
-                {/* What you get */}
                 <div className="p-4 rounded-2xl border border-teal-500/15 bg-teal-500/5">
                   <p className="text-[9px] text-teal-500 uppercase font-black tracking-[0.25em] mb-3">What activates now</p>
                   <div className="space-y-2">
                     {[
-                      { icon: Wallet,    text: 'Flex-Pay Vault — pay rent in instalments'     },
-                      { icon: FileText,  text: 'Digital receipts — court-admissible records'   },
-                      { icon: Shield,    text: 'Encrypted tenancy ledger'                       },
-                      { icon: Building2, text: 'Direct line to your landlord & property team'  },
+                      { icon: Wallet,    text: 'Flex-Pay Vault — pay rent in instalments'    },
+                      { icon: FileText,  text: 'Digital receipts — court-admissible records'  },
+                      { icon: Shield,    text: 'Encrypted tenancy ledger'                      },
+                      { icon: Building2, text: 'Direct line to your landlord & property team' },
                     ].map(item => {
                       const Icon = item.icon;
                       return (
@@ -415,27 +371,15 @@ function OnboardContent() {
                 </div>
 
                 <div className="flex gap-2">
-                  <button
-                    onClick={() => setStep(2)}
-                    className="flex-1 py-4 rounded-2xl border border-zinc-800 text-zinc-400 text-[11px] font-black uppercase tracking-[0.2em] hover:border-zinc-600 transition-all"
-                  >
-                    Back
-                  </button>
-                  <button
-                    onClick={handleSubmit}
-                    disabled={loading}
-                    className="flex-[2] flex items-center justify-center gap-2 py-4 rounded-2xl bg-teal-500 text-black text-[11px] font-black uppercase tracking-[0.2em] hover:bg-teal-400 transition-all disabled:opacity-60"
-                  >
-                    {loading
-                      ? <><Loader2 size={14} className="animate-spin" /> Activating…</>
-                      : <>Activate Vault <ArrowRight size={14} /></>
-                    }
+                  <button onClick={() => setStep(2)} className="flex-1 py-4 rounded-2xl border border-zinc-800 text-zinc-400 text-[11px] font-black uppercase tracking-[0.2em] hover:border-zinc-600 transition-all">Back</button>
+                  <button onClick={handleSubmit} disabled={loading} className="flex-[2] flex items-center justify-center gap-2 py-4 rounded-2xl bg-teal-500 text-black text-[11px] font-black uppercase tracking-[0.2em] hover:bg-teal-400 transition-all disabled:opacity-60">
+                    {loading ? <><Loader2 size={14} className="animate-spin" /> Activating…</> : <>Activate Vault <ArrowRight size={14} /></>}
                   </button>
                 </div>
               </div>
             )}
 
-            {/* ── STEP 4: Success ── */}
+            {/* ── STEP 4 — Success ── */}
             {step === 4 && done && (
               <div className="text-center space-y-6">
                 <div className="flex items-center justify-center">
@@ -444,44 +388,34 @@ function OnboardContent() {
                   </div>
                 </div>
                 <div>
-                  <p className="text-white font-black text-lg">
-                    Welcome, {form.full_name.split(' ')[0]}.
-                  </p>
-                  <p className="text-zinc-500 text-sm mt-1">
-                    Your Flex-Pay vault is active and your tenancy ledger has been initialised.
-                  </p>
+                  <p className="text-white font-black text-lg">Welcome, {form.full_name.split(' ')[0]}.</p>
+                  <p className="text-zinc-500 text-sm mt-1">Your Flex-Pay vault is active. Your tenancy ledger has been initialised.</p>
                 </div>
                 <div className="space-y-2">
                   {/*
-                   * FIX: was Link href="/login" — which after login routes by role.
-                   * But the user is already logged in (token stored above).
-                   * Now routes directly to /tenant/dashboard.
-                   * router.push used (not Link) to allow a clean replace so
-                   * back-button doesn't return to the onboarding flow.
+                   * ROUTING FIX:
+                   * Token is already stored (see handleSubmit above).
+                   * router.replace keeps history clean — back button won't
+                   * return to this form. Goes directly to TENANT dashboard,
+                   * never to /projects/my (landlord page).
                    */}
                   <button
                     onClick={() => router.replace('/tenant/dashboard')}
                     className="w-full flex items-center justify-center gap-2 py-4 rounded-2xl bg-teal-500 text-black text-[11px] font-black uppercase tracking-[0.2em] hover:bg-teal-400 transition-all"
                   >
-                    Go to My Tenant Dashboard <ChevronRight size={14} />
+                    Open My Tenant Dashboard <ChevronRight size={14} />
                   </button>
-                  <Link
-                    href="/"
-                    className="w-full flex items-center justify-center py-3 rounded-2xl border border-zinc-800 text-zinc-500 text-[11px] font-bold uppercase tracking-[0.15em] hover:border-zinc-600 hover:text-zinc-300 transition-all"
-                  >
+                  <Link href="/" className="w-full flex items-center justify-center py-3 rounded-2xl border border-zinc-800 text-zinc-500 text-[11px] font-bold uppercase tracking-[0.15em] hover:border-zinc-600 hover:text-zinc-300 transition-all">
                     Back to Home
                   </Link>
                 </div>
               </div>
             )}
 
-            {/* Sign-in prompt */}
             {step < 4 && (
               <p className="mt-6 text-center text-[10px] text-zinc-600">
                 Already have an account?{' '}
-                <Link href="/login" className="text-teal-500 hover:text-teal-400 font-bold transition-colors">
-                  Sign in →
-                </Link>
+                <Link href="/login" className="text-teal-500 hover:text-teal-400 font-bold transition-colors">Sign in →</Link>
               </p>
             )}
 
@@ -489,11 +423,9 @@ function OnboardContent() {
         </div>
       </div>
 
-      {/* ── Footer ── */}
+      {/* Footer */}
       <div className="flex-shrink-0 border-t border-zinc-900 px-6 py-4 flex items-center justify-between">
-        <p className="text-[8px] text-zinc-700 uppercase tracking-[0.2em]">
-          © 2026 Impressions &amp; Impacts Ltd · Nested Ark OS
-        </p>
+        <p className="text-[8px] text-zinc-700 uppercase tracking-[0.2em]">© 2026 Impressions &amp; Impacts Ltd · Nested Ark OS</p>
         <div className="flex items-center gap-1.5">
           <div className="h-1.5 w-1.5 rounded-full bg-teal-500 animate-pulse" />
           <span className="text-[8px] text-zinc-700 uppercase tracking-[0.15em]">Secured · Encrypted</span>
@@ -504,7 +436,7 @@ function OnboardContent() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Exported page — Suspense wrapper required for useSearchParams
+// Exported page — Suspense required for useSearchParams (Next.js App Router)
 // ─────────────────────────────────────────────────────────────────────────────
 export default function OnboardPage() {
   return (
@@ -512,12 +444,8 @@ export default function OnboardPage() {
       fallback={
         <div className="min-h-[100dvh] bg-black flex items-center justify-center">
           <div className="flex flex-col items-center gap-4">
-            <div className="relative w-10 h-10">
-              <Image src="/nested_ark_icon.png" alt="Nested Ark OS" fill sizes="40px" className="object-contain animate-pulse" />
-            </div>
-            <p className="text-teal-500 text-[10px] font-black uppercase tracking-[0.25em] animate-pulse">
-              Loading…
-            </p>
+            <BrandLogo size={40} noLink />
+            <p className="text-teal-500 text-[10px] font-black uppercase tracking-[0.25em] animate-pulse">Loading…</p>
           </div>
         </div>
       }

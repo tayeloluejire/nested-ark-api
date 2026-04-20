@@ -2,11 +2,13 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
+import BrandLogo from '@/components/BrandLogo';
 import {
   Wallet, CreditCard, Clock, CheckCircle2, AlertTriangle,
   FileText, Receipt, Download, RefreshCw, Loader2,
   Home, TrendingUp, Bell, ShieldCheck, User, ChevronRight,
-  Gavel, Calendar, DollarSign, Lock,
+  Gavel, Calendar, DollarSign, Lock, LogOut,
 } from 'lucide-react';
 
 // ── Defensive numeric helpers ─────────────────────────────────────────────────
@@ -141,6 +143,26 @@ export default function TenantDashboardPage() {
 
   return (
     <div className="min-h-screen bg-[#050505] text-white">
+
+      {/* ── Branded top bar ── */}
+      <div className="sticky top-0 z-50 border-b border-zinc-900 bg-[#050505]/90 backdrop-blur-xl px-4 py-3 flex items-center justify-between">
+        <BrandLogo size={26} />
+        <div className="flex items-center gap-3">
+          <span className="text-[9px] text-teal-500 font-black uppercase tracking-[0.2em] hidden sm:block">
+            Tenant Portal
+          </span>
+          <button
+            onClick={() => {
+              localStorage.removeItem('token');
+              router.replace('/login');
+            }}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-zinc-800 text-zinc-500 hover:text-red-400 hover:border-red-500/30 text-[9px] font-bold uppercase tracking-widest transition-all"
+          >
+            <LogOut size={11} /> Sign Out
+          </button>
+        </div>
+      </div>
+
       <div className="max-w-2xl mx-auto px-4 py-8 space-y-6">
 
         {/* ── HEADER ────────────────────────────────────────────────────── */}

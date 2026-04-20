@@ -64,6 +64,10 @@ export function canAccess(role: UserRole, path: string): boolean {
     '/tenant/dashboard':   ['TENANT', 'ADMIN'],
     '/tenant/notices':     ['TENANT', 'ADMIN'],
     '/tenant/pay':         ['TENANT', 'ADMIN'],
+    '/landlord':           ['DEVELOPER', 'ADMIN'],
+    '/landlord/tenants':   ['DEVELOPER', 'ADMIN'],
+    '/landlord/notices':   ['DEVELOPER', 'ADMIN'],
+    '/landlord/receipts':  ['DEVELOPER', 'ADMIN'],
     '/onboard':            [], // public — no auth required
     '/dashboard':          ['INVESTOR', 'CONTRACTOR', 'SUPPLIER', 'BANK', 'GOVERNMENT', 'ADMIN', 'VERIFIER', 'DEVELOPER'],
     '/kyc':                ['INVESTOR', 'CONTRACTOR', 'SUPPLIER', 'BANK', 'DEVELOPER'],

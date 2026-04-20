@@ -83,7 +83,7 @@ export default function InvestmentCertificate({ investment, ledgerHash, investor
 <div class="cert">
   <div class="header">
     <div class="logo">
-      <img src="https://nested-ark-frontend.vercel.app/nested_ark_icon.png" alt="Nested Ark OS" class="logo-icon" />
+      <img src="https://nested-ark-frontend.vercel.app/nested_ark_icon.png" alt="Nested Ark OS" class="logo-icon" onerror="this.style.display='none'" />
       <div>
         <div class="logo-text">Nested Ark <span class="os-tag">OS</span></div>
         <div style="font-size:7px;color:#52525b;text-transform:uppercase;letter-spacing:0.2em;margin-top:2px;">Infrastructure Exchange Platform</div>
