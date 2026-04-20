@@ -561,7 +561,10 @@ const ensureTablesExist = async () => {
       -- ── Add project_id to tenancies if missing ─────────────────────────────
       ALTER TABLE tenancies ADD COLUMN IF NOT EXISTS project_id UUID REFERENCES projects(id);
       CREATE INDEX IF NOT EXISTS idx_ten_project ON tenancies(project_id);
-      
+      ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
+      ALTER TABLE users ADD CONSTRAINT users_role_check
+        CHECK (role IN ('INVESTOR','CONTRACTOR','GOVERNMENT','ADMIN','VERIFIER','SUPPLIER','BANK','DEVELOPER','TENANT'));
+
       CREATE TABLE IF NOT EXISTS email_verification_tokens (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
