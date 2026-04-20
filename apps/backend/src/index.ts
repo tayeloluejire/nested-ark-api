@@ -6388,6 +6388,368 @@ app.post('/api/flex-pay/contribute', authenticate, async (req: Request, res: Res
 
 
 
+// ============================================================================
+// TENANT DASHBOARD ALIAS ENDPOINTS
+// ─────────────────────────────────────────────────────────────────────────────
+// The tenant dashboard calls these convenience URLs so it can load all data
+// in a single authenticated session without needing to first fetch the
+// tenancy_id and then make separate parameterised calls.
+//
+// HOW TO APPLY:
+//   Paste this entire block into index.ts JUST BEFORE the 404 handler:
+//     app.use((req, res) => { res.status(404).json({ error: "Not Found" }); });
+// ============================================================================
+
+// ── MIGRATION GUARD — run once on every startup, safe on existing DBs ─────────
+// The "column t.tenant_user_id does not exist" error means the ALTER TABLE
+// migration in ensureTablesExist() didn't apply on the live DB (tables already
+// existed when the migration ran, but the IF NOT EXISTS guard on the ALTER was
+// missing for some columns). This explicit pool.query at startup ensures it
+// always runs regardless of table state.
+pool.query(`
+  ALTER TABLE tenancies       ADD COLUMN IF NOT EXISTS tenant_user_id UUID REFERENCES users(id);
+  ALTER TABLE tenancies       ADD COLUMN IF NOT EXISTS tenant_phone   VARCHAR(50);
+  ALTER TABLE tenancies       ADD COLUMN IF NOT EXISTS tenant_score   INTEGER DEFAULT 100;
+  ALTER TABLE tenancies       ADD COLUMN IF NOT EXISTS litigation_history JSONB;
+  ALTER TABLE tenancies       ADD COLUMN IF NOT EXISTS selfie_url     TEXT;
+  ALTER TABLE tenancies       ADD COLUMN IF NOT EXISTS status         VARCHAR(20) DEFAULT 'ACTIVE';
+  ALTER TABLE tenancies       ADD COLUMN IF NOT EXISTS currency       VARCHAR(10) DEFAULT 'NGN';
+  ALTER TABLE tenancies       ADD COLUMN IF NOT EXISTS lease_start    DATE;
+  ALTER TABLE tenancies       ADD COLUMN IF NOT EXISTS payment_day    INTEGER DEFAULT 1;
+  ALTER TABLE tenancies       ADD COLUMN IF NOT EXISTS project_id     UUID REFERENCES projects(id);
+  ALTER TABLE flex_pay_vaults ADD COLUMN IF NOT EXISTS tenant_user_id UUID REFERENCES users(id);
+  CREATE INDEX IF NOT EXISTS idx_ten_user_id ON tenancies(tenant_user_id) WHERE tenant_user_id IS NOT NULL;
+  CREATE INDEX IF NOT EXISTS idx_fpv_user_id ON flex_pay_vaults(tenant_user_id) WHERE tenant_user_id IS NOT NULL;
+`).then(() => {
+  console.log('[MIGRATION] tenant_user_id columns verified ✓');
+}).catch((err: any) => {
+  // Non-fatal — log and continue. Dashboard fallback (email match) still works.
+  console.warn('[MIGRATION] Column guard warning (non-fatal):', err.message);
+});
+
+// ── GET /api/tenant/my-vault ────────────────────────────────────────────────
+// Alias: resolves the tenancy from the authenticated user, then returns vault.
+// Dashboard calls this directly without knowing the tenancy_id first.
+app.get('/api/tenant/my-vault', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId = (req as any).userId;
+  try {
+    // Resolve tenancy_id from user (by tenant_user_id link, or email fallback)
+    let tenancyRow: any = null;
+
+    const byId = await pool.query(
+      `SELECT id FROM tenancies WHERE tenant_user_id = $1 AND status = 'ACTIVE'
+       ORDER BY created_at DESC LIMIT 1`,
+      [userId]
+    );
+    if (byId.rows.length) {
+      tenancyRow = byId.rows[0];
+    } else {
+      const uRes = await pool.query('SELECT email FROM users WHERE id = $1', [userId]);
+      if (uRes.rows.length) {
+        const byEmail = await pool.query(
+          `SELECT id FROM tenancies WHERE tenant_email = $1 AND status = 'ACTIVE'
+           ORDER BY created_at DESC LIMIT 1`,
+          [uRes.rows[0].email]
+        );
+        if (byEmail.rows.length) tenancyRow = byEmail.rows[0];
+      }
+    }
+
+    if (!tenancyRow) return res.status(404).json({ error: 'No active tenancy found for this account' });
+
+    // Link user to tenancy for future fast lookups
+    pool.query(
+      `UPDATE tenancies SET tenant_user_id = $1 WHERE id = $2 AND tenant_user_id IS NULL`,
+      [userId, tenancyRow.id]
+    ).catch(() => {});
+
+    const vault = await pool.query(
+      `SELECT fpv.*,
+              COALESCE((
+                SELECT SUM(fc.amount_ngn) FROM flex_contributions fc
+                WHERE fc.vault_id = fpv.id AND fc.status = 'SUCCESS'
+              ), 0) AS total_contributed
+       FROM flex_pay_vaults fpv
+       WHERE fpv.tenancy_id = $1
+       ORDER BY fpv.created_at DESC LIMIT 1`,
+      [tenancyRow.id]
+    );
+
+    if (!vault.rows.length) return res.json({ success: true, vault: null });
+
+    const v = vault.rows[0];
+    return res.json({
+      success: true,
+      vault: {
+        ...v,
+        funded_pct: Math.min(
+          Math.round((parseFloat(v.vault_balance) / (parseFloat(v.target_amount) || 1)) * 100),
+          100
+        ),
+      },
+    });
+  } catch (e: any) {
+    return res.status(500).json({ error: e.message });
+  }
+});
+
+// ── GET /api/tenant/my-contributions ───────────────────────────────────────
+// Alias: returns all flex contributions for the authenticated tenant.
+app.get('/api/tenant/my-contributions', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId = (req as any).userId;
+  try {
+    // Resolve tenancy
+    let tenancyId: string | null = null;
+
+    const byId = await pool.query(
+      `SELECT id FROM tenancies WHERE tenant_user_id = $1 AND status = 'ACTIVE'
+       ORDER BY created_at DESC LIMIT 1`,
+      [userId]
+    );
+    if (byId.rows.length) {
+      tenancyId = byId.rows[0].id;
+    } else {
+      const uRes = await pool.query('SELECT email FROM users WHERE id = $1', [userId]);
+      if (uRes.rows.length) {
+        const byEmail = await pool.query(
+          `SELECT id FROM tenancies WHERE tenant_email = $1 AND status = 'ACTIVE'
+           ORDER BY created_at DESC LIMIT 1`,
+          [uRes.rows[0].email]
+        );
+        if (byEmail.rows.length) tenancyId = byEmail.rows[0].id;
+      }
+    }
+
+    if (!tenancyId) return res.json({ success: true, contributions: [], count: 0 });
+
+    const r = await pool.query(
+      `SELECT fc.id,
+              fc.amount_ngn  AS amount,
+              'NGN'          AS currency,
+              fc.period_label,
+              fc.paid_at,
+              fc.status,
+              fc.ledger_hash,
+              fc.id          AS receipt_id
+       FROM flex_contributions fc
+       JOIN flex_pay_vaults fpv ON fpv.id = fc.vault_id
+       WHERE fpv.tenancy_id = $1
+       ORDER BY fc.created_at DESC
+       LIMIT 50`,
+      [tenancyId]
+    );
+
+    return res.json({ success: true, contributions: r.rows, count: r.rows.length });
+  } catch (e: any) {
+    return res.status(500).json({ error: e.message });
+  }
+});
+
+// ── GET /api/tenant/my-notices ──────────────────────────────────────────────
+// Alias: returns legal notices for the authenticated tenant.
+app.get('/api/tenant/my-notices', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId = (req as any).userId;
+  try {
+    // Resolve tenancy
+    let tenancyId: string | null = null;
+
+    const byId = await pool.query(
+      `SELECT id FROM tenancies WHERE tenant_user_id = $1 AND status = 'ACTIVE'
+       ORDER BY created_at DESC LIMIT 1`,
+      [userId]
+    );
+    if (byId.rows.length) {
+      tenancyId = byId.rows[0].id;
+    } else {
+      const uRes = await pool.query('SELECT email FROM users WHERE id = $1', [userId]);
+      if (uRes.rows.length) {
+        const byEmail = await pool.query(
+          `SELECT id FROM tenancies WHERE tenant_email = $1 AND status = 'ACTIVE'
+           ORDER BY created_at DESC LIMIT 1`,
+          [uRes.rows[0].email]
+        );
+        if (byEmail.rows.length) tenancyId = byEmail.rows[0].id;
+      }
+    }
+
+    if (!tenancyId) return res.json({ success: true, notices: [], count: 0 });
+
+    const r = await pool.query(
+      `SELECT id, notice_number, notice_type, amount_overdue, days_overdue,
+              issued_at, served_at, response_deadline, status
+       FROM legal_notices
+       WHERE tenancy_id = $1
+       ORDER BY issued_at DESC`,
+      [tenancyId]
+    );
+
+    return res.json({ success: true, notices: r.rows, count: r.rows.length });
+  } catch (e: any) {
+    return res.status(500).json({ error: e.message });
+  }
+});
+
+// ── POST /api/tenant/pay-installment ───────────────────────────────────────
+// Alias: initiates a Paystack payment for the tenant's vault installment.
+// Resolves vault from authenticated user — no vault_id required from client.
+app.post('/api/tenant/pay-installment', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId  = (req as any).userId;
+  const { vault_id } = req.body; // optional — will auto-resolve if omitted
+
+  try {
+    let resolvedVaultId = vault_id;
+
+    if (!resolvedVaultId) {
+      // Resolve vault from authenticated user
+      let tenancyId: string | null = null;
+
+      const byId = await pool.query(
+        `SELECT id FROM tenancies WHERE tenant_user_id = $1 AND status = 'ACTIVE'
+         ORDER BY created_at DESC LIMIT 1`,
+        [userId]
+      );
+      if (byId.rows.length) {
+        tenancyId = byId.rows[0].id;
+      } else {
+        const uRes = await pool.query('SELECT email FROM users WHERE id = $1', [userId]);
+        if (uRes.rows.length) {
+          const byEmail = await pool.query(
+            `SELECT id FROM tenancies WHERE tenant_email = $1 AND status = 'ACTIVE'
+             ORDER BY created_at DESC LIMIT 1`,
+            [uRes.rows[0].email]
+          );
+          if (byEmail.rows.length) tenancyId = byEmail.rows[0].id;
+        }
+      }
+
+      if (!tenancyId) return res.status(404).json({ error: 'No active tenancy found' });
+
+      const vRes = await pool.query(
+        `SELECT id FROM flex_pay_vaults
+         WHERE tenancy_id = $1 AND status IN ('ACTIVE','FUNDED_READY')
+         ORDER BY created_at DESC LIMIT 1`,
+        [tenancyId]
+      );
+      if (!vRes.rows.length) return res.status(404).json({ error: 'No active vault found' });
+      resolvedVaultId = vRes.rows[0].id;
+    }
+
+    // Fetch vault + user email for Paystack
+    const vaultRes = await pool.query(
+      `SELECT fpv.*, t.tenant_email, t.tenant_name, u.email AS user_email
+       FROM flex_pay_vaults fpv
+       JOIN tenancies t ON t.id = fpv.tenancy_id
+       LEFT JOIN users u ON u.id = $2
+       WHERE fpv.id = $1`,
+      [resolvedVaultId, userId]
+    );
+
+    if (!vaultRes.rows.length) return res.status(404).json({ error: 'Vault not found' });
+    const v = vaultRes.rows[0];
+
+    const amountKobo = Math.round(parseFloat(v.installment_amount) * 100);
+    const email      = v.user_email || v.tenant_email;
+    const ref        = `ARK-VAULT-${resolvedVaultId.slice(0, 8)}-${Date.now()}`;
+
+    // Initialise Paystack transaction
+    const psRes = await fetch('https://api.paystack.co/transaction/initialize', {
+      method:  'POST',
+      headers: {
+        Authorization:  `Bearer ${PAYSTACK_SECRET}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        email,
+        amount:    amountKobo,
+        reference: ref,
+        currency:  'NGN',
+        metadata:  {
+          vault_id:    resolvedVaultId,
+          tenant_name: v.tenant_name,
+          custom_fields: [
+            { display_name: 'Vault ID',     variable_name: 'vault_id',     value: resolvedVaultId },
+            { display_name: 'Tenant',       variable_name: 'tenant_name',  value: v.tenant_name   },
+          ],
+        },
+        ...(PAYSTACK_SUBACCOUNT_CODE ? { subaccount: PAYSTACK_SUBACCOUNT_CODE, bearer: 'subaccount' } : {}),
+      }),
+    });
+
+    const psData: any = await psRes.json();
+    if (!psData.status) return res.status(502).json({ error: psData.message || 'Paystack error' });
+
+    return res.json({
+      success:           true,
+      authorization_url: psData.data.authorization_url,
+      reference:         ref,
+      vault_id:          resolvedVaultId,
+      amount_ngn:        parseFloat(v.installment_amount),
+    });
+  } catch (e: any) {
+    return res.status(500).json({ error: e.message });
+  }
+});
+
+// ── GET /api/tenant/receipt/:contributionId ────────────────────────────────
+// Alias matching what the dashboard's downloadReceipt() calls.
+app.get('/api/tenant/receipt/:contributionId', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const { contributionId } = req.params;
+  try {
+    const r = await pool.query(
+      `SELECT fc.id, fc.amount_ngn, fc.period_label, fc.paid_at, fc.ledger_hash,
+              fc.status, fc.paystack_ref,
+              fpv.frequency,
+              t.tenant_name, t.tenant_email,
+              ru.unit_name, ru.currency,
+              p.title AS project_title, p.project_number
+       FROM flex_contributions fc
+       JOIN flex_pay_vaults fpv ON fpv.id = fc.vault_id
+       JOIN tenancies t         ON t.id   = fpv.tenancy_id
+       JOIN rental_units ru     ON ru.id  = fpv.unit_id
+       JOIN projects p          ON p.id   = fpv.project_id
+       WHERE fc.id = $1`,
+      [contributionId]
+    );
+
+    if (!r.rows.length) return res.status(404).json({ error: 'Receipt not found' });
+    const c = r.rows[0];
+
+    // Return a lightweight HTML receipt (no PDF dependency)
+    const html = `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>Receipt — Nested Ark OS</title>
+<style>
+  body { background:#09090b; color:#fff; font-family:'Segoe UI',sans-serif; padding:40px; max-width:500px; margin:0 auto; }
+  .logo { color:#14b8a6; font-weight:900; font-size:18px; letter-spacing:1px; margin-bottom:24px; }
+  .field { margin:12px 0; }
+  .label { color:#71717a; font-size:10px; text-transform:uppercase; letter-spacing:2px; }
+  .value { color:#fff; font-size:14px; font-weight:700; margin-top:2px; }
+  .amount { color:#14b8a6; font-size:28px; font-weight:900; font-family:monospace; }
+  .hash { color:#52525b; font-size:9px; font-family:monospace; word-break:break-all; margin-top:24px; border-top:1px solid #27272a; padding-top:12px; }
+</style>
+</head>
+<body>
+  <div class="logo">NESTED ARK OS — PAYMENT RECEIPT</div>
+  <div class="field"><div class="label">Tenant</div><div class="value">${c.tenant_name}</div></div>
+  <div class="field"><div class="label">Unit</div><div class="value">${c.unit_name} · ${c.project_title} (${c.project_number})</div></div>
+  <div class="field"><div class="label">Period</div><div class="value">${c.period_label}</div></div>
+  <div class="field"><div class="label">Amount Paid</div><div class="amount">${c.currency || 'NGN'} ${Number(c.amount_ngn).toLocaleString()}</div></div>
+  <div class="field"><div class="label">Date</div><div class="value">${c.paid_at ? new Date(c.paid_at).toLocaleString('en-GB') : '—'}</div></div>
+  <div class="field"><div class="label">Paystack Reference</div><div class="value">${c.paystack_ref || '—'}</div></div>
+  <div class="field"><div class="label">Status</div><div class="value">${c.status}</div></div>
+  <div class="hash">Ledger Hash (SHA-256): ${c.ledger_hash || 'pending'}</div>
+</body>
+</html>`;
+
+    res.setHeader('Content-Type', 'text/html');
+    res.setHeader('Content-Disposition', `attachment; filename="receipt-${contributionId.slice(0,8)}.html"`);
+    return res.send(html);
+  } catch (e: any) {
+    return res.status(500).json({ error: e.message });
+  }
+});
+
+
 app.use((req: Request, res: Response) => {
   res.status(404).json({ error: "Not Found" });
 });
