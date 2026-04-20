@@ -35,18 +35,29 @@ export default function LoginPage() {
   const [error,     setError]     = useState('');
   const [notice,    setNotice]    = useState('');
 
-  // Redirect already-logged-in users
+  // ── Auth redirect ────────────────────────────────────────────────────────────
+  // If user is already logged in, redirect immediately WITHOUT showing the login
+  // form first. The previous code returned the spinner while authLoading=true,
+  // then called router.replace() in useEffect — but the form briefly rendered
+  // between the spinner unmounting and the navigation completing, causing the
+  // visible "jerk" between /login and /tenant/dashboard.
+  //
+  // Fix: while authLoading OR while authenticated, show the spinner and nothing
+  // else. The form only renders once we are certain the user is NOT logged in.
   useEffect(() => {
     if (!authLoading && isAuthenticated && user) {
       router.replace(getRoleRoute(user.role as UserRole));
     }
   }, [isAuthenticated, authLoading, user, router]);
 
-  if (authLoading) return (
+  // Show spinner for the entire duration of the auth check AND during redirect
+  if (authLoading || isAuthenticated) return (
     <div className="h-screen bg-[#050505] flex items-center justify-center">
       <div className="text-center space-y-4">
         <Loader2 className="animate-spin text-teal-500 mx-auto" size={32} />
-        <p className="text-[9px] text-zinc-600 uppercase font-bold tracking-[0.2em]">Analyzing Credentials…</p>
+        <p className="text-[9px] text-zinc-600 uppercase font-bold tracking-[0.2em]">
+          {isAuthenticated ? 'Redirecting…' : 'Verifying session…'}
+        </p>
       </div>
     </div>
   );

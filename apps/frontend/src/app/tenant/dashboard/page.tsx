@@ -1,9 +1,10 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import BrandLogo from '@/components/BrandLogo';
+import api from '@/lib/api';
 import {
   Wallet, CreditCard, Clock, CheckCircle2, AlertTriangle,
   FileText, Receipt, Download, RefreshCw, Loader2,
@@ -15,7 +16,9 @@ import {
 const safeN = (v: any): number => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
 const safeF = (v: any): string => safeN(v).toLocaleString();
 
-const API = process.env.NEXT_PUBLIC_API_URL || 'https://nested-ark-api.onrender.com';
+// NOTE: Do NOT use the raw NEXT_PUBLIC_API_URL here — use the api client
+// which goes through the Next.js proxy (next.config.js rewrites) to avoid CORS.
+// Direct fetch() calls to onrender.com will be blocked by CORS preflight.
 
 interface Tenancy {
   tenancy_id: string; unit_id: string; project_id: string;
@@ -61,56 +64,83 @@ export default function TenantDashboardPage() {
   const [payLoading,    setPayLoading]    = useState(false);
   const [tab,           setTab]           = useState<'vault' | 'history' | 'profile' | 'notices'>('vault');
 
-  const token = typeof window !== 'undefined' ? localStorage.getItem('ark_token') : null;
+  // ── TOKEN FIX ──────────────────────────────────────────────────────────────
+  // The previous version read 'ark_token' but AuthContext, api.ts, and
+  // onboard/page.tsx all write to 'token'. This mismatch caused the loop:
+  //   1. Tenant registers → token saved as 'token'
+  //   2. Dashboard reads 'ark_token' → null → router.replace('/login')
+  //   3. Login sees isAuthenticated=true (token exists) → getRoleRoute → /tenant/dashboard
+  //   4. Dashboard reads 'ark_token' again → null → /login → INFINITE LOOP
+  //
+  // Fix: read 'token' first, fall back to 'ark_token' for backwards compatibility.
+  const getToken = () =>
+    typeof window !== 'undefined'
+      ? (localStorage.getItem('token') || localStorage.getItem('ark_token'))
+      : null;
 
-  const load = async () => {
-    if (!token) { router.replace('/login'); return; }
+  const load = useCallback(async () => {
+    const token = getToken();
+    // No token at all → go to login (not a loop — user is genuinely unauthenticated)
+    if (!token) {
+      router.replace('/login');
+      return;
+    }
     setLoading(true); setError('');
     try {
-      const headers = { Authorization: `Bearer ${token}` };
+      // Use the api client (axios) — it attaches the token automatically via
+      // the request interceptor and routes through the Next.js proxy to avoid CORS.
       const [tRes, vRes, cRes, nRes] = await Promise.all([
-        fetch(`${API}/api/tenant/my-tenancy`,           { headers }),
-        fetch(`${API}/api/tenant/my-vault`,             { headers }),
-        fetch(`${API}/api/tenant/my-contributions`,     { headers }),
-        fetch(`${API}/api/tenant/my-notices`,           { headers }),
+        api.get('/api/tenant/my-tenancy'),
+        api.get('/api/tenant/my-vault').catch(() => ({ data: { vault: null } })),
+        api.get('/api/tenant/my-contributions').catch(() => ({ data: { contributions: [] } })),
+        api.get('/api/tenant/my-notices').catch(() => ({ data: { notices: [] } })),
       ]);
-      if (!tRes.ok) { setError('Could not load your tenancy.'); return; }
-      const [td, vd, cd, nd] = await Promise.all([tRes.json(), vRes.json(), cRes.json(), nRes.json()]);
-      setTenancy(td.tenancy ?? td);
-      setVault(vd.vault ?? null);
-      setContributions(cd.contributions ?? []);
-      setNotices(nd.notices ?? []);
-    } catch { setError('Network error. Please try again.'); }
-    finally { setLoading(false); }
-  };
+      setTenancy(tRes.data.tenancy ?? tRes.data);
+      setVault(vRes.data.vault ?? null);
+      setContributions(cRes.data.contributions ?? []);
+      setNotices(nRes.data.notices ?? []);
+    } catch (err: any) {
+      const status = err?.response?.status;
+      if (status === 401) {
+        // Token invalid or expired — clear it and go to login cleanly
+        localStorage.removeItem('token');
+        localStorage.removeItem('ark_token');
+        router.replace('/login');
+        return;
+      }
+      setError(err?.response?.data?.error ?? 'Network error. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  }, [router]);
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [load]);
 
   const handlePay = async () => {
-    if (!vault || !token) return;
+    if (!vault) return;
     setPayLoading(true);
     try {
-      const res = await fetch(`${API}/api/tenant/pay-installment`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ vault_id: vault.id }),
-      });
-      const data = await res.json();
-      if (data.authorization_url) { window.location.href = data.authorization_url; return; }
-      if (data.message) { alert(data.message); load(); }
-      else { alert(data.error ?? 'Payment failed'); }
-    } catch { alert('Payment failed. Try again.'); }
-    finally { setPayLoading(false); }
+      const res = await api.post('/api/tenant/pay-installment', { vault_id: vault.id });
+      if (res.data.authorization_url) { window.location.href = res.data.authorization_url; return; }
+      if (res.data.message) { alert(res.data.message); load(); }
+      else { alert(res.data.error ?? 'Payment failed'); }
+    } catch (err: any) {
+      alert(err?.response?.data?.error ?? 'Payment failed. Try again.');
+    } finally { setPayLoading(false); }
   };
 
   const downloadReceipt = async (receiptId: string) => {
-    if (!token) return;
     try {
-      const res = await fetch(`${API}/api/tenant/receipt/${receiptId}`, {
-        headers: { Authorization: `Bearer ${token}` }
+      const token = getToken();
+      if (!token) return;
+      // Use direct fetch for blob download (axios blob handling is more complex)
+      const res = await fetch(`/api/tenant/receipt/${receiptId}`, {
+        headers: { Authorization: `Bearer ${token}` },
       });
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
-      const a = document.createElement('a'); a.href = url; a.download = `receipt-${receiptId}.pdf`; a.click();
+      const a = document.createElement('a');
+      a.href = url; a.download = `receipt-${receiptId}.pdf`; a.click();
       URL.revokeObjectURL(url);
     } catch { alert('Receipt download failed'); }
   };
@@ -153,7 +183,9 @@ export default function TenantDashboardPage() {
           </span>
           <button
             onClick={() => {
+              // Clear both key names for full backwards compatibility
               localStorage.removeItem('token');
+              localStorage.removeItem('ark_token');
               router.replace('/login');
             }}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-zinc-800 text-zinc-500 hover:text-red-400 hover:border-red-500/30 text-[9px] font-bold uppercase tracking-widest transition-all"
