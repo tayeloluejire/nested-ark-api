@@ -541,20 +541,18 @@ const ensureTablesExist = async () => {
 
       -- ── Expand role CHECK constraint to include DEVELOPER and TENANT ────────
       -- Drop old constraint (name may vary) and recreate with all 9 roles
-      DO $role_fix$
-      BEGIN
-        ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
-        ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_fkey;
-        -- Remove any existing check constraints on the role column
-        FOR _cname IN
-          SELECT conname FROM pg_constraint
-           WHERE conrelid = 'users'::regclass AND contype = 'c'
-             AND pg_get_constraintdef(oid) LIKE '%role%'
-        LOOP
-          EXECUTE format('ALTER TABLE users DROP CONSTRAINT IF EXISTS %I', _cname);
-        END LOOP;
-      EXCEPTION WHEN OTHERS THEN NULL;
-      END;
+      DO $$ 
+DECLARE 
+    _cname RECORD; -- ✅ Must be RECORD type for a FOR loop in PL/pgSQL
+BEGIN 
+    FOR _cname IN 
+        SELECT column_name 
+        FROM information_schema.columns 
+        WHERE table_name = 'tenancies' AND column_name = 'tenant_user_id'
+    LOOP 
+        -- logic here
+    END LOOP; 
+END $$;
       $role_fix$;
       ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
       ALTER TABLE users ADD CONSTRAINT users_role_check
