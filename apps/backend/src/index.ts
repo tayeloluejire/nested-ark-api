@@ -684,7 +684,6 @@ const ensureTablesExist = async () => {
         created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
-      CREATE INDEX IF NOT EXISTS idx_ss_project ON stakeholder_splits(project_id);
       CREATE INDEX IF NOT EXISTS idx_ss_user    ON stakeholder_splits(user_id);
     `);
 
@@ -706,7 +705,6 @@ const ensureTablesExist = async () => {
         amenities     TEXT[],
         created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
-      CREATE INDEX IF NOT EXISTS idx_ru_project ON rental_units(project_id);
       CREATE INDEX IF NOT EXISTS idx_ru_status  ON rental_units(status);
     `);
 
@@ -751,7 +749,6 @@ const ensureTablesExist = async () => {
         distributed_at       TIMESTAMP,
         created_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
-      CREATE INDEX IF NOT EXISTS idx_rp_project ON rent_payments(project_id);
       CREATE INDEX IF NOT EXISTS idx_rp_ref     ON rent_payments(paystack_reference);
       CREATE INDEX IF NOT EXISTS idx_rp_status  ON rent_payments(status);
     `);
@@ -777,7 +774,6 @@ const ensureTablesExist = async () => {
       );
       CREATE INDEX IF NOT EXISTS idx_yd_payment   ON yield_distributions(rent_payment_id);
       CREATE INDEX IF NOT EXISTS idx_yd_recipient ON yield_distributions(recipient_id);
-      CREATE INDEX IF NOT EXISTS idx_yd_project   ON yield_distributions(project_id);
     `);
 
     // ── Maintenance Logs (Asset Health tracking) ─────────────────────────
@@ -800,7 +796,6 @@ const ensureTablesExist = async () => {
         assigned_to UUID REFERENCES users(id),
         created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
-      CREATE INDEX IF NOT EXISTS idx_ml_project ON maintenance_logs(project_id);
     `);
 
     // ── Seed rental split ratios in market_config ─────────────────────────
@@ -838,7 +833,6 @@ const ensureTablesExist = async () => {
         updated_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
       CREATE INDEX IF NOT EXISTS idx_fpv_tenancy ON flex_pay_vaults(tenancy_id);
-      CREATE INDEX IF NOT EXISTS idx_fpv_project ON flex_pay_vaults(project_id);
       CREATE INDEX IF NOT EXISTS idx_fpv_status  ON flex_pay_vaults(status);
 
       -- Flex-Pay Contributions (each sub-payment)
@@ -871,7 +865,6 @@ const ensureTablesExist = async () => {
         error_msg     TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_rr_tenancy ON rent_reminders(tenancy_id);
-      CREATE INDEX IF NOT EXISTS idx_rr_project ON rent_reminders(project_id);
 
       -- Legal Notices
       CREATE TABLE IF NOT EXISTS legal_notices (
@@ -893,7 +886,6 @@ const ensureTablesExist = async () => {
         notes           TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_ln_tenancy ON legal_notices(tenancy_id);
-      CREATE INDEX IF NOT EXISTS idx_ln_project ON legal_notices(project_id);
 
       -- Mobilization columns on milestones
       ALTER TABLE milestones ADD COLUMN IF NOT EXISTS mobilization_pct       DECIMAL(5,2) DEFAULT 70;
@@ -913,13 +905,30 @@ const ensureTablesExist = async () => {
       -- Tenant user link on tenancies
       ALTER TABLE tenancies ADD COLUMN IF NOT EXISTS tenant_user_id  UUID REFERENCES users(id);
       -- ── CRITICAL BACKFILLS (safe on existing DBs — IF NOT EXISTS) ──────────
-      ALTER TABLE tenancies     ADD COLUMN IF NOT EXISTS project_id    UUID REFERENCES projects(id);
+      -- Add project_id to all rental engine tables that may predate the column
+      ALTER TABLE stakeholder_splits  ADD COLUMN IF NOT EXISTS project_id UUID REFERENCES projects(id);
+      ALTER TABLE rental_units        ADD COLUMN IF NOT EXISTS project_id UUID REFERENCES projects(id);
+      ALTER TABLE rent_payments       ADD COLUMN IF NOT EXISTS project_id UUID REFERENCES projects(id);
+      ALTER TABLE yield_distributions ADD COLUMN IF NOT EXISTS project_id UUID REFERENCES projects(id);
+      ALTER TABLE maintenance_logs    ADD COLUMN IF NOT EXISTS project_id UUID REFERENCES projects(id);
+      ALTER TABLE flex_pay_vaults     ADD COLUMN IF NOT EXISTS project_id UUID REFERENCES projects(id);
+      ALTER TABLE rent_reminders      ADD COLUMN IF NOT EXISTS project_id UUID REFERENCES projects(id);
+      ALTER TABLE legal_notices       ADD COLUMN IF NOT EXISTS project_id UUID REFERENCES projects(id);
+      ALTER TABLE tenancies           ADD COLUMN IF NOT EXISTS project_id    UUID REFERENCES projects(id);
       ALTER TABLE tenancies     ADD COLUMN IF NOT EXISTS rent_amount   DECIMAL(15,2) DEFAULT 0;
       ALTER TABLE tenancies     ADD COLUMN IF NOT EXISTS payment_day   INTEGER DEFAULT 1;
       ALTER TABLE tenancies     ADD COLUMN IF NOT EXISTS lease_start   DATE;
       ALTER TABLE rent_payments ADD COLUMN IF NOT EXISTS tenant_id     UUID REFERENCES users(id);
       ALTER TABLE rent_payments ADD COLUMN IF NOT EXISTS period_month  VARCHAR(7);
       ALTER TABLE rent_payments ADD COLUMN IF NOT EXISTS distributed_at TIMESTAMP;
+      CREATE INDEX IF NOT EXISTS idx_ss_project    ON stakeholder_splits(project_id)  WHERE project_id IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_ru_project    ON rental_units(project_id)        WHERE project_id IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_rp_project    ON rent_payments(project_id)       WHERE project_id IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_yd_project    ON yield_distributions(project_id) WHERE project_id IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_ml_project    ON maintenance_logs(project_id)    WHERE project_id IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_fpv_project   ON flex_pay_vaults(project_id)     WHERE project_id IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_rr_project    ON rent_reminders(project_id)      WHERE project_id IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_ln_project    ON legal_notices(project_id)       WHERE project_id IS NOT NULL;
       CREATE INDEX IF NOT EXISTS idx_ten_project    ON tenancies(project_id) WHERE project_id IS NOT NULL;
       CREATE INDEX IF NOT EXISTS idx_ten_project_bp ON tenancies(project_id) WHERE project_id IS NOT NULL;
       CREATE INDEX IF NOT EXISTS idx_rp_tenant_bp   ON rent_payments(tenant_id) WHERE tenant_id IS NOT NULL;
