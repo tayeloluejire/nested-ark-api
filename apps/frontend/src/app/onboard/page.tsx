@@ -89,7 +89,12 @@ function Field({
           value={value}
           onChange={onChange}
           placeholder={placeholder}
-          autoComplete="off"
+          autoComplete={
+            type === 'password' && id === 'password'         ? 'new-password' :
+            type === 'password' && id === 'confirm_password' ? 'new-password' :
+            type === 'email'   ? 'email'   :
+            type === 'tel'     ? 'tel'     : 'off'
+          }
           inputMode={
             type === 'email' ? 'email' :
             type === 'tel'   ? 'tel'   : 'text'
@@ -283,7 +288,7 @@ function OnboardContent() {
 
             {/* ── STEP 2 ── */}
             {step === 2 && (
-              <div className="space-y-4">
+              <form onSubmit={e => { e.preventDefault(); if (step2Valid) nextStep(); }} className="space-y-4">
                 <Field
                   label="Password" id="password" type={showPass ? 'text' : 'password'}
                   value={form.password} onChange={set('password')} placeholder="Minimum 8 characters"
@@ -316,12 +321,12 @@ function OnboardContent() {
                   ))}
                 </div>
                 <div className="flex gap-2 mt-2">
-                  <button onClick={() => setStep(1)} className="flex-1 py-4 rounded-2xl border border-zinc-800 text-zinc-400 text-[11px] font-black uppercase tracking-[0.2em] hover:border-zinc-600 transition-all">Back</button>
-                  <button onClick={nextStep} disabled={!step2Valid} className="flex-[2] flex items-center justify-center gap-2 py-4 rounded-2xl bg-teal-500 text-black text-[11px] font-black uppercase tracking-[0.2em] hover:bg-teal-400 transition-all disabled:opacity-40 disabled:cursor-not-allowed">
+                  <button type="button" onClick={() => setStep(1)} className="flex-1 py-4 rounded-2xl border border-zinc-800 text-zinc-400 text-[11px] font-black uppercase tracking-[0.2em] hover:border-zinc-600 transition-all">Back</button>
+                  <button type="submit" disabled={!step2Valid} className="flex-[2] flex items-center justify-center gap-2 py-4 rounded-2xl bg-teal-500 text-black text-[11px] font-black uppercase tracking-[0.2em] hover:bg-teal-400 transition-all disabled:opacity-40 disabled:cursor-not-allowed">
                     Continue <ArrowRight size={14} />
                   </button>
                 </div>
-              </div>
+              </form>
             )}
 
             {/* ── STEP 3 ── */}
@@ -389,16 +394,28 @@ function OnboardContent() {
                 </div>
                 <div>
                   <p className="text-white font-black text-lg">Welcome, {form.full_name.split(' ')[0]}.</p>
-                  <p className="text-zinc-500 text-sm mt-1">Your Flex-Pay vault is active. Your tenancy ledger has been initialised.</p>
+                  {unitParam ? (
+                    <p className="text-zinc-500 text-sm mt-1">Your Flex-Pay vault is active. Your tenancy ledger has been initialised.</p>
+                  ) : (
+                    <p className="text-zinc-500 text-sm mt-1">Your Nested Ark account is live and ready.</p>
+                  )}
                 </div>
+
+                {/* If no unit was in the invite URL, show a pending unit assignment notice */}
+                {!unitParam && (
+                  <div className="p-4 rounded-2xl border border-amber-500/20 bg-amber-500/5 text-left">
+                    <p className="text-[9px] text-amber-400 uppercase font-black tracking-[0.2em] mb-2">Next Step</p>
+                    <p className="text-zinc-400 text-xs leading-relaxed">
+                      Your account is created and linked. Once your landlord assigns you a unit,
+                      your Flex-Pay vault and tenancy ledger will appear on your dashboard automatically.
+                    </p>
+                    <p className="text-zinc-600 text-[10px] mt-2">
+                      If you received a specific unit invite link, open it to complete your full onboarding.
+                    </p>
+                  </div>
+                )}
+
                 <div className="space-y-2">
-                  {/*
-                   * ROUTING FIX:
-                   * Token is already stored (see handleSubmit above).
-                   * router.replace keeps history clean — back button won't
-                   * return to this form. Goes directly to TENANT dashboard,
-                   * never to /projects/my (landlord page).
-                   */}
                   <button
                     onClick={() => router.replace('/tenant/dashboard')}
                     className="w-full flex items-center justify-center gap-2 py-4 rounded-2xl bg-teal-500 text-black text-[11px] font-black uppercase tracking-[0.2em] hover:bg-teal-400 transition-all"

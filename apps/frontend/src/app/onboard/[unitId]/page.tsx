@@ -225,7 +225,12 @@ export default function OnboardPage() {
         digital_signature_url: form.signatureDataUrl || null,
       };
 
-      await api.post('/api/tenant/onboard', body);
+      const res = await api.post('/api/tenant/onboard', body);
+      // Store JWT token if returned so tenant is auto-logged-in
+      const token = res.data?.tokens?.access_token ?? res.data?.token;
+      if (token) {
+        localStorage.setItem('token', token);
+      }
       setDone(true);
     } catch (e: any) {
       setError(e?.response?.data?.error || e.message || 'Something went wrong. Please try again.');
@@ -278,7 +283,7 @@ export default function OnboardPage() {
             </ul>
           </div>
           <button
-            onClick={() => router.push('/tenant/dashboard')}
+            onClick={() => router.replace('/tenant/dashboard')}
             className="w-full bg-teal-500 hover:bg-teal-400 text-black font-bold py-3 rounded-lg transition text-sm"
           >
             Go to My Tenant Dashboard →
