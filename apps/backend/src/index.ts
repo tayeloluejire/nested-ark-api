@@ -1010,6 +1010,24 @@ app.post("/api/auth/register", async (req: Request, res: Response): Promise<any>
     
     console.log(`✅ User registered: ${email}`);
 
+    // ── Auto-link TENANT to any pre-existing tenancy with matching email ──────
+    // This handles the case where a landlord pre-created the tenancy (via the
+    // rental management page) before the tenant registered their account.
+    // On register we immediately link the user_id so the dashboard resolves.
+    if ((role || '').toUpperCase() === 'TENANT') {
+      pool.query(
+        `UPDATE tenancies SET tenant_user_id = $1
+         WHERE LOWER(tenant_email) = LOWER($2)
+           AND tenant_user_id IS NULL
+           AND status = 'ACTIVE'`,
+        [userId, email.toLowerCase()]
+      ).then(r => {
+        if (r.rowCount && r.rowCount > 0) {
+          console.log(`[REGISTER] Auto-linked tenant_user_id for ${email} → ${r.rowCount} tenancy`);
+        }
+      }).catch(() => {}); // non-blocking, non-fatal
+    }
+
     // ── Send verification email (non-blocking — registration succeeds even if mail fails) ──
     try {
       const verificationToken = crypto.randomBytes(32).toString('hex');
@@ -6943,6 +6961,59 @@ app.post('/api/tenant/onboard', async (req: Request, res: Response): Promise<any
       } catch(err: any) { console.warn('[ONBOARD] Welcome dispatch failed:', err.message); }
     });
 
+    // ── Create or find user account and issue JWT so tenant is auto-logged-in ──
+    // This means the tenant goes directly to the dashboard after onboarding
+    // without needing a separate login step.
+    let authToken: string | null = null;
+    try {
+      const existingUser = await client.query(
+        `SELECT id FROM users WHERE LOWER(email) = LOWER($1)`,
+        [email.toLowerCase().trim()]
+      );
+
+      let tenantUserId: string;
+
+      if (existingUser.rows.length > 0) {
+        // User already exists — link their account to this tenancy
+        tenantUserId = existingUser.rows[0].id;
+        await client.query(
+          `UPDATE tenancies SET tenant_user_id = $1 WHERE id = $2 AND tenant_user_id IS NULL`,
+          [tenantUserId, tenancyId]
+        );
+      } else {
+        // Create a new user account for this tenant
+        const crypto2 = require('crypto');
+        const bcrypt2 = require('bcryptjs');
+        const newUserId = require('uuid').v4();
+        // Generate a temporary password they can reset — or use a provided password
+        const tempPassword = crypto2.randomBytes(16).toString('hex');
+        const hashedPw = await bcrypt2.hash(tempPassword, 12);
+        await client.query(
+          `INSERT INTO users (id, email, password, full_name, phone, role)
+           VALUES ($1,$2,$3,$4,$5,'TENANT')
+           ON CONFLICT (email) DO NOTHING`,
+          [newUserId, email.toLowerCase().trim(), hashedPw, fullName.trim(), phone?.trim() || null]
+        );
+        // Re-fetch in case of conflict
+        const uRes = await client.query(`SELECT id FROM users WHERE LOWER(email) = LOWER($1)`, [email.toLowerCase().trim()]);
+        tenantUserId = uRes.rows[0]?.id ?? newUserId;
+        await client.query(
+          `UPDATE tenancies SET tenant_user_id = $1 WHERE id = $2 AND tenant_user_id IS NULL`,
+          [tenantUserId, tenancyId]
+        );
+      }
+
+      // Issue JWT token for immediate login
+      authToken = jwt.sign(
+        { id: tenantUserId, email: email.toLowerCase().trim(), role: 'TENANT' },
+        JWT_SECRET,
+        { expiresIn: JWT_EXPIRY }
+      );
+    } catch (authErr: any) {
+      // Non-fatal — tenancy still created, user just needs to log in separately
+      console.warn('[ONBOARD] Auth account creation warning:', authErr.message);
+    }
+
    return res.status(201).json({
       success: true,
       tenancy_id: tenancyId,
@@ -6951,6 +7022,7 @@ app.post('/api/tenant/onboard', async (req: Request, res: Response): Promise<any
       installment_amount: installment,
       message: `Welcome aboard, ${fullName.split(' ')[0]}! Your vault is active. Check email + WhatsApp for your welcome pack.`,
       ledger_hash: h,
+      tokens: authToken ? { access_token: authToken, expires_in: JWT_EXPIRY } : undefined,
       whatsapp_action: phone ? `https://wa.me/${phone.replace(/\D/g,'')}?text=${encodeURIComponent(`Welcome to Nested Ark! Your vault is set up for ${unit.unit_name}. Check your email for the handbook: ${frontendUrl}/tenant/dashboard`)}` : null,
     });
   } catch(e: any) {
