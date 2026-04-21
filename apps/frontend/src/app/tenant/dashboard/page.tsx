@@ -154,14 +154,65 @@ export default function TenantDashboardPage() {
     </div>
   );
 
+  // ── Smart error state: distinguish "no tenancy" from real errors ──────────
+  const isNoTenancy =
+    error.toLowerCase().includes('no active tenancy') ||
+    error.toLowerCase().includes('tenancy not found') ||
+    error.toLowerCase().includes('not found');
+
   if (error) return (
     <div className="min-h-screen bg-[#050505] text-white flex items-center justify-center">
-      <div className="text-center space-y-4 px-6">
-        <AlertTriangle className="text-amber-400 mx-auto" size={32} />
-        <p className="font-bold">{error}</p>
-        <button onClick={load} className="px-6 py-3 bg-teal-500 text-black font-black text-xs uppercase tracking-widest rounded-xl hover:bg-teal-400 transition-all">
-          Retry
-        </button>
+      <div className="text-center space-y-5 px-6 max-w-sm">
+        {isNoTenancy ? (
+          <>
+            <div className="w-16 h-16 rounded-2xl bg-teal-500/10 border border-teal-500/20 flex items-center justify-center mx-auto">
+              <Home size={28} className="text-teal-500" />
+            </div>
+            <div>
+              <p className="font-black text-lg uppercase tracking-tight">No Tenancy Found</p>
+              <p className="text-zinc-500 text-sm mt-2 leading-relaxed">
+                Your account isn&apos;t linked to a tenancy yet. This usually means your landlord
+                hasn&apos;t onboarded you yet, or you registered before being assigned a unit.
+              </p>
+            </div>
+            <div className="space-y-2">
+              <a
+                href="/onboard"
+                className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-teal-500 text-black font-black text-xs uppercase tracking-widest rounded-xl hover:bg-teal-400 transition-all"
+              >
+                Complete Onboarding
+              </a>
+              <button
+                onClick={load}
+                className="w-full px-6 py-3 border border-zinc-700 text-zinc-400 font-bold text-xs uppercase tracking-widest rounded-xl hover:border-zinc-500 hover:text-zinc-200 transition-all"
+              >
+                Retry
+              </button>
+              <button
+                onClick={() => {
+                  localStorage.removeItem('token');
+                  localStorage.removeItem('ark_token');
+                  window.location.replace('/login');
+                }}
+                className="w-full px-6 py-3 text-zinc-600 font-bold text-xs uppercase tracking-widest hover:text-zinc-400 transition-all"
+              >
+                Sign Out
+              </button>
+            </div>
+            <p className="text-[9px] text-zinc-700 leading-relaxed">
+              If your landlord has already assigned you a unit, try signing out and logging
+              back in — this links your account to your tenancy automatically.
+            </p>
+          </>
+        ) : (
+          <>
+            <AlertTriangle className="text-amber-400 mx-auto" size={32} />
+            <p className="font-bold">{error}</p>
+            <button onClick={load} className="px-6 py-3 bg-teal-500 text-black font-black text-xs uppercase tracking-widest rounded-xl hover:bg-teal-400 transition-all">
+              Retry
+            </button>
+          </>
+        )}
       </div>
     </div>
   );

@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import BrandLogo from '@/components/BrandLogo';
+import api from '@/lib/api';
 
 // ── Defensive numeric helpers — never crash on undefined/null/NaN ──────────
 const safeN = (v: any): number => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
@@ -10,7 +11,7 @@ const safeF = (v: any): string => safeN(v).toLocaleString();
 const safeD = (v: any, d = 2): string => safeN(v).toFixed(d);
 
 
-const API = process.env.NEXT_PUBLIC_API_URL || 'https://nested-ark-api.onrender.com';
+// API calls use relative URLs — proxied to Render by next.config.js rewrites (no CORS)
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface UnitInfo {
@@ -94,9 +95,9 @@ export default function OnboardPage() {
   // ── Load unit info ────────────────────────────────────────────────────────
   useEffect(() => {
     if (!unitId) return;
-    fetch(`${API}/api/rental/invite-link/${unitId}`)
-      .then(r => r.json())
-      .then(d => {
+    api.get(`/api/rental/invite-link/${unitId}`)
+      .then(res => {
+        const d = res.data;
         setUnit({
           unit_name:      d.unit_name      || 'Your Unit',
           project_title:  d.project_title  || 'Nested Ark Project',
@@ -224,16 +225,10 @@ export default function OnboardPage() {
         digital_signature_url: form.signatureDataUrl || null,
       };
 
-      const res  = await fetch(`${API}/api/tenant/onboard`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Onboarding failed');
+      await api.post('/api/tenant/onboard', body);
       setDone(true);
     } catch (e: any) {
-      setError(e.message || 'Something went wrong. Please try again.');
+      setError(e?.response?.data?.error || e.message || 'Something went wrong. Please try again.');
     } finally {
       setSubmitting(false);
     }

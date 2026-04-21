@@ -81,7 +81,7 @@ export default function RentalPortfolioPage() {
             {
               label: 'Total Received',
               value: `₦${safeF(summary.total_received_ngn ?? 0)}`,
-              sub: `≈ $${NumbersafeD(summary.total_received_usd ?? 0, 2)} USD`,
+              sub: `≈ $${safeD(summary.total_received_usd ?? 0, 2)} USD`,
               color: 'text-teal-400',
               icon: DollarSign,
             },
@@ -197,7 +197,7 @@ export default function RentalPortfolioPage() {
                     </div>
                     <div className="flex items-center gap-3 text-[9px] text-zinc-600 flex-wrap">
                       {d.investment_stake && (
-                        <span>Your stake: {NumbersafeD(d.investment_stake, 2)}%</span>
+                        <span>Your stake: {safeD(d.investment_stake, 2)}%</span>
                       )}
                       <span>Rent total: ₦{safeF(d.rent_total)}</span>
                       <span className="flex items-center gap-1">
