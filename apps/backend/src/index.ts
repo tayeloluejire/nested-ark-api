@@ -1053,7 +1053,7 @@ app.post("/api/auth/register", async (req: Request, res: Response): Promise<any>
         [uuidv4(), userId, verificationToken, expiresAt]
       );
 
-      const verifyUrl = `${process.env.FRONTEND_URL || "https://nested-ark-frontend.vercel.app"}/verify-email?token=${verificationToken}`;
+      const verifyUrl = `${process.env.FRONTEND_URL || "https://nested-ark-api.vercel.app"}/verify-email?token=${verificationToken}`;
 
       const nodemailer = require("nodemailer");
       const transporter = nodemailer.createTransport({
@@ -1206,7 +1206,7 @@ app.post("/api/auth/forgot-password", async (req: Request, res: Response): Promi
     );
 
     // Build the reset link — raw token goes in URL, hash stays in DB
-    const frontendUrl = process.env.FRONTEND_URL || "https://nested-ark-frontend.vercel.app";
+    const frontendUrl = process.env.FRONTEND_URL || "https://nested-ark-api.vercel.app";
     const resetLink   = `${frontendUrl}/reset-password/${rawToken}`;
 
     const nodemailer = require("nodemailer");
@@ -3621,10 +3621,147 @@ app.post("/api/payments/webhook",
       const meta      = event.data?.metadata ?? {};
       console.log('[WEBHOOK] RENT payment received:', reference, 'NGN', amountNgn);
       try {
+        // ── Step 1: Mark rent_payment as SUCCESS ────────────────────────────
         await pool.query(
           "UPDATE rent_payments SET status='SUCCESS', amount_ngn=$1, paid_at=NOW() WHERE paystack_reference=$2",
           [amountNgn, reference]
         );
+
+        // ── Step 2: Credit the tenant's flex_pay vault ──────────────────────
+        // Critical: update vault_balance so tenant sees payment on dashboard.
+        if (meta.tenancy_id) {
+          try {
+            const vaultRes = await pool.query(
+              `SELECT fpv.* FROM flex_pay_vaults fpv
+               WHERE fpv.tenancy_id = $1
+                 AND fpv.status IN ('ACTIVE','FUNDED_READY')
+               ORDER BY fpv.created_at DESC LIMIT 1`,
+              [meta.tenancy_id]
+            );
+            if (vaultRes.rows.length) {
+              const v           = vaultRes.rows[0];
+              const newBalance  = Math.min(
+                parseFloat(v.vault_balance) + amountNgn,
+                parseFloat(v.target_amount) * 1.5  // cap at 150% to prevent runaway
+              );
+              const target      = parseFloat(v.target_amount);
+              const periodLabel = meta.period_month || new Date().toISOString().slice(0, 7);
+              const h = require('crypto').createHash('sha256')
+                .update(`flex-rent-${v.id}-${amountNgn}-${reference}-${Date.now()}`)
+                .digest('hex');
+
+              let newStatus  = v.status;
+              let newPeriods = parseInt(v.funded_periods) || 0;
+              if (newBalance >= target) {
+                newPeriods += 1;
+                newStatus = (v.cashout_mode === 'LUMP_SUM') ? 'FUNDED_READY' : v.status;
+              }
+
+              // Insert contribution record (idempotent — ON CONFLICT DO NOTHING)
+              await pool.query(
+                `INSERT INTO flex_contributions
+                   (vault_id, tenancy_id, amount_ngn, paystack_ref, status, period_label, paid_at, ledger_hash)
+                 VALUES ($1,$2,$3,$4,'SUCCESS',$5,NOW(),$6)
+                 ON CONFLICT (paystack_ref) DO NOTHING`,
+                [v.id, meta.tenancy_id, amountNgn, reference, periodLabel, h]
+              );
+
+              // Update vault balance + status
+              await pool.query(
+                `UPDATE flex_pay_vaults
+                 SET vault_balance=$1, funded_periods=$2, status=$3, updated_at=NOW()
+                 WHERE id=$4`,
+                [newBalance, newPeriods, newStatus, v.id]
+              );
+
+              // Immutable ledger entry
+              await pool.query(
+                `INSERT INTO system_ledger (transaction_type, payload, immutable_hash)
+                 VALUES ('FLEX_RENT_PAYMENT',$1,$2)`,
+                [JSON.stringify({
+                  vault_id: v.id, tenancy_id: meta.tenancy_id,
+                  amount_ngn: amountNgn, reference, period_label: periodLabel,
+                  new_balance: newBalance,
+                  funded_pct: Math.min(Math.round((newBalance / target) * 100), 100),
+                }), h]
+              );
+
+              console.log(`[WEBHOOK] Vault credited → tenancy=${meta.tenancy_id} +₦${amountNgn} balance=₦${newBalance}`);
+
+              // ── Step 3: Auto-payout to landlord when vault fully funds ─────
+              if (newBalance >= target && PAYSTACK_SECRET) {
+                setImmediate(async () => {
+                  try {
+                    const projRes = await pool.query(
+                      `SELECT p.sponsor_id, ru.rent_amount, ru.currency
+                       FROM flex_pay_vaults fpv
+                       JOIN rental_units ru ON fpv.unit_id = ru.id
+                       JOIN projects p ON ru.project_id = p.id
+                       WHERE fpv.id = $1`,
+                      [v.id]
+                    );
+                    if (!projRes.rows.length) return;
+                    const { sponsor_id, rent_amount, currency } = projRes.rows[0];
+
+                    const bankRes = await pool.query(
+                      `SELECT * FROM landlord_bank_accounts
+                       WHERE user_id=$1 AND is_default=true
+                         AND paystack_recipient_code IS NOT NULL LIMIT 1`,
+                      [sponsor_id]
+                    );
+                    if (!bankRes.rows.length) {
+                      console.log(`[WEBHOOK] No default bank account for landlord ${sponsor_id} — payout skipped`);
+                      return;
+                    }
+                    const acct = bankRes.rows[0];
+
+                    // Deduct 2% platform fee, convert to kobo
+                    const platformFee = Math.round(parseFloat(rent_amount) * 0.02 * 100) / 100;
+                    const netKobo     = Math.round((parseFloat(rent_amount) - platformFee) * 100);
+                    const payRef      = `AUTO-PAYOUT-${require('crypto').randomUUID().split('-')[0].toUpperCase()}-${Date.now()}`;
+
+                    const tRes = await fetch(`${PAYSTACK_BASE}/transfer`, {
+                      method: 'POST',
+                      headers: { Authorization: `Bearer ${PAYSTACK_SECRET}`, 'Content-Type': 'application/json' },
+                      body: JSON.stringify({
+                        source:    'balance',
+                        amount:    netKobo,
+                        recipient: acct.paystack_recipient_code,
+                        reason:    `Nested Ark rent payout — ${periodLabel}`,
+                        reference: payRef,
+                        currency:  currency || 'NGN',
+                      }),
+                    });
+                    const tData = await tRes.json() as any;
+
+                    const ph = require('crypto').createHash('sha256')
+                      .update(`auto-payout-${payRef}-${sponsor_id}-${netKobo}-${Date.now()}`)
+                      .digest('hex');
+                    await pool.query(
+                      `INSERT INTO system_ledger (transaction_type, payload, immutable_hash)
+                       VALUES ('LANDLORD_PAYOUT',$1,$2)`,
+                      [JSON.stringify({
+                        reference: payRef, amount_ngn: netKobo / 100,
+                        platform_fee: platformFee, user_id: sponsor_id,
+                        bank_account_id: acct.id,
+                        transfer_code: tData.data?.transfer_code,
+                        transfer_status: tData.status ? 'INITIATED' : 'FAILED',
+                        vault_id: v.id, period_label: periodLabel,
+                      }), ph]
+                    );
+                    console.log(`[WEBHOOK] Auto-payout → ${acct.account_name} | ${acct.bank_name} | ₦${netKobo/100} | ref=${payRef}`);
+                  } catch (payoutErr: any) {
+                    console.warn('[WEBHOOK] Auto-payout error:', payoutErr.message);
+                  }
+                });
+              }
+            }
+          } catch (vaultErr: any) {
+            console.error('[WEBHOOK] Vault credit error:', vaultErr.message);
+          }
+        }
+
+        // ── Step 4: Yield distributions to investors ────────────────────────
         if (meta.rent_payment_id && meta.project_id) {
           await computeYieldDistributions(meta.project_id, meta.rent_payment_id, amountNgn);
         }
@@ -3803,7 +3940,7 @@ app.post("/api/payments/initialize", authenticate, async (req: Request, res: Res
       reference,
       currency: 'NGN',
       bearer:   'account', // Platform (main account) covers the Paystack transaction fee
-      callback_url: `${process.env.FRONTEND_URL || 'https://nested-ark-frontend.vercel.app'}/payment-success?ref=${reference}`,
+      callback_url: `${process.env.FRONTEND_URL || 'https://nested-ark-api.vercel.app'}/payment-success?ref=${reference}`,
       metadata: {
         product:       'nestedark',
         project_id:    projectId,
@@ -5270,16 +5407,18 @@ app.post('/api/rental/payments/initialize', async (req: Request, res: Response):
         amount: amountKobo,
         reference,
         currency: t.currency || 'NGN',
-        callback_url: `${process.env.FRONTEND_URL || 'https://nested-ark-frontend.vercel.app'}/rental/success?ref=${reference}`,
+        callback_url: `${process.env.FRONTEND_URL || 'https://nested-ark-api.vercel.app'}/tenant/pay/success?reference=${reference}`,
         metadata: {
-          product: 'nestedark',
-          payment_type: 'RENT',
+          product:         'nestedark',
+          payment_type:    'RENT',
           tenancy_id,
-          unit_name: t.unit_name,
-          project_id: t.project_id,
+          unit_id:         t.unit_id,
+          unit_name:       t.unit_name,
+          project_id:      t.project_id,
           rent_payment_id: rp.rows[0].id,
-          project_title: t.project_title,
-          period_month: month,
+          project_title:   t.project_title,
+          period_month:    month,
+          tenant_email:    t.tenant_email,
         },
         channels: ['card','bank','ussd','mobile_money','bank_transfer'],
       }),
@@ -6640,7 +6779,7 @@ app.post('/api/flex-pay/contribute', authenticate, async (req: Request, res: Res
         const contributionId = contribRes.rows[0]?.id ?? vault_id;
         const receiptNumber  = `ARK-RCT-${new Date().getFullYear()}-${contributionId.slice(0,8).toUpperCase()}`;
         const paidAtStr      = new Date().toLocaleDateString('en-GB', { day:'2-digit', month:'long', year:'numeric', hour12:false });
-        const frontendUrl    = process.env.FRONTEND_URL || 'https://nested-ark-frontend.vercel.app';
+        const frontendUrl    = process.env.FRONTEND_URL || 'https://nested-ark-api.vercel.app';
 
         const receiptHtml = buildReceiptHTML({
           receiptNumber,
@@ -7114,14 +7253,14 @@ app.get("/api/rental/invite-link/:unitId", async (req: Request, res: Response): 
       [unitId]
     );
     const unit = unitRes.rows[0];
-    const frontendUrl = process.env.FRONTEND_URL || 'https://nested-ark-frontend.vercel.app';
+    const frontendUrl = process.env.FRONTEND_URL || 'https://nested-ark-api.vercel.app';
     const onboardUrl  = `${frontendUrl}/onboard/${unitId}`;
     const unitLabel   = unit ? `${unit.unit_name} at ${unit.project_title}` : 'a property managed by Nested Ark';
     const rentLabel   = unit ? ` | Rent: ${unit.currency || 'NGN'} ${Number(unit.rent_amount).toLocaleString()}` : '';
     const message     = `*Nested Ark — Tenant Onboarding* 🏠\n\nYou have been invited to set up your digital tenancy for *${unitLabel}*${rentLabel}.\n\nClick the link below to verify your profile and choose your payment schedule (Weekly / Monthly / Quarterly).\n\nLink: ${onboardUrl}\n\n_Secured by Nested Ark Infrastructure OS_`;
     return res.json({ url: onboardUrl, whatsapp_link: `https://wa.me/?text=${encodeURIComponent(message)}`, unit_name: unit?.unit_name ?? '', project_title: unit?.project_title ?? '' });
   } catch {
-    const frontendUrl = process.env.FRONTEND_URL || 'https://nested-ark-frontend.vercel.app';
+    const frontendUrl = process.env.FRONTEND_URL || 'https://nested-ark-api.vercel.app';
     const onboardUrl  = `${frontendUrl}/onboard/${unitId}`;
     const message     = `*Nested Ark Infrastructure Invite* 🏠\n\nYou have been invited to onboard as a tenant. Click to set up your profile.\n\nLink: ${onboardUrl}`;
     return res.json({ url: onboardUrl, whatsapp_link: `https://wa.me/?text=${encodeURIComponent(message)}` });
@@ -7231,7 +7370,7 @@ app.post('/api/tenant/onboard', async (req: Request, res: Response): Promise<any
     await client.query('COMMIT');
 
     // ── Dual-channel welcome (non-blocking) ────────────────────────────────
-    const frontendUrl = process.env.FRONTEND_URL || 'https://nested-ark-frontend.vercel.app';
+    const frontendUrl = process.env.FRONTEND_URL || 'https://nested-ark-api.vercel.app';
     setImmediate(async () => {
       try {
         const emailHtml = arkEmail(

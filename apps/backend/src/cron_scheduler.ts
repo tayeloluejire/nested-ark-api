@@ -112,7 +112,7 @@ export function startReminderCron(pool: Pool, getMailer: MailerFactory): void {
               <strong style="color:#f97316;">48-Hour Rule:</strong> If payment is not received within 48 hours,
               a formal Notice to Pay will be automatically issued.
             </p>`,
-            { label: 'Pay Now — Ark Portal', url: `${frontendUrl}/tenant/dashboard` }
+            { label: 'Pay Now — Ark Portal', url: `${frontendUrl}/tenant/pay?tenancy_id=${v.tenancy_id}` }
           );
 
           await mailer.sendMail({
@@ -259,7 +259,7 @@ export function startReminderCron(pool: Pool, getMailer: MailerFactory): void {
               <strong style="color:#f97316">Respond by: ${deadlineStr}</strong><br><br>
               Failure to act will result in escalation to eviction proceedings.
             </p>`,
-            { label: 'Resolve Now — Ark Portal', url: `${process.env.FRONTEND_URL}/tenant/dashboard` }
+            { label: 'Resolve Now — Pay Immediately', url: `${process.env.FRONTEND_URL}/tenant/pay?tenancy_id=${v.tenancy_id}` }
           );
 
           await mailer.sendMail({
@@ -306,7 +306,81 @@ export function startReminderCron(pool: Pool, getMailer: MailerFactory): void {
         );
       }
 
-      console.log(`[CRON:${runId}] Cycle complete — due:${dueVaults.rows.length} overdue:${overdueVaults.rows.length} rolled:${fundedVaults.rows.length}`);
+      // ── 4. Auto-payout: for each rolled vault, trigger Paystack transfer ────
+      let payoutsTriggered = 0;
+      const PAYSTACK_SK = process.env.PAYSTACK_SECRET_KEY || '';
+      if (PAYSTACK_SK) {
+        for (const v of fundedVaults.rows) {
+          try {
+            // Get landlord bank account for this vault's project
+            const projRes = await client.query(
+              `SELECT p.sponsor_id, t.rent_amount, ru.currency
+               FROM flex_pay_vaults fpv
+               JOIN tenancies t ON fpv.tenancy_id = t.id
+               JOIN rental_units ru ON fpv.unit_id = ru.id
+               JOIN projects p ON ru.project_id = p.id
+               WHERE fpv.id = $1`,
+              [v.id]
+            );
+            if (!projRes.rows.length) continue;
+            const { sponsor_id, rent_amount, currency } = projRes.rows[0];
+
+            const bankRes = await client.query(
+              `SELECT * FROM landlord_bank_accounts
+               WHERE user_id=$1 AND is_default=true
+                 AND paystack_recipient_code IS NOT NULL LIMIT 1`,
+              [sponsor_id]
+            );
+            if (!bankRes.rows.length) continue;
+            const acct = bankRes.rows[0];
+
+            const platformFee = Math.round(parseFloat(rent_amount) * 0.02 * 100) / 100;
+            const netKobo     = Math.round((parseFloat(rent_amount) - platformFee) * 100);
+            const payRef      = `CRON-PAYOUT-${crypto.randomUUID().split('-')[0].toUpperCase()}-${Date.now()}`;
+
+            const tRes = await fetch('https://api.paystack.co/transfer', {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${PAYSTACK_SK}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                source:    'balance',
+                amount:    netKobo,
+                recipient: acct.paystack_recipient_code,
+                reason:    `Nested Ark monthly rent payout`,
+                reference: payRef,
+                currency:  currency || 'NGN',
+              }),
+            });
+            const tData = await (tRes as any).json() as any;
+
+            const ph = crypto.createHash('sha256')
+              .update(`cron-payout-${payRef}-${sponsor_id}-${netKobo}-${Date.now()}`)
+              .digest('hex');
+
+            await client.query(
+              `INSERT INTO system_ledger (transaction_type, payload, immutable_hash)
+               VALUES ('LANDLORD_PAYOUT', $1, $2)`,
+              [JSON.stringify({
+                reference: payRef, amount_ngn: netKobo / 100,
+                platform_fee: platformFee, user_id: sponsor_id,
+                bank_account_id: acct.id,
+                transfer_code: tData.data?.transfer_code,
+                transfer_status: tData.status ? 'INITIATED' : 'FAILED',
+                vault_id: v.id,
+              }), ph]
+            );
+
+            payoutsTriggered++;
+            console.log(`[CRON:${runId}] AUTO-PAYOUT → ${acct.account_name} | ${acct.bank_name} | ₦${netKobo/100} | ref=${payRef} | status=${tData.data?.status || 'pending'}`);
+          } catch (payErr: any) {
+            console.warn(`[CRON:${runId}] PAYOUT FAILED vault=${v.id}: ${payErr.message}`);
+          }
+        }
+      }
+
+      console.log(`[CRON:${runId}] Cycle complete — due:${dueVaults.rows.length} overdue:${overdueVaults.rows.length} rolled:${fundedVaults.rows.length} payouts:${payoutsTriggered}`);
     } catch (err: any) {
       console.error(`[CRON:${runId}] Fatal cycle error: ${err.message}`);
     } finally {
