@@ -62,6 +62,7 @@ export default function TenantDashboardPage() {
   const [loading,       setLoading]       = useState(true);
   const [error,         setError]         = useState('');
   const [payLoading,    setPayLoading]    = useState(false);
+  const [payUrl,        setPayUrl]        = useState('');
   const [tab,           setTab]           = useState<'vault' | 'history' | 'profile' | 'notices'>('vault');
 
   // ── TOKEN FIX ──────────────────────────────────────────────────────────────
@@ -126,6 +127,23 @@ export default function TenantDashboardPage() {
       load();
     }
   }, [load]);
+
+  // ── Initiate Paystack rent payment ─────────────────────────────────────────
+  const initiatePay = async () => {
+    if (!tenancy?.id) return;
+    setPayLoading(true); setPayUrl('');
+    try {
+      const res = await api.post('/api/rental/payments/initialize', {
+        tenancy_id: tenancy.id,
+        period_month: new Date().toISOString().slice(0, 7),
+      });
+      // Redirect to Paystack checkout
+      window.location.href = res.data.authorization_url;
+    } catch (e: any) {
+      alert(e?.response?.data?.error ?? 'Could not initiate payment. Please try again.');
+      setPayLoading(false);
+    }
+  };
 
   const handlePay = async () => {
     if (!vault) return;
@@ -390,6 +408,34 @@ export default function TenantDashboardPage() {
         {/* ── VAULT TAB ─────────────────────────────────────────────────── */}
         {tab === 'vault' && (
           <div className="space-y-3">
+            {/* ── Pay Now CTA ── */}
+            {vault && tenancy && (
+              <div className="p-5 rounded-2xl border border-teal-500/20 bg-teal-500/5 space-y-3">
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <p className="text-[9px] text-teal-500 uppercase font-black tracking-widest">Next Payment Due</p>
+                    <p className="font-mono font-bold text-xl text-teal-400 mt-1">
+                      {vault.currency ?? 'NGN'} {safeN(vault.installment_amount).toLocaleString()}
+                    </p>
+                    <p className="text-[9px] text-zinc-500 mt-0.5">
+                      {(vault.frequency ?? 'monthly').toLowerCase()} installment
+                      {vault.next_due_date ? ` · due ${new Date(vault.next_due_date).toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' })}` : ''}
+                    </p>
+                  </div>
+                  <button
+                    onClick={initiatePay}
+                    disabled={payLoading}
+                    className="flex items-center gap-2 px-5 py-3 bg-teal-500 text-black font-black text-xs uppercase tracking-widest rounded-2xl hover:bg-teal-400 transition-all disabled:opacity-60 shadow-lg shadow-teal-500/20 flex-shrink-0"
+                  >
+                    {payLoading
+                      ? <><Loader2 size={14} className="animate-spin" /> Redirecting…</>
+                      : <><CreditCard size={14} /> Pay Now</>
+                    }
+                  </button>
+                </div>
+              </div>
+            )}
+
             {contributions.length === 0 ? (
               <div className="py-10 text-center border border-dashed border-zinc-800 rounded-2xl">
                 <Wallet className="text-zinc-700 mx-auto mb-3" size={24} />
