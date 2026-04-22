@@ -911,6 +911,17 @@ const ensureTablesExist = async () => {
       ALTER TABLE rent_payments       ADD COLUMN IF NOT EXISTS project_id UUID REFERENCES projects(id);
       ALTER TABLE yield_distributions ADD COLUMN IF NOT EXISTS project_id UUID REFERENCES projects(id);
       ALTER TABLE maintenance_logs    ADD COLUMN IF NOT EXISTS project_id UUID REFERENCES projects(id);
+      -- ── Rental unit detail columns (added for property management suite) ──
+      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS bathrooms         INTEGER DEFAULT 1;
+      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS floor_level       VARCHAR(20);
+      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS furnished         BOOLEAN DEFAULT false;
+      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS parking           BOOLEAN DEFAULT false;
+      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS service_charge    DECIMAL(15,2) DEFAULT 0;
+      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS security_deposit  DECIMAL(15,2) DEFAULT 0;
+      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS amenities         JSONB DEFAULT '[]';
+      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS photo_urls        JSONB DEFAULT '[]';
+      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS available_from    DATE;
+      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS updated_at        TIMESTAMP WITH TIME ZONE DEFAULT NOW();
       ALTER TABLE flex_pay_vaults     ADD COLUMN IF NOT EXISTS project_id UUID REFERENCES projects(id);
       ALTER TABLE rent_reminders      ADD COLUMN IF NOT EXISTS project_id UUID REFERENCES projects(id);
       ALTER TABLE legal_notices       ADD COLUMN IF NOT EXISTS project_id UUID REFERENCES projects(id);
@@ -1009,24 +1020,6 @@ app.post("/api/auth/register", async (req: Request, res: Response): Promise<any>
     );
     
     console.log(`✅ User registered: ${email}`);
-
-    // ── Auto-link TENANT to any pre-existing tenancy with matching email ──────
-    // This handles the case where a landlord pre-created the tenancy (via the
-    // rental management page) before the tenant registered their account.
-    // On register we immediately link the user_id so the dashboard resolves.
-    if ((role || '').toUpperCase() === 'TENANT') {
-      pool.query(
-        `UPDATE tenancies SET tenant_user_id = $1
-         WHERE LOWER(tenant_email) = LOWER($2)
-           AND tenant_user_id IS NULL
-           AND status = 'ACTIVE'`,
-        [userId, email.toLowerCase()]
-      ).then(r => {
-        if (r.rowCount && r.rowCount > 0) {
-          console.log(`[REGISTER] Auto-linked tenant_user_id for ${email} → ${r.rowCount} tenancy`);
-        }
-      }).catch(() => {}); // non-blocking, non-fatal
-    }
 
     // ── Send verification email (non-blocking — registration succeeds even if mail fails) ──
     try {
@@ -4904,6 +4897,101 @@ app.get('/api/rental/units/:projectId', authenticate, async (req: Request, res: 
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
 
+
+
+// ── PUT /api/rental/units/:id — update unit details (landlord only) ──────────
+app.put('/api/rental/units/:id', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId = (req as any).userId;
+  try {
+    const { id } = req.params;
+    const {
+      unit_name, unit_type, bedrooms, bathrooms, floor_area_sqm,
+      floor_level, furnished, parking,
+      rent_amount, currency, service_charge, security_deposit,
+      description, amenities,
+      photo_urls,  // string[] — array of image URLs
+      available_from,
+    } = req.body;
+
+    // Verify ownership via projects join
+    const own = await pool.query(
+      `SELECT ru.id FROM rental_units ru
+       JOIN projects p ON ru.project_id = p.id
+       WHERE ru.id=$1 AND p.sponsor_id=$2`,
+      [id, userId]
+    );
+    if (!own.rows.length)
+      return res.status(403).json({ error: 'Unauthorised or unit not found' });
+
+    const r = await pool.query(
+      `UPDATE rental_units SET
+        unit_name        = COALESCE($1,  unit_name),
+        unit_type        = COALESCE($2,  unit_type),
+        bedrooms         = COALESCE($3,  bedrooms),
+        bathrooms        = COALESCE($4,  bathrooms),
+        floor_area_sqm   = COALESCE($5,  floor_area_sqm),
+        floor_level      = COALESCE($6,  floor_level),
+        furnished        = COALESCE($7,  furnished),
+        parking          = COALESCE($8,  parking),
+        rent_amount      = COALESCE($9,  rent_amount),
+        currency         = COALESCE($10, currency),
+        service_charge   = COALESCE($11, service_charge),
+        security_deposit = COALESCE($12, security_deposit),
+        description      = COALESCE($13, description),
+        amenities        = COALESCE($14, amenities),
+        photo_urls       = COALESCE($15, photo_urls),
+        available_from   = COALESCE($16, available_from),
+        updated_at       = NOW()
+      WHERE id=$17
+      RETURNING *`,
+      [
+        unit_name       ?? null,
+        unit_type       ?? null,
+        bedrooms        ?? null,
+        bathrooms       ?? null,
+        floor_area_sqm  ?? null,
+        floor_level     ?? null,
+        furnished       ?? null,
+        parking         ?? null,
+        rent_amount     ?? null,
+        currency        ?? null,
+        service_charge  ?? null,
+        security_deposit ?? null,
+        description     ?? null,
+        amenities       ? JSON.stringify(amenities) : null,
+        photo_urls      ? JSON.stringify(photo_urls) : null,
+        available_from  ?? null,
+        id,
+      ]
+    );
+    return res.json({ success: true, unit: r.rows[0] });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
+// ── PATCH /api/rental/units/:id/status — set VACANT/MAINTENANCE/PENDING ─────
+app.patch('/api/rental/units/:id/status', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId = (req as any).userId;
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+    const allowed = ['VACANT', 'OCCUPIED', 'PENDING', 'MAINTENANCE'];
+    if (!allowed.includes(status))
+      return res.status(400).json({ error: `status must be one of: ${allowed.join(', ')}` });
+
+    const own = await pool.query(
+      `SELECT ru.id FROM rental_units ru JOIN projects p ON ru.project_id=p.id WHERE ru.id=$1 AND p.sponsor_id=$2`,
+      [id, userId]
+    );
+    if (!own.rows.length) return res.status(403).json({ error: 'Unauthorised or unit not found' });
+
+    const r = await pool.query(
+      `UPDATE rental_units SET status=$1, updated_at=NOW() WHERE id=$2 RETURNING *`,
+      [status, id]
+    );
+    return res.json({ success: true, unit: r.rows[0] });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
 // ── POST /api/rental/tenancies — create a lease ──────────────────────────
 app.post('/api/rental/tenancies', authenticate, async (req: Request, res: Response): Promise<any> => {
   const userId = (req as any).userId;
@@ -6961,59 +7049,6 @@ app.post('/api/tenant/onboard', async (req: Request, res: Response): Promise<any
       } catch(err: any) { console.warn('[ONBOARD] Welcome dispatch failed:', err.message); }
     });
 
-    // ── Create or find user account and issue JWT so tenant is auto-logged-in ──
-    // This means the tenant goes directly to the dashboard after onboarding
-    // without needing a separate login step.
-    let authToken: string | null = null;
-    try {
-      const existingUser = await client.query(
-        `SELECT id FROM users WHERE LOWER(email) = LOWER($1)`,
-        [email.toLowerCase().trim()]
-      );
-
-      let tenantUserId: string;
-
-      if (existingUser.rows.length > 0) {
-        // User already exists — link their account to this tenancy
-        tenantUserId = existingUser.rows[0].id;
-        await client.query(
-          `UPDATE tenancies SET tenant_user_id = $1 WHERE id = $2 AND tenant_user_id IS NULL`,
-          [tenantUserId, tenancyId]
-        );
-      } else {
-        // Create a new user account for this tenant
-        const crypto2 = require('crypto');
-        const bcrypt2 = require('bcryptjs');
-        const newUserId = require('uuid').v4();
-        // Generate a temporary password they can reset — or use a provided password
-        const tempPassword = crypto2.randomBytes(16).toString('hex');
-        const hashedPw = await bcrypt2.hash(tempPassword, 12);
-        await client.query(
-          `INSERT INTO users (id, email, password, full_name, phone, role)
-           VALUES ($1,$2,$3,$4,$5,'TENANT')
-           ON CONFLICT (email) DO NOTHING`,
-          [newUserId, email.toLowerCase().trim(), hashedPw, fullName.trim(), phone?.trim() || null]
-        );
-        // Re-fetch in case of conflict
-        const uRes = await client.query(`SELECT id FROM users WHERE LOWER(email) = LOWER($1)`, [email.toLowerCase().trim()]);
-        tenantUserId = uRes.rows[0]?.id ?? newUserId;
-        await client.query(
-          `UPDATE tenancies SET tenant_user_id = $1 WHERE id = $2 AND tenant_user_id IS NULL`,
-          [tenantUserId, tenancyId]
-        );
-      }
-
-      // Issue JWT token for immediate login
-      authToken = jwt.sign(
-        { id: tenantUserId, email: email.toLowerCase().trim(), role: 'TENANT' },
-        JWT_SECRET,
-        { expiresIn: JWT_EXPIRY }
-      );
-    } catch (authErr: any) {
-      // Non-fatal — tenancy still created, user just needs to log in separately
-      console.warn('[ONBOARD] Auth account creation warning:', authErr.message);
-    }
-
    return res.status(201).json({
       success: true,
       tenancy_id: tenancyId,
@@ -7022,7 +7057,6 @@ app.post('/api/tenant/onboard', async (req: Request, res: Response): Promise<any
       installment_amount: installment,
       message: `Welcome aboard, ${fullName.split(' ')[0]}! Your vault is active. Check email + WhatsApp for your welcome pack.`,
       ledger_hash: h,
-      tokens: authToken ? { access_token: authToken, expires_in: JWT_EXPIRY } : undefined,
       whatsapp_action: phone ? `https://wa.me/${phone.replace(/\D/g,'')}?text=${encodeURIComponent(`Welcome to Nested Ark! Your vault is set up for ${unit.unit_name}. Check your email for the handbook: ${frontendUrl}/tenant/dashboard`)}` : null,
     });
   } catch(e: any) {
