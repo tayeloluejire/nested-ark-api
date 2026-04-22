@@ -114,7 +114,18 @@ export default function TenantDashboardPage() {
     }
   }, [router]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    // If tenant just completed onboarding in this session,
+    // their tenant_user_id link may not be committed yet — retry once after a short delay
+    const justOnboarded = typeof window !== 'undefined' && sessionStorage.getItem('ark_just_onboarded');
+    if (justOnboarded) {
+      sessionStorage.removeItem('ark_just_onboarded');
+      // Small delay to allow DB commit to propagate before first load
+      setTimeout(load, 1200);
+    } else {
+      load();
+    }
+  }, [load]);
 
   const handlePay = async () => {
     if (!vault) return;
@@ -154,61 +165,64 @@ export default function TenantDashboardPage() {
     </div>
   );
 
-  // ── Smart error state: distinguish "no tenancy" from real errors ──────────
+  // Detect "no tenancy" vs real errors
   const isNoTenancy =
     error.toLowerCase().includes('no active tenancy') ||
     error.toLowerCase().includes('tenancy not found') ||
     error.toLowerCase().includes('not found');
 
   if (error) return (
-    <div className="min-h-screen bg-[#050505] text-white flex items-center justify-center">
-      <div className="text-center space-y-5 px-6 max-w-sm">
+    <div className="min-h-screen bg-[#050505] text-white flex items-center justify-center px-6">
+      <div className="w-full max-w-sm space-y-5">
         {isNoTenancy ? (
           <>
-            <div className="w-16 h-16 rounded-2xl bg-teal-500/10 border border-teal-500/20 flex items-center justify-center mx-auto">
-              <Home size={28} className="text-teal-500" />
+            {/* ── No tenancy yet ── */}
+            <div className="text-center space-y-4">
+              <div className="w-16 h-16 rounded-2xl bg-teal-500/10 border border-teal-500/20 flex items-center justify-center mx-auto">
+                <Home size={28} className="text-teal-500" />
+              </div>
+              <div>
+                <p className="font-black text-lg uppercase tracking-tight">No Tenancy Linked</p>
+                <p className="text-zinc-500 text-sm mt-2 leading-relaxed">
+                  Your account isn&apos;t linked to a tenancy yet.
+                </p>
+              </div>
             </div>
-            <div>
-              <p className="font-black text-lg uppercase tracking-tight">No Tenancy Found</p>
-              <p className="text-zinc-500 text-sm mt-2 leading-relaxed">
-                Your account isn&apos;t linked to a tenancy yet. This usually means your landlord
-                hasn&apos;t onboarded you yet, or you registered before being assigned a unit.
-              </p>
+
+            <div className="p-4 rounded-2xl border border-zinc-800 bg-zinc-900/40 space-y-2 text-sm text-zinc-400">
+              <p className="text-[9px] text-zinc-600 uppercase font-bold tracking-widest">Why this happens</p>
+              <p>• You registered before your landlord assigned you a unit</p>
+              <p>• Your landlord hasn&apos;t onboarded you yet</p>
+              <p>• You used a different email than the one on your invitation</p>
             </div>
+
             <div className="space-y-2">
-              <a
-                href="/onboard"
-                className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-teal-500 text-black font-black text-xs uppercase tracking-widest rounded-xl hover:bg-teal-400 transition-all"
-              >
-                Complete Onboarding
-              </a>
               <button
                 onClick={load}
-                className="w-full px-6 py-3 border border-zinc-700 text-zinc-400 font-bold text-xs uppercase tracking-widest rounded-xl hover:border-zinc-500 hover:text-zinc-200 transition-all"
+                className="w-full flex items-center justify-center gap-2 px-6 py-3.5 bg-teal-500 text-black font-black text-xs uppercase tracking-widest rounded-xl hover:bg-teal-400 transition-all"
               >
-                Retry
+                <RefreshCw size={13} /> Try Again (after sign-out/in)
               </button>
+              <p className="text-[9px] text-zinc-600 text-center">
+                Tip: sign out and sign back in — this auto-links your account
+              </p>
               <button
                 onClick={() => {
                   localStorage.removeItem('token');
                   localStorage.removeItem('ark_token');
-                  window.location.replace('/login');
+                  router.replace('/login');
                 }}
-                className="w-full px-6 py-3 text-zinc-600 font-bold text-xs uppercase tracking-widest hover:text-zinc-400 transition-all"
+                className="w-full px-6 py-3 border border-zinc-700 text-zinc-400 font-bold text-xs uppercase tracking-widest rounded-xl hover:border-zinc-500 hover:text-zinc-200 transition-all"
               >
-                Sign Out
+                Sign Out & Sign Back In
               </button>
             </div>
-            <p className="text-[9px] text-zinc-700 leading-relaxed">
-              If your landlord has already assigned you a unit, try signing out and logging
-              back in — this links your account to your tenancy automatically.
-            </p>
           </>
         ) : (
           <>
             <AlertTriangle className="text-amber-400 mx-auto" size={32} />
-            <p className="font-bold">{error}</p>
-            <button onClick={load} className="px-6 py-3 bg-teal-500 text-black font-black text-xs uppercase tracking-widest rounded-xl hover:bg-teal-400 transition-all">
+            <p className="font-bold text-center">{error}</p>
+            <button onClick={load} className="w-full px-6 py-3 bg-teal-500 text-black font-black text-xs uppercase tracking-widest rounded-xl hover:bg-teal-400 transition-all">
               Retry
             </button>
           </>

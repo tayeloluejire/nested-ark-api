@@ -11,7 +11,7 @@ const safeF = (v: any): string => safeN(v).toLocaleString();
 const safeD = (v: any, d = 2): string => safeN(v).toFixed(d);
 
 
-// API calls use relative URLs — proxied to Render by next.config.js rewrites (no CORS)
+// All API calls use the api client (via Next.js proxy) — no CORS, no hardcoded URLs
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface UnitInfo {
@@ -205,7 +205,8 @@ export default function OnboardPage() {
     setSubmitting(true);
     setError('');
     try {
-      // Upload selfie & signature as base64 strings — backend stores as-is or to cloud
+      // ── Step 1: Create the tenancy record + vault ──────────────────────────
+      // NOTE: This endpoint does NOT require auth — it's the public onboarding gate.
       const body = {
         unitId,
         fullName:             form.fullName.trim(),
@@ -225,15 +226,40 @@ export default function OnboardPage() {
         digital_signature_url: form.signatureDataUrl || null,
       };
 
-      const res = await api.post('/api/tenant/onboard', body);
-      // Store JWT token if returned so tenant is auto-logged-in
-      const token = res.data?.tokens?.access_token ?? res.data?.token;
+      await api.post('/api/tenant/onboard', body);
+
+      // ── Step 2: Auto-create the user account so tenant can log in ─────────
+      // Try to register. If account already exists (409) that's fine — just log in.
+      let token: string | null = null;
+      const password = form.phone.trim().replace(/\D/g, '').slice(-8) || 'Ark@' + form.fullName.split(' ')[0];
+
+      try {
+        const regRes = await api.post('/api/auth/register', {
+          full_name: form.fullName.trim(),
+          email:     form.email.toLowerCase().trim(),
+          phone:     form.phone.trim(),
+          password,
+          role:      'TENANT',
+        });
+        token = regRes.data?.tokens?.access_token ?? regRes.data?.token ?? null;
+      } catch (regErr: any) {
+        // Account may already exist — this is OK. Tenant must log in manually.
+        console.warn('[onboard] Auto-register skipped:', regErr?.response?.data?.error);
+      }
+
+      // ── Step 3: Store token if we got one (tenant is now logged in) ────────
       if (token) {
         localStorage.setItem('token', token);
       }
+
+      // Store a flag so the dashboard knows this is a fresh onboard
+      if (typeof window !== 'undefined') {
+        sessionStorage.setItem('ark_just_onboarded', '1');
+      }
+
       setDone(true);
     } catch (e: any) {
-      setError(e?.response?.data?.error || e.message || 'Something went wrong. Please try again.');
+      setError(e?.response?.data?.error ?? e.message ?? 'Something went wrong. Please try again.');
     } finally {
       setSubmitting(false);
     }
@@ -270,10 +296,31 @@ export default function OnboardPage() {
           <h1 className="text-2xl font-black text-white mb-3">Welcome Aboard!</h1>
           <p className="text-zinc-400 text-sm mb-6 leading-relaxed">
             Your digital tenancy for <strong className="text-teal-400">{unit?.unit_name}</strong> at{' '}
-            <strong className="text-white">{unit?.project_title}</strong> is now active.<br /><br />
-            Check your email and WhatsApp for your official Tenancy Handbook and vault details.
+            <strong className="text-white">{unit?.project_title}</strong> is now active.
+            Your Flex-Pay vault has been initialised and your welcome pack is on its way.
           </p>
-          <div className="bg-zinc-900 border border-teal-800 rounded-xl p-4 mb-6 text-left">
+
+          {/* Credential box — shown so tenant knows how to log back in */}
+          <div className="bg-zinc-900 border border-teal-800 rounded-xl p-4 mb-4 text-left space-y-3">
+            <p className="text-xs text-zinc-500 uppercase tracking-widest font-bold">Your Login Credentials</p>
+            <div className="space-y-2 text-sm">
+              <div className="flex justify-between">
+                <span className="text-zinc-500">Email</span>
+                <span className="text-white font-mono font-bold">{form.email.toLowerCase().trim()}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-zinc-500">Temp password</span>
+                <span className="text-teal-400 font-mono font-bold text-xs">
+                  {form.phone.trim().replace(/\D/g, '').slice(-8) || `Ark@${form.fullName.split(' ')[0]}`}
+                </span>
+              </div>
+            </div>
+            <p className="text-[9px] text-zinc-600 uppercase tracking-wide">
+              Change your password after first login in settings
+            </p>
+          </div>
+
+          <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 mb-6 text-left">
             <p className="text-xs text-zinc-500 uppercase tracking-widest font-bold mb-2">What happens next</p>
             <ul className="space-y-2 text-sm text-zinc-300">
               <li>✅ Tenancy created &amp; ledger hash recorded</li>
@@ -284,9 +331,15 @@ export default function OnboardPage() {
           </div>
           <button
             onClick={() => router.replace('/tenant/dashboard')}
-            className="w-full bg-teal-500 hover:bg-teal-400 text-black font-bold py-3 rounded-lg transition text-sm"
+            className="w-full bg-teal-500 hover:bg-teal-400 text-black font-bold py-3 rounded-lg transition text-sm mb-2"
           >
-            Go to My Tenant Dashboard →
+            Open My Tenant Dashboard →
+          </button>
+          <button
+            onClick={() => router.replace('/login')}
+            className="w-full border border-zinc-700 text-zinc-400 hover:text-white font-bold py-3 rounded-lg transition text-sm"
+          >
+            Sign In Instead
           </button>
         </div>
       </div>
