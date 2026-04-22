@@ -911,6 +911,25 @@ const ensureTablesExist = async () => {
       ALTER TABLE rent_payments       ADD COLUMN IF NOT EXISTS project_id UUID REFERENCES projects(id);
       ALTER TABLE yield_distributions ADD COLUMN IF NOT EXISTS project_id UUID REFERENCES projects(id);
       ALTER TABLE maintenance_logs    ADD COLUMN IF NOT EXISTS project_id UUID REFERENCES projects(id);
+      -- ── Landlord bank account & payout config table ──────────────────────
+      CREATE TABLE IF NOT EXISTS landlord_bank_accounts (
+        id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id          UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        project_id       UUID REFERENCES projects(id) ON DELETE CASCADE,
+        account_name     VARCHAR(255) NOT NULL,
+        account_number   VARCHAR(30)  NOT NULL,
+        bank_code        VARCHAR(20)  NOT NULL,
+        bank_name        VARCHAR(255) NOT NULL,
+        currency         VARCHAR(10)  DEFAULT 'NGN',
+        paystack_recipient_code VARCHAR(100),
+        is_verified      BOOLEAN DEFAULT false,
+        is_default       BOOLEAN DEFAULT false,
+        created_at       TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        updated_at       TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_lba_user_default
+        ON landlord_bank_accounts(user_id) WHERE is_default = true;
+
       -- ── Rental unit detail columns (added for property management suite) ──
       ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS bathrooms         INTEGER DEFAULT 1;
       ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS floor_level       VARCHAR(20);
@@ -4851,6 +4870,195 @@ async function computeYieldDistributions(
     client.release();
   }
 }
+
+
+// ════════════════════════════════════════════════════════════════════════════
+// LANDLORD BANK ACCOUNT & PAYSTACK PAYOUT ENDPOINTS
+// ════════════════════════════════════════════════════════════════════════════
+
+// ── GET /api/paystack/banks — fetch list of Nigerian banks from Paystack ────
+app.get('/api/paystack/banks', authenticate, async (req: Request, res: Response): Promise<any> => {
+  try {
+    const country = (req.query.country as string) || 'nigeria';
+    const psRes = await fetch(
+      `${PAYSTACK_BASE}/bank?country=${country}&use_cursor=false&perPage=100`,
+      { headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` } }
+    );
+    const data = await psRes.json() as any;
+    if (!data.status) return res.status(500).json({ error: 'Could not fetch banks' });
+    return res.json({ success: true, banks: data.data });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
+// ── POST /api/paystack/resolve-account — verify account number ──────────────
+app.post('/api/paystack/resolve-account', authenticate, async (req: Request, res: Response): Promise<any> => {
+  try {
+    const { account_number, bank_code } = req.body;
+    if (!account_number || !bank_code)
+      return res.status(400).json({ error: 'account_number and bank_code required' });
+    const psRes = await fetch(
+      `${PAYSTACK_BASE}/bank/resolve?account_number=${account_number}&bank_code=${bank_code}`,
+      { headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` } }
+    );
+    const data = await psRes.json() as any;
+    if (!data.status) return res.status(400).json({ error: data.message || 'Could not verify account' });
+    return res.json({ success: true, account_name: data.data.account_name, account_number: data.data.account_number });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
+// ── GET /api/landlord/bank-accounts — list saved bank accounts ───────────────
+app.get('/api/landlord/bank-accounts', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId = (req as any).userId;
+  try {
+    const r = await pool.query(
+      `SELECT * FROM landlord_bank_accounts WHERE user_id=$1 ORDER BY is_default DESC, created_at DESC`,
+      [userId]
+    );
+    return res.json({ success: true, accounts: r.rows });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
+// ── POST /api/landlord/bank-accounts — save a bank account ──────────────────
+app.post('/api/landlord/bank-accounts', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId = (req as any).userId;
+  try {
+    const { account_name, account_number, bank_code, bank_name, currency, project_id, set_as_default } = req.body;
+    if (!account_name || !account_number || !bank_code || !bank_name)
+      return res.status(400).json({ error: 'account_name, account_number, bank_code, bank_name required' });
+
+    // Create Paystack Transfer Recipient for instant payouts
+    let recipientCode: string | null = null;
+    if (PAYSTACK_SECRET) {
+      try {
+        const prRes = await fetch(`${PAYSTACK_BASE}/transferrecipient`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${PAYSTACK_SECRET}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'nuban',
+            name: account_name,
+            account_number,
+            bank_code,
+            currency: currency || 'NGN',
+          }),
+        });
+        const prData = await prRes.json() as any;
+        if (prData.status && prData.data?.recipient_code) {
+          recipientCode = prData.data.recipient_code;
+        }
+      } catch (rcErr) {
+        console.warn('[PAYSTACK] Could not create recipient:', rcErr);
+      }
+    }
+
+    // If this is the first account or set_as_default, unset other defaults
+    if (set_as_default) {
+      await pool.query(
+        `UPDATE landlord_bank_accounts SET is_default=false WHERE user_id=$1`,
+        [userId]
+      );
+    }
+
+    const r = await pool.query(
+      `INSERT INTO landlord_bank_accounts
+         (user_id, project_id, account_name, account_number, bank_code, bank_name, currency,
+          paystack_recipient_code, is_verified, is_default)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,true,$9) RETURNING *`,
+      [userId, project_id || null, account_name, account_number, bank_code, bank_name,
+       currency || 'NGN', recipientCode, set_as_default ?? true]
+    );
+    return res.status(201).json({ success: true, account: r.rows[0] });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
+// ── DELETE /api/landlord/bank-accounts/:id — remove a bank account ───────────
+app.delete('/api/landlord/bank-accounts/:id', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId = (req as any).userId;
+  try {
+    const r = await pool.query(
+      `DELETE FROM landlord_bank_accounts WHERE id=$1 AND user_id=$2 RETURNING id`,
+      [req.params.id, userId]
+    );
+    if (!r.rows.length) return res.status(404).json({ error: 'Account not found' });
+    return res.json({ success: true });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
+// ── POST /api/landlord/payout — trigger Paystack transfer to landlord ────────
+// Called automatically by the cron or manually by admin after rent is collected
+app.post('/api/landlord/payout', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId = (req as any).userId;
+  try {
+    const { bank_account_id, amount_ngn, project_id, reason } = req.body;
+    if (!bank_account_id || !amount_ngn)
+      return res.status(400).json({ error: 'bank_account_id and amount_ngn required' });
+
+    const acct = await pool.query(
+      `SELECT * FROM landlord_bank_accounts WHERE id=$1 AND user_id=$2`,
+      [bank_account_id, userId]
+    );
+    if (!acct.rows.length) return res.status(404).json({ error: 'Bank account not found' });
+    const a = acct.rows[0];
+
+    if (!a.paystack_recipient_code)
+      return res.status(400).json({ error: 'Bank account not yet linked to Paystack. Please re-add it.' });
+    if (!PAYSTACK_SECRET)
+      return res.status(503).json({ error: 'Payment gateway not configured' });
+
+    const reference = `PAYOUT-${uuidv4().split('-')[0].toUpperCase()}-${Date.now()}`;
+    const amountKobo = Math.round(parseFloat(amount_ngn) * 100);
+
+    const transferRes = await fetch(`${PAYSTACK_BASE}/transfer`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${PAYSTACK_SECRET}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        source: 'balance',
+        amount: amountKobo,
+        recipient: a.paystack_recipient_code,
+        reason: reason || `Rental income payout — Nested Ark`,
+        reference,
+        currency: a.currency || 'NGN',
+      }),
+    });
+    const tData = await transferRes.json() as any;
+    if (!tData.status) return res.status(500).json({ error: tData.message || 'Transfer failed' });
+
+    // Log to system ledger
+    const h = require('crypto').createHash('sha256')
+      .update(`payout-${reference}-${userId}-${amount_ngn}-${Date.now()}`)
+      .digest('hex');
+    await pool.query(
+      `INSERT INTO system_ledger (transaction_type, payload, immutable_hash)
+       VALUES ('LANDLORD_PAYOUT', $1, $2)`,
+      [JSON.stringify({ reference, amount_ngn, user_id: userId, project_id, bank_account_id, transfer_code: tData.data?.transfer_code }), h]
+    );
+
+    return res.json({
+      success: true,
+      reference,
+      transfer_code: tData.data?.transfer_code,
+      status: tData.data?.status,
+      amount_ngn,
+      account_name: a.account_name,
+      bank_name:    a.bank_name,
+      message: `₦${parseFloat(amount_ngn).toLocaleString()} transfer initiated to ${a.account_name} at ${a.bank_name}`,
+    });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
+// ── GET /api/landlord/payout-history — list past payouts ────────────────────
+app.get('/api/landlord/payout-history', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId = (req as any).userId;
+  try {
+    const r = await pool.query(
+      `SELECT * FROM system_ledger
+       WHERE transaction_type='LANDLORD_PAYOUT'
+         AND payload->>'user_id'=$1
+       ORDER BY created_at DESC LIMIT 50`,
+      [userId]
+    );
+    return res.json({ success: true, payouts: r.rows.map(row => ({ ...row, ...JSON.parse(row.payload) })) });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
 
 // ── POST /api/rental/units — owner adds a lettable unit ──────────────────
 app.post('/api/rental/units', authenticate, async (req: Request, res: Response): Promise<any> => {
