@@ -92,6 +92,27 @@ const UNIT_TYPES   = ['APARTMENT','STUDIO','PENTHOUSE','DUPLEX','ROOM_ENSUITE','
 const CURRENCIES   = ['NGN','GHS','KES','ZAR','GBP','USD','EUR'];
 const AMENITY_OPTS = ['Air Conditioning','Internet/WiFi','Generator Backup','Water Heater','DSTV/Cable','Security','CCTV','Swimming Pool','Gym','Parking Space','Elevator/Lift','Boys Quarters','Laundry Room','Garden','Balcony','Intercom'];
 
+const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+
+  const handleSaveUnit = async (formData: any) => {
+    try {
+      const response = await api.post('/api/rental/units', {
+        project_id: projectId,
+        unit_name: formData.unitName,
+        category: formData.category,
+        current_rent: formData.rentAmount
+      });
+
+      if (response.data) {
+        setUnits(prev => [...prev, response.data]);
+        setIsAddModalOpen(false);
+        load(); // Refreshes your dashboard stats
+      }
+    } catch (error) {
+      alert("Failed to save unit. Check backend connection.");
+    }
+  };
+
 const NOTICE_TYPES = [
   { key: 'NOTICE_TO_PAY',    label: 'Notice to Pay',    desc: '7-day formal demand for overdue rent',      color: 'border-amber-500/40 bg-amber-500/5',   badge: 'bg-amber-500/10 text-amber-400 border-amber-500/20',   icon: Bell   },
   { key: 'NOTICE_TO_QUIT',   label: 'Notice to Quit',   desc: 'Formal quit notice — vacate in 30 days',    color: 'border-red-500/40 bg-red-500/5',        badge: 'bg-red-500/10 text-red-400 border-red-500/20',         icon: Home   },
@@ -764,10 +785,12 @@ function RentalManagementContent() {
               <p className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest">
                 Property Units ({units.length}) — click <Edit3 size={9} className="inline" /> to edit details, photos, and rates
               </p>
-              <Link href={`/projects/${projectId}`}
-                className="flex items-center gap-1.5 px-4 py-2 border border-zinc-800 text-zinc-500 rounded-xl text-[9px] font-bold uppercase tracking-widest hover:border-zinc-600 hover:text-zinc-300 transition-all">
-                <Plus size={11} /> Add Units in Project Settings
-              </Link>
+              <button 
+  onClick={() => setIsAddModalOpen(true)}
+  className="flex items-center gap-1.5 px-4 py-2 bg-teal-500 text-black rounded-xl text-[9px] font-black uppercase tracking-widest hover:bg-white transition-all"
+>
+  <Plus size={11} /> Register New Unit
+</button>
             </div>
 
             {units.length === 0 ? (
@@ -1107,6 +1130,34 @@ function RentalManagementContent() {
         )}
 
       </main>
+      
+      {isAddModalOpen && (
+  <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/90 backdrop-blur-sm">
+    <div className="bg-zinc-950 border border-zinc-800 p-8 rounded-3xl w-full max-w-md">
+      <h2 className="text-xl font-black uppercase mb-6">Register Unit</h2>
+      <form onSubmit={(e: any) => {
+        e.preventDefault();
+        handleSaveUnit({
+          unitName: e.target.unitName.value,
+          category: e.target.category.value,
+          rentAmount: e.target.rentAmount.value
+        });
+      }} className="space-y-4">
+        <input name="unitName" placeholder="Unit Name (e.g. Flat 101)" required className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3" />
+        <select name="category" className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3">
+          <option>Mini-flat</option>
+          <option>1-Bedroom</option>
+          <option>2-Bedroom Flat</option>
+        </select>
+        <input name="rentAmount" type="number" placeholder="Annual Rent (₦)" required className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3" />
+        <div className="flex gap-3">
+          <button type="button" onClick={() => setIsAddModalOpen(false)} className="flex-1 px-4 py-3 border border-zinc-800 rounded-xl text-xs uppercase">Cancel</button>
+          <button type="submit" className="flex-1 px-4 py-3 bg-teal-500 text-black rounded-xl text-xs font-black uppercase">Save Unit</button>
+        </div>
+      </form>
+    </div>
+  </div>
+)}
       <Footer />
     </div>
   );
