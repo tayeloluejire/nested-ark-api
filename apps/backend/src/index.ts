@@ -7500,28 +7500,26 @@ export default app;
 
 /**
  * POST: Register a new unit
- * Frontend path: apps/frontend/src/app/projects/[id]/rental-management (Register Unit Modal)
  */
 app.post('/api/rental/units', authenticate, async (req: Request, res: Response) => {
     try {
         const { project_id, unit_name, category, current_rent } = req.body;
 
-        // Basic validation
         if (!project_id || !unit_name) {
-            return res.status(400).json({ error: "Project ID and Unit Name are required" });
+            return res.status(400).json({ error: "Project ID and Unit Name are required." });
         }
 
         const result = await pool.query(
             `INSERT INTO units (id, project_id, unit_name, category, current_rent, status, created_at)
              VALUES ($1, $2, $3, $4, $5, $6, NOW())
              RETURNING *`,
-            [uuidv4(), project_id, unit_name, category, current_rent || 0, 'vacant']
+            [uuidv4(), project_id, unit_name, category, parseFloat(current_rent) || 0, 'vacant']
         );
 
         res.status(201).json(result.rows[0]);
-    } catch (error) {
-        console.error("Error adding unit:", error);
-        res.status(500).json({ error: "Internal server error while adding unit" });
+    } catch (error: any) {
+        console.error("DB Error:", error.message);
+        res.status(500).json({ error: "Database rejected the unit registration." });
     }
 });
 
@@ -7554,38 +7552,6 @@ app.get('/api/rental/project/:id/units', authenticate, async (req: Request, res:
         res.json(result.rows);
     } catch (error) {
         console.error("Error fetching units:", error);
-        res.status(500).json({ error: "Internal server error" });
-    }
-});
-
-/**
- * GET: Tenancy history/status
- */
-app.get('/api/rental/project/:id/tenancies', authenticate, async (req: Request, res: Response) => {
-    try {
-        const result = await pool.query(
-            'SELECT * FROM tenancies WHERE project_id = $1', 
-            [req.params.id]
-        );
-        res.json(result.rows);
-    } catch (error) {
-        console.error("Error fetching tenancies:", error);
-        res.status(500).json({ error: "Internal server error" });
-    }
-});
-
-/**
- * GET: Payment receipts
- */
-app.get('/api/rental/project/:id/receipts', authenticate, async (req: Request, res: Response) => {
-    try {
-        const result = await pool.query(
-            'SELECT * FROM rental_payments WHERE project_id = $1 ORDER BY created_at DESC', 
-            [req.params.id]
-        );
-        res.json(result.rows);
-    } catch (error) {
-        console.error("Error fetching receipts:", error);
         res.status(500).json({ error: "Internal server error" });
     }
 });
