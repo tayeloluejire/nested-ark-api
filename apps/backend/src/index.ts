@@ -7517,3 +7517,25 @@ app.get('/api/rental/project/:id/receipts', authenticateToken, async (req, res) 
     const result = await pool.query('SELECT * FROM rental_payments WHERE project_id =  ORDER BY created_at DESC', [req.params.id]);
     res.json(result.rows);
 });
+
+// --- RENTAL MANAGEMENT API ---
+app.get('/api/rental/project/:id/summary', authenticateToken, async (req, res) => {
+    const { id } = req.params;
+    const result = await pool.query('SELECT COUNT(*) as units, SUM(current_rent) as expected FROM units WHERE project_id = ', [id]);
+    res.json(result.rows[0] || { units: 0, expected: 0 });
+});
+
+app.get('/api/rental/project/:id/units', authenticateToken, async (req, res) => {
+    const result = await pool.query('SELECT * FROM units WHERE project_id =  ORDER BY unit_name ASC', [req.params.id]);
+    res.json(result.rows);
+});
+
+app.get('/api/rental/project/:id/tenancies', authenticateToken, async (req, res) => {
+    const result = await pool.query('SELECT * FROM tenancies WHERE project_id = ', [req.params.id]);
+    res.json(result.rows);
+});
+
+app.get('/api/rental/project/:id/receipts', authenticateToken, async (req, res) => {
+    const result = await pool.query('SELECT * FROM rental_payments WHERE project_id =  ORDER BY created_at DESC', [req.params.id]);
+    res.json(result.rows);
+});
