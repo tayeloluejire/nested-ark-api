@@ -7497,7 +7497,37 @@ startServer();
 export default app;
 
 // --- RENTAL MANAGEMENT API ---
-// Note: Using 'authenticate' as per the compiler's suggestion for this architecture
+
+/**
+ * POST: Register a new unit
+ * Frontend path: apps/frontend/src/app/projects/[id]/rental-management (Register Unit Modal)
+ */
+app.post('/api/rental/units', authenticate, async (req: Request, res: Response) => {
+    try {
+        const { project_id, unit_name, category, current_rent } = req.body;
+
+        // Basic validation
+        if (!project_id || !unit_name) {
+            return res.status(400).json({ error: "Project ID and Unit Name are required" });
+        }
+
+        const result = await pool.query(
+            `INSERT INTO units (id, project_id, unit_name, category, current_rent, status, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, NOW())
+             RETURNING *`,
+            [uuidv4(), project_id, unit_name, category, current_rent || 0, 'vacant']
+        );
+
+        res.status(201).json(result.rows[0]);
+    } catch (error) {
+        console.error("Error adding unit:", error);
+        res.status(500).json({ error: "Internal server error while adding unit" });
+    }
+});
+
+/**
+ * GET: Project Rental Summary
+ */
 app.get('/api/rental/project/:id/summary', authenticate, async (req: Request, res: Response) => {
     try {
         const { id } = req.params;
@@ -7512,6 +7542,9 @@ app.get('/api/rental/project/:id/summary', authenticate, async (req: Request, re
     }
 });
 
+/**
+ * GET: All units for a specific project
+ */
 app.get('/api/rental/project/:id/units', authenticate, async (req: Request, res: Response) => {
     try {
         const result = await pool.query(
@@ -7525,6 +7558,9 @@ app.get('/api/rental/project/:id/units', authenticate, async (req: Request, res:
     }
 });
 
+/**
+ * GET: Tenancy history/status
+ */
 app.get('/api/rental/project/:id/tenancies', authenticate, async (req: Request, res: Response) => {
     try {
         const result = await pool.query(
@@ -7538,6 +7574,9 @@ app.get('/api/rental/project/:id/tenancies', authenticate, async (req: Request, 
     }
 });
 
+/**
+ * GET: Payment receipts
+ */
 app.get('/api/rental/project/:id/receipts', authenticate, async (req: Request, res: Response) => {
     try {
         const result = await pool.query(
