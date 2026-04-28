@@ -7497,45 +7497,56 @@ startServer();
 export default app;
 
 // --- RENTAL MANAGEMENT API ---
-app.get('/api/rental/project/:id/summary', authenticateToken, async (req, res) => {
-    const { id } = req.params;
-    const result = await pool.query('SELECT COUNT(*) as units, SUM(current_rent) as expected FROM units WHERE project_id = ', [id]);
-    res.json(result.rows[0]);
+// Note: Using 'authenticate' as per the compiler's suggestion for this architecture
+app.get('/api/rental/project/:id/summary', authenticate, async (req: Request, res: Response) => {
+    try {
+        const { id } = req.params;
+        const result = await pool.query(
+            'SELECT COUNT(*) as units, COALESCE(SUM(current_rent), 0) as expected FROM units WHERE project_id = $1', 
+            [id]
+        );
+        res.json(result.rows[0] || { units: 0, expected: 0 });
+    } catch (error) {
+        console.error("Error fetching rental summary:", error);
+        res.status(500).json({ error: "Internal server error" });
+    }
 });
 
-app.get('/api/rental/project/:id/units', authenticateToken, async (req, res) => {
-    const result = await pool.query('SELECT * FROM units WHERE project_id =  ORDER BY unit_name ASC', [req.params.id]);
-    res.json(result.rows);
+app.get('/api/rental/project/:id/units', authenticate, async (req: Request, res: Response) => {
+    try {
+        const result = await pool.query(
+            'SELECT * FROM units WHERE project_id = $1 ORDER BY unit_name ASC', 
+            [req.params.id]
+        );
+        res.json(result.rows);
+    } catch (error) {
+        console.error("Error fetching units:", error);
+        res.status(500).json({ error: "Internal server error" });
+    }
 });
 
-app.get('/api/rental/project/:id/tenancies', authenticateToken, async (req, res) => {
-    const result = await pool.query('SELECT * FROM tenancies WHERE project_id = ', [req.params.id]);
-    res.json(result.rows);
+app.get('/api/rental/project/:id/tenancies', authenticate, async (req: Request, res: Response) => {
+    try {
+        const result = await pool.query(
+            'SELECT * FROM tenancies WHERE project_id = $1', 
+            [req.params.id]
+        );
+        res.json(result.rows);
+    } catch (error) {
+        console.error("Error fetching tenancies:", error);
+        res.status(500).json({ error: "Internal server error" });
+    }
 });
 
-app.get('/api/rental/project/:id/receipts', authenticateToken, async (req, res) => {
-    const result = await pool.query('SELECT * FROM rental_payments WHERE project_id =  ORDER BY created_at DESC', [req.params.id]);
-    res.json(result.rows);
-});
-
-// --- RENTAL MANAGEMENT API ---
-app.get('/api/rental/project/:id/summary', authenticateToken, async (req, res) => {
-    const { id } = req.params;
-    const result = await pool.query('SELECT COUNT(*) as units, SUM(current_rent) as expected FROM units WHERE project_id = ', [id]);
-    res.json(result.rows[0] || { units: 0, expected: 0 });
-});
-
-app.get('/api/rental/project/:id/units', authenticateToken, async (req, res) => {
-    const result = await pool.query('SELECT * FROM units WHERE project_id =  ORDER BY unit_name ASC', [req.params.id]);
-    res.json(result.rows);
-});
-
-app.get('/api/rental/project/:id/tenancies', authenticateToken, async (req, res) => {
-    const result = await pool.query('SELECT * FROM tenancies WHERE project_id = ', [req.params.id]);
-    res.json(result.rows);
-});
-
-app.get('/api/rental/project/:id/receipts', authenticateToken, async (req, res) => {
-    const result = await pool.query('SELECT * FROM rental_payments WHERE project_id =  ORDER BY created_at DESC', [req.params.id]);
-    res.json(result.rows);
+app.get('/api/rental/project/:id/receipts', authenticate, async (req: Request, res: Response) => {
+    try {
+        const result = await pool.query(
+            'SELECT * FROM rental_payments WHERE project_id = $1 ORDER BY created_at DESC', 
+            [req.params.id]
+        );
+        res.json(result.rows);
+    } catch (error) {
+        console.error("Error fetching receipts:", error);
+        res.status(500).json({ error: "Internal server error" });
+    }
 });
