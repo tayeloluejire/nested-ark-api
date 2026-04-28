@@ -19,6 +19,8 @@ const safeN = (v: any): number => { const n = Number(v); return (v == null || is
 const safeF = (v: any): string => safeN(v).toLocaleString();
 const safeD = (v: any, d = 2): string => safeN(v).toFixed(d);
 
+// ADD THIS LINE TO FIX THE CRASH:
+const safeNsafeF = (v: any): string => safeF(v); 
 
 const MIN_NGN = 5000;
 const MAX_NGN = 5_000_000;
