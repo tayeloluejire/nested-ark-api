@@ -1,441 +1,527 @@
 'use client';
 export const dynamic = 'force-dynamic';
+/**
+ * /projects/[id]/rental-management
+ *
+ * FIX SUMMARY (was causing 404s):
+ *  ❌ /api/rental/project/:id/units      → ✅ /api/rental/project/:id  (single endpoint)
+ *  ❌ /api/rental/project/:id/tenancies  → ✅ /api/rental/project/:id  (single endpoint)
+ *  ❌ /api/rental/project/:id/receipts   → ✅ /api/rental/project/:id  (single endpoint)
+ *  ❌ /api/rental/project/:id/summary    → ✅ /api/rental/project/:id  (single endpoint)
+ *  ❌ POST /api/rental/units { current_rent } → ✅ { rent_amount }
+ *
+ * The backend exposes ONE mega endpoint: GET /api/rental/project/:projectId
+ * that returns { success, project, units, tenancies, payments, distributions, summary }
+ * Use that everywhere — never hit sub-paths that don't exist.
+ */
 
-import { Suspense, useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useParams, useSearchParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import Image from 'next/image';
 import Navbar from '@/components/Navbar';
 import Footer from '@/components/Footer';
 import api from '@/lib/api';
 import {
-  Building2, Users, Gavel, FileText, MessageCircle,
-  Copy, CheckCircle2, Loader2, AlertCircle, ArrowRight,
-  Phone, Mail, Calendar, ChevronRight, Bell, X,
-  Receipt, Home, Shield, Clock, TrendingUp,
-  Download, RefreshCw, Edit3, Save, Plus, Trash2,
-  Camera, Bath, BedDouble, Maximize2, Car, Star,
-  ChevronDown, ChevronUp, Wifi, Wind, Zap, Droplet
+  Building2, Users, Receipt, Gavel, Loader2, AlertCircle,
+  Plus, X, ChevronRight, ShieldCheck, TrendingUp, DollarSign,
+  Home, CheckCircle2, Clock, RefreshCw
 } from 'lucide-react';
 
-// ── Defensive numeric helpers ──────────────────────────────────────────────
+// ── Defensive numeric helpers ────────────────────────────────────────────────
 const safeN = (v: any): number => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
-const safeF = (v: any): string  => safeN(v).toLocaleString();
+const safeF = (v: any): string => safeN(v).toLocaleString();
 
-function RentalManagementContent() {
-  const { id: projectId } = useParams();
-  const searchParams = useSearchParams();
-  const router = useRouter();
-  const initialTab = searchParams.get('tab') || 'units';
+// ── Unit type options ────────────────────────────────────────────────────────
+const UNIT_TYPES = [
+  { value: 'SELF_CONTAIN',  label: 'Mini-flat' },
+  { value: 'ONE_BEDROOM',   label: '1-Bedroom' },
+  { value: 'TWO_BEDROOM',   label: '2-Bedroom Flat' },
+  { value: 'THREE_BEDROOM', label: '3-Bedroom Flat' },
+  { value: 'SHOP',          label: 'Shop/Commercial' },
+];
 
-  // ── 1. STATE MANAGEMENT (Consolidated & Top-Level) ───────────────────────
-  const [tab, setTab] = useState(initialTab);
-  const [loading, setLoading] = useState(true);
-  const [units, setUnits] = useState<any[]>([]);
-  const [tenancies, setTenancies] = useState<any[]>([]);
-  const [receipts, setReceipts] = useState<any[]>([]);
-  const [litigation, setLitigation] = useState<any[]>([]);
-  const [summary, setSummary] = useState({ units: 0, expected: 0 });
-  
-  // Modals & UI States
-  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editForm, setEditForm] = useState<any>(null);
-  const [isSaving, setIsSaving] = useState(false);
+// ── Tab definitions ──────────────────────────────────────────────────────────
+const TABS = [
+  { id: 'inventory',  label: 'Inventory',  icon: Building2 },
+  { id: 'tenants',    label: 'Tenants',    icon: Users },
+  { id: 'receipts',   label: 'Receipts',   icon: Receipt },
+  { id: 'litigation', label: 'Litigation', icon: Gavel },
+];
 
-  // ── 2. DATA LOADING ──────────────────────────────────────────────────────
-  const load = useCallback(async () => {
-    try {
-      setLoading(true);
-      const [sumRes, unitRes, tenRes, recRes] = await Promise.all([
-        api.get(`/api/rental/project/${projectId}/summary`),
-        api.get(`/api/rental/project/${projectId}/units`),
-        api.get(`/api/rental/project/${projectId}/tenancies`),
-        api.get(`/api/rental/project/${projectId}/receipts`)
-      ]);
-      setSummary(sumRes.data);
-      setUnits(unitRes.data || []);
-      setTenancies(tenRes.data || []);
-      setReceipts(recRes.data || []);
-    } catch (err) {
-      console.error("Critical Load Error:", err);
-    } finally {
-      setLoading(false);
-    }
-  }, [projectId]);
-
-  useEffect(() => { load(); }, [load]);
-
-  // ── 3. ACTIONS: UNITS ────────────────────────────────────────────────────
-  const handleSaveUnit = async (formData: any) => {
-    try {
-      setIsSaving(true);
-      const response = await api.post('/api/rental/units', {
-        project_id: projectId,
-        unit_name: formData.unitName,
-        category: formData.category,
-        current_rent: formData.rentAmount
-      });
-      if (response.data) {
-        setIsAddModalOpen(false);
-        load();
-      }
-    } catch (error: any) {
-      alert(error.response?.data?.error || "Registration Failed.");
-    } finally {
-      setIsSaving(false);
-    }
-  };
-
-  const startEdit = (unit: any) => {
-    setEditingId(unit.id);
-    setEditForm({ ...unit });
-  };
-
-  const updateUnit = async () => {
-    if (!editingId) return;
-    try {
-      setIsSaving(true);
-      await api.put(`/api/rental/units/${editingId}`, editForm);
-      setEditingId(null);
-      load();
-    } catch (err) {
-      alert("Update failed. Ensure backend supports PUT /api/rental/units/:id");
-    } finally {
-      setIsSaving(false);
-    }
-  };
-
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-[#050505] flex flex-col items-center justify-center gap-4">
-        <Loader2 className="animate-spin text-teal-500" size={40} />
-        <p className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">Syncing Infrastructure...</p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="min-h-screen bg-[#050505] text-white selection:bg-teal-500/30 font-sans">
-      <Navbar />
-      
-      <main className="max-w-7xl mx-auto px-6 py-16">
-        {/* HEADER BLOCK */}
-        <div className="flex flex-col md:flex-row md:items-end justify-between gap-8 mb-16">
-          <div className="space-y-4">
-            <div className="flex items-center gap-2">
-              <Link href={`/projects/${projectId}`} className="p-2 bg-zinc-900 rounded-xl text-zinc-500 hover:text-white transition-all hover:scale-110">
-                <Building2 size={18} />
-              </Link>
-              <ChevronRight size={14} className="text-zinc-800" />
-              <span className="text-[10px] font-black uppercase tracking-[0.2em] text-teal-500 px-3 py-1 bg-teal-500/5 border border-teal-500/20 rounded-full">Rental Node 0.3a</span>
-            </div>
-            <h1 className="text-5xl md:text-7xl font-black uppercase tracking-tighter leading-none italic">
-              Rental Command<br/><span className="text-teal-500">Centre</span>
-            </h1>
-          </div>
-
-          <div className="flex gap-4">
-            <div className="bg-zinc-900/40 border border-zinc-800/50 backdrop-blur-md p-6 rounded-[2rem] min-w-[160px]">
-              <p className="text-[9px] text-zinc-500 uppercase font-black mb-2 tracking-widest">Global Inventory</p>
-              <p className="text-3xl font-black font-mono">{summary.units} <span className="text-sm text-zinc-700">UNITS</span></p>
-            </div>
-            <div className="bg-zinc-900/40 border border-zinc-800/50 backdrop-blur-md p-6 rounded-[2rem] min-w-[160px]">
-              <p className="text-[9px] text-zinc-500 uppercase font-black mb-2 tracking-widest">Projected Revenue</p>
-              <p className="text-3xl font-black font-mono text-teal-400">₦{safeF(summary.expected)}</p>
-            </div>
-          </div>
-        </div>
-
-        {/* NAVIGATION TABS */}
-        <div className="flex gap-2 bg-zinc-900/20 p-2 rounded-3xl border border-zinc-800/50 mb-12 overflow-x-auto no-scrollbar">
-          {[
-            { id: 'units', label: 'Inventory', icon: Building2 },
-            { id: 'tenants', label: 'Ledger', icon: Users },
-            { id: 'litigation', label: 'Litigation', icon: Gavel },
-            { id: 'receipts', label: 'Receipts', icon: Receipt },
-          ].map((t) => (
-            <button
-              key={t.id}
-              onClick={() => setTab(t.id)}
-              className={`flex items-center gap-3 px-8 py-4 rounded-2xl text-[11px] font-black uppercase tracking-widest transition-all ${
-                tab === t.id ? 'bg-teal-500 text-black shadow-2xl shadow-teal-500/20 scale-105' : 'text-zinc-500 hover:bg-zinc-900 hover:text-white'
-              }`}
-            >
-              <t.icon size={14} /> {t.label}
-            </button>
-          ))}
-        </div>
-
-        {/* CONTENT AREA */}
-        <div className="min-h-[400px]">
-          {/* TAB: UNITS */}
-          {tab === 'units' && (
-            <div className="animate-in fade-in slide-in-from-bottom-4 duration-700">
-              <div className="flex items-center justify-between mb-8">
-                <h2 className="text-[11px] font-black uppercase tracking-[0.3em] text-zinc-600">Property Nodes</h2>
-                <button onClick={() => setIsAddModalOpen(true)} className="flex items-center gap-2 px-6 py-3 bg-white text-black rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-teal-500 transition-all active:scale-95">
-                  <Plus size={14} /> Register New Unit
-                </button>
-              </div>
-
-              {units.length === 0 ? (
-                <div className="py-32 text-center border border-dashed border-zinc-800 rounded-[3rem] bg-zinc-900/5">
-                  <Building2 className="mx-auto text-zinc-900 mb-6" size={64} />
-                  <p className="text-zinc-600 font-black uppercase text-xs tracking-widest italic">Infrastructure Empty</p>
-                </div>
-              ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
-                  {units.map((unit) => (
-                    <div key={unit.id} className="group relative bg-zinc-900/30 border border-zinc-800/50 rounded-[2.5rem] overflow-hidden hover:border-teal-500/40 transition-all flex flex-col h-full">
-                      {/* Unit Header Image/Status */}
-                      <div className="h-48 bg-zinc-950 relative overflow-hidden">
-                        {unit.photo_urls?.[0] ? (
-                          <Image src={unit.photo_urls[0]} alt={unit.unit_name} fill className="object-cover opacity-60 group-hover:scale-110 transition-transform duration-1000" />
-                        ) : (
-                          <div className="w-full h-full flex items-center justify-center opacity-10"><Building2 size={80} /></div>
-                        )}
-                        <div className="absolute top-6 left-6 px-3 py-1 bg-black/60 backdrop-blur-md rounded-lg border border-white/10 text-[9px] font-black uppercase tracking-widest">
-                          {unit.status || 'VACANT'}
-                        </div>
-                        <button onClick={() => startEdit(unit)} className="absolute top-6 right-6 p-2 bg-white/10 backdrop-blur-md rounded-xl hover:bg-white hover:text-black transition-all">
-                          <Edit3 size={14} />
-                        </button>
-                      </div>
-
-                      <div className="p-8 flex flex-col flex-grow">
-                        <p className="text-[10px] font-black text-teal-500 uppercase tracking-widest mb-2">{unit.category}</p>
-                        <h3 className="text-3xl font-black uppercase tracking-tighter mb-4 italic leading-none">{unit.unit_name}</h3>
-                        
-                        <div className="space-y-4 mb-8">
-                          <p className="text-3xl font-mono font-black">₦{safeF(unit.current_rent)}<span className="text-[10px] text-zinc-600 font-bold tracking-widest ml-1">/ANNUAL</span></p>
-                          <div className="flex gap-4">
-                            <div className="flex items-center gap-2 text-zinc-500 text-[10px] font-bold uppercase"><BedDouble size={14}/> {unit.bedrooms || 0}</div>
-                            <div className="flex items-center gap-2 text-zinc-500 text-[10px] font-bold uppercase"><Bath size={14}/> {unit.bathrooms || 0}</div>
-                            <div className="flex items-center gap-2 text-zinc-500 text-[10px] font-bold uppercase"><Maximize2 size={14}/> {unit.floor_area_sqm || 0}m²</div>
-                          </div>
-                        </div>
-
-                        <div className="mt-auto flex gap-3">
-                          <button className="flex-1 px-4 py-3 bg-zinc-800 rounded-xl text-[9px] font-black uppercase tracking-widest hover:bg-zinc-700 transition-all">View Analytics</button>
-                          <button className="px-4 py-3 border border-zinc-800 rounded-xl text-zinc-500 hover:text-teal-500 transition-all"><Star size={14} /></button>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* TAB: TENANTS (RESTORED) */}
-          {tab === 'tenants' && (
-            <div className="space-y-6">
-              <p className="text-[11px] text-zinc-600 uppercase font-black tracking-[0.3em] mb-8">Active Tenancies ({tenancies?.length || 0})</p>
-              {tenancies.length === 0 ? (
-                 <div className="py-24 text-center border border-dashed border-zinc-800 rounded-3xl opacity-50"><Users className="mx-auto mb-4" /> <p className="text-[10px] font-black uppercase tracking-widest">No active ledger</p></div>
-              ) : (
-                <div className="grid gap-6">
-                  {tenancies.map((t: any) => (
-                    <div key={t.id} className="p-8 bg-zinc-900/40 border border-zinc-800/50 rounded-[2rem] flex flex-col md:flex-row md:items-center justify-between gap-6 group hover:border-teal-500/30 transition-all">
-                      <div className="flex items-center gap-6">
-                        <div className="w-16 h-16 rounded-2xl bg-zinc-800 flex items-center justify-center text-zinc-500 group-hover:bg-teal-500 group-hover:text-black transition-all">
-                          <Users size={24} />
-                        </div>
-                        <div>
-                          <p className="text-2xl font-black uppercase italic tracking-tighter">{t.tenant_name}</p>
-                          <p className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest mt-1">Bound to {t.unit_name}</p>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-8 text-right">
-                        <div>
-                          <p className="text-2xl font-mono font-black text-teal-400">₦{safeF(t.rent_amount)}</p>
-                          <p className="text-[9px] text-zinc-600 font-black uppercase tracking-widest">Current Obligation</p>
-                        </div>
-                        <Link href={`/projects/${projectId}/rental-management/tenant/${t.id}`} className="p-4 bg-zinc-800 rounded-2xl hover:bg-white hover:text-black transition-all">
-                          <ChevronRight size={20} />
-                        </Link>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* TAB: LITIGATION (RESTORED) */}
-          {tab === 'litigation' && (
-            <div className="py-24 text-center bg-zinc-900/20 border border-zinc-800 rounded-[3rem]">
-              <Gavel size={48} className="mx-auto text-zinc-800 mb-6" />
-              <p className="text-zinc-500 font-black uppercase text-[10px] tracking-[0.4em]">Zero Active Disputes</p>
-            </div>
-          )}
-
-          {/* TAB: RECEIPTS (RESTORED) */}
-          {tab === 'receipts' && (
-            <div className="space-y-4">
-              {receipts.length === 0 ? (
-                <div className="py-24 text-center opacity-30"><Receipt size={40} className="mx-auto mb-4" /><p className="text-[10px] font-black tracking-widest uppercase">No Transaction Data</p></div>
-              ) : (
-                receipts.map((r: any) => (
-                  <div key={r.id} className="p-6 bg-zinc-900/20 border border-zinc-800/40 rounded-3xl flex items-center justify-between group hover:border-white/10 transition-all">
-                    <div className="flex items-center gap-4">
-                      <div className="w-12 h-12 bg-teal-500/10 rounded-xl flex items-center justify-center text-teal-500"><Download size={20}/></div>
-                      <div>
-                        <p className="text-xs font-black uppercase">{r.tenant_name || 'System Transaction'}</p>
-                        <p className="text-[10px] text-zinc-600 font-mono">ID: {r.id.slice(0,8)}</p>
-                      </div>
-                    </div>
-                    <p className="text-xl font-mono font-black">₦{safeF(r.amount_ngn)}</p>
-                  </div>
-                ))
-              )}
-            </div>
-          )}
-        </div>
-
-        {/* TRUST SIGNATURE */}
-        <div className="mt-24 pt-12 border-t border-zinc-900 flex flex-wrap gap-8 justify-center">
-          <div className="flex items-center gap-3 text-[10px] font-black uppercase tracking-[0.2em] text-zinc-700">
-            <Shield size={14} className="text-teal-500" /> Tri-Layer Secure Engine
-          </div>
-          <div className="flex items-center gap-3 text-[10px] font-black uppercase tracking-[0.2em] text-zinc-700">
-            <TrendingUp size={14} className="text-teal-500" /> Real-Time Yield Oracle
-          </div>
-        </div>
-      </main>
-
-      {/* ── 4. MODALS (RESTORED FULL DETAIL EDITING) ───────────────────────── */}
-      
-      {/* REGISTER UNIT MODAL */}
-      {isAddModalOpen && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/95 backdrop-blur-xl animate-in fade-in duration-500">
-          <div className="bg-zinc-950 border border-zinc-800 p-10 rounded-[3rem] w-full max-w-md shadow-2xl">
-            <div className="flex justify-between items-center mb-10">
-              <h2 className="text-2xl font-black uppercase tracking-tighter italic">Register <span className="text-teal-500">Unit</span></h2>
-              <button onClick={() => setIsAddModalOpen(false)} className="p-3 hover:bg-zinc-900 rounded-full transition-colors"><X size={20} className="text-zinc-600" /></button>
-            </div>
-            
-            <form onSubmit={(e: any) => {
-              e.preventDefault();
-              handleSaveUnit({
-                unitName: e.target.unitName.value,
-                category: e.target.category.value,
-                rentAmount: e.target.rentAmount.value
-              });
-            }} className="space-y-6">
-              <div className="space-y-2">
-                <label className="text-[9px] font-black text-zinc-600 uppercase tracking-widest ml-1">Label / Identifier</label>
-                <input name="unitName" placeholder="e.g. FLAT 101A" required className="w-full bg-zinc-900/50 border border-zinc-800 rounded-2xl px-6 py-4 text-sm font-bold focus:border-teal-500 focus:outline-none transition-all uppercase placeholder:text-zinc-800" />
-              </div>
-              <div className="space-y-2">
-                <label className="text-[9px] font-black text-zinc-600 uppercase tracking-widest ml-1">Architecture Type</label>
-                <select name="category" className="w-full bg-zinc-900/50 border border-zinc-800 rounded-2xl px-6 py-4 text-sm font-bold focus:border-teal-500 focus:outline-none appearance-none transition-all">
-                  <option value="Mini-flat">Mini-flat</option>
-                  <option value="1-Bedroom">1-Bedroom</option>
-                  <option value="2-Bedroom Flat">2-Bedroom Flat</option>
-                  <option value="3-Bedroom Flat">3-Bedroom Flat</option>
-                  <option value="Shop/Commercial">Shop/Commercial</option>
-                </select>
-              </div>
-              <div className="space-y-2">
-                <label className="text-[9px] font-black text-zinc-600 uppercase tracking-widest ml-1">Annual Reserve (₦)</label>
-                <input name="rentAmount" type="number" placeholder="0.00" required className="w-full bg-zinc-900/50 border border-zinc-800 rounded-2xl px-6 py-4 text-sm font-mono text-teal-400 font-bold focus:border-teal-500 focus:outline-none transition-all placeholder:text-zinc-800" />
-              </div>
-              <button type="submit" disabled={isSaving} className="w-full py-5 bg-teal-500 text-black rounded-2xl text-[11px] font-black uppercase tracking-[0.2em] shadow-xl shadow-teal-500/20 active:scale-95 transition-all">
-                {isSaving ? <Loader2 className="animate-spin mx-auto" /> : "Deploy to Ledger"}
-              </button>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* FULL EDIT DETAIL MODAL (RESTORED FROM OLD) */}
-      {editingId && editForm && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/98 backdrop-blur-2xl animate-in zoom-in-95 duration-300">
-           <div className="bg-zinc-950 border border-zinc-800 p-10 rounded-[3rem] w-full max-w-4xl max-h-[90vh] overflow-y-auto no-scrollbar relative shadow-3xl">
-              <div className="sticky top-0 bg-zinc-950/80 backdrop-blur-md z-10 flex justify-between items-center pb-8 border-b border-zinc-900 mb-8">
-                <h2 className="text-3xl font-black uppercase tracking-tighter italic">Refine <span className="text-teal-500">Infrastructure Detail</span></h2>
-                <button onClick={() => setEditingId(null)} className="p-3 bg-zinc-900 hover:bg-white hover:text-black rounded-full transition-all"><X size={20} /></button>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-10">
-                <div className="space-y-8">
-                   <section className="space-y-4">
-                      <p className="text-[10px] font-black text-zinc-500 uppercase tracking-widest">Base Identity</p>
-                      <div className="grid grid-cols-1 gap-4">
-                        <input value={editForm.unit_name} onChange={e => setEditForm({...editForm, unit_name: e.target.value})} placeholder="Unit Name" className="w-full bg-zinc-900 border border-zinc-800 rounded-2xl px-6 py-4 font-bold text-sm" />
-                        <select value={editForm.category} onChange={e => setEditForm({...editForm, category: e.target.value})} className="w-full bg-zinc-900 border border-zinc-800 rounded-2xl px-6 py-4 font-bold text-sm">
-                           <option>Mini-flat</option><option>1-Bedroom</option><option>2-Bedroom Flat</option>
-                        </select>
-                      </div>
-                   </section>
-
-                   <section className="space-y-4">
-                      <p className="text-[10px] font-black text-zinc-500 uppercase tracking-widest">Specifications</p>
-                      <div className="grid grid-cols-3 gap-3">
-                         <div className="space-y-2">
-                           <label className="text-[8px] font-black text-zinc-700 uppercase ml-1">Beds</label>
-                           <input type="number" value={editForm.bedrooms || 0} onChange={e => setEditForm({...editForm, bedrooms: parseInt(e.target.value)})} className="w-full bg-zinc-900 border border-zinc-800 rounded-xl p-3 text-center" />
-                         </div>
-                         <div className="space-y-2">
-                           <label className="text-[8px] font-black text-zinc-700 uppercase ml-1">Baths</label>
-                           <input type="number" value={editForm.bathrooms || 0} onChange={e => setEditForm({...editForm, bathrooms: parseInt(e.target.value)})} className="w-full bg-zinc-900 border border-zinc-800 rounded-xl p-3 text-center" />
-                         </div>
-                         <div className="space-y-2">
-                           <label className="text-[8px] font-black text-zinc-700 uppercase ml-1">SQM</label>
-                           <input type="number" value={editForm.floor_area_sqm || 0} onChange={e => setEditForm({...editForm, floor_area_sqm: parseInt(e.target.value)})} className="w-full bg-zinc-900 border border-zinc-800 rounded-xl p-3 text-center" />
-                         </div>
-                      </div>
-                   </section>
-
-                   <section className="space-y-4">
-                      <p className="text-[10px] font-black text-zinc-500 uppercase tracking-widest">Financials (₦)</p>
-                      <input type="number" value={editForm.current_rent} onChange={e => setEditForm({...editForm, current_rent: parseFloat(e.target.value)})} className="w-full bg-zinc-900 border border-zinc-800 rounded-2xl px-6 py-4 font-mono text-teal-400 text-xl font-black" />
-                   </section>
-                </div>
-
-                <div className="space-y-8">
-                   <section className="space-y-4">
-                      <p className="text-[10px] font-black text-zinc-500 uppercase tracking-widest">Amenity Suite</p>
-                      <div className="grid grid-cols-2 gap-2">
-                         {['WiFi', 'Parking', 'Generator', 'Security', 'AC', 'Elevator'].map(amen => (
-                           <button key={amen} onClick={() => {
-                             const list = editForm.amenities || [];
-                             const next = list.includes(amen) ? list.filter((a:any) => a !== amen) : [...list, amen];
-                             setEditForm({...editForm, amenities: next});
-                           }} className={`px-4 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
-                             (editForm.amenities || []).includes(amen) ? 'bg-teal-500 text-black' : 'bg-zinc-900 text-zinc-600 border border-zinc-800 hover:border-zinc-700'
-                           }`}>{amen}</button>
-                         ))}
-                      </div>
-                   </section>
-
-                   <section className="space-y-4">
-                      <p className="text-[10px] font-black text-zinc-500 uppercase tracking-widest">Photo Assets (URLs)</p>
-                      <textarea rows={3} value={(editForm.photo_urls || []).join('\n')} onChange={e => setEditForm({...editForm, photo_urls: e.target.value.split('\n')})} placeholder="Enter image URLs (one per line)" className="w-full bg-zinc-900 border border-zinc-800 rounded-2xl p-6 text-xs text-zinc-500 font-mono focus:border-teal-500 outline-none" />
-                   </section>
-
-                   <div className="flex gap-4 pt-4">
-                      <button onClick={updateUnit} disabled={isSaving} className="flex-1 py-5 bg-white text-black rounded-[2rem] text-[11px] font-black uppercase tracking-widest hover:bg-teal-500 transition-all flex items-center justify-center gap-2 shadow-2xl">
-                        {isSaving ? <Loader2 size={16} className="animate-spin"/> : <Save size={16}/>} Save Infrastructure
-                      </button>
-                   </div>
-                </div>
-              </div>
-           </div>
-        </div>
-      )}
-
-      <Footer />
-    </div>
-  );
+interface Unit {
+  id: string; unit_name: string; unit_type: string; rent_amount: number;
+  currency: string; status: string; tenant_name?: string; tenant_email?: string;
+  tenancy_status?: string; tenancy_id?: string;
+}
+interface Tenancy {
+  id: string; tenant_name: string; tenant_email: string; unit_name: string;
+  rent_amount: number; status: string; lease_start?: string; lease_end?: string;
+  tenant_score?: number; notice_count?: number;
+}
+interface Payment {
+  id: string; amount_ngn: number; status: string; created_at: string;
+  tenant_name?: string; unit_name?: string; reference?: string;
+}
+interface Notice {
+  id: string; notice_type: string; status: string; issued_at: string;
+  tenant_name?: string; unit_name?: string;
+}
+interface Summary {
+  total_units: number; occupied_units: number; vacant_units: number;
+  occupancy_rate: number; total_collected_ngn: number; monthly_potential_ngn: number;
 }
 
 export default function RentalManagementPage() {
+  const { id }          = useParams<{ id: string }>();
+  const searchParams    = useSearchParams();
+  const router          = useRouter();
+  const tabParam        = searchParams.get('tab') || 'inventory';
+
+  const [activeTab,   setActiveTab]   = useState(tabParam);
+  const [project,     setProject]     = useState<any>(null);
+  const [units,       setUnits]       = useState<Unit[]>([]);
+  const [tenancies,   setTenancies]   = useState<Tenancy[]>([]);
+  const [payments,    setPayments]    = useState<Payment[]>([]);
+  const [notices,     setNotices]     = useState<Notice[]>([]);
+  const [summary,     setSummary]     = useState<Summary | null>(null);
+  const [loading,     setLoading]     = useState(true);
+  const [error,       setError]       = useState('');
+  const [showUnitForm, setShowUnitForm] = useState(false);
+
+  // Register-unit form state
+  const [unitForm, setUnitForm] = useState({
+    unit_name: '', unit_type: 'ONE_BEDROOM', rent_amount: '',
+  });
+  const [submitting, setSubmitting] = useState(false);
+  const [submitErr,  setSubmitErr]  = useState('');
+
+  // ── Sync tab with URL param ────────────────────────────────────────────────
+  useEffect(() => {
+    setActiveTab(tabParam);
+  }, [tabParam]);
+
+  // ── Single fetch — correct endpoint ───────────────────────────────────────
+  // GET /api/rental/project/:projectId returns everything in one shot:
+  // { success, project, units, tenancies, payments, distributions, summary }
+  const load = useCallback(async () => {
+    if (!id) return;
+    setLoading(true); setError('');
+    try {
+      const res = await api.get(`/api/rental/project/${id}`);
+      const d   = res.data;
+      setProject(d.project   ?? null);
+      setUnits(d.units       ?? []);
+      setTenancies(d.tenancies ?? []);
+      setPayments(d.payments  ?? []);
+      setNotices(d.notices    ?? []);
+      setSummary(d.summary    ?? null);
+    } catch (e: any) {
+      setError(e?.response?.data?.error ?? 'Could not load rental data. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  }, [id]);
+
+  useEffect(() => { load(); }, [load]);
+
+  // ── Tab change helper — keeps URL in sync ─────────────────────────────────
+  const switchTab = (tab: string) => {
+    setActiveTab(tab);
+    router.replace(`/projects/${id}/rental-management?tab=${tab}`, { scroll: false });
+  };
+
+  // ── Register unit — correct fields: project_id, unit_name, rent_amount ────
+  const submitUnit = async () => {
+    if (!unitForm.unit_name.trim() || !unitForm.rent_amount) {
+      setSubmitErr('Unit label and annual rent are required.');
+      return;
+    }
+    setSubmitting(true); setSubmitErr('');
+    try {
+      await api.post('/api/rental/units', {
+        project_id:  id,
+        unit_name:   unitForm.unit_name.trim(),
+        unit_type:   unitForm.unit_type,
+        rent_amount: parseFloat(unitForm.rent_amount),
+        currency:    'NGN',
+      });
+      setUnitForm({ unit_name: '', unit_type: 'ONE_BEDROOM', rent_amount: '' });
+      setShowUnitForm(false);
+      load();
+    } catch (e: any) {
+      setSubmitErr(e?.response?.data?.error ?? 'Failed to register unit.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // ── Loading ────────────────────────────────────────────────────────────────
+  if (loading) return (
+    <div className="min-h-screen bg-[#050505] text-white">
+      <Navbar />
+      <div className="flex items-center justify-center py-40">
+        <div className="text-center space-y-4">
+          <Loader2 className="animate-spin text-teal-500 mx-auto" size={32} />
+          <p className="text-zinc-500 text-sm uppercase font-bold tracking-widest">Loading Rental Command…</p>
+        </div>
+      </div>
+      <Footer />
+    </div>
+  );
+
   return (
-    <Suspense fallback={<div className="h-screen bg-[#050505] flex items-center justify-center"><Loader2 className="animate-spin text-teal-500" /></div>}>
-      <RentalManagementContent />
-    </Suspense>
+    <div className="min-h-screen bg-[#050505] text-white flex flex-col">
+      <Navbar />
+
+      <main className="flex-1 max-w-5xl mx-auto px-6 py-10 w-full space-y-8">
+
+        {/* Header */}
+        <div className="border-l-2 border-teal-500 pl-5">
+          <p className="text-[9px] text-teal-500 uppercase font-black tracking-[0.25em] mb-1">Rental Node 0.3a</p>
+          <h1 className="text-2xl font-black uppercase tracking-tight">Rental Command Centre</h1>
+          {project && (
+            <p className="text-zinc-500 text-xs mt-1">{project.project_number} · {project.title}</p>
+          )}
+        </div>
+
+        {/* Error banner */}
+        {error && (
+          <div className="p-4 rounded-xl bg-red-500/5 border border-red-500/20 flex items-start gap-3">
+            <AlertCircle size={14} className="text-red-400 flex-shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <p className="text-red-400 text-sm font-bold">{error}</p>
+              <button onClick={load} className="text-teal-500 text-xs font-bold mt-2 hover:text-white transition-colors flex items-center gap-1">
+                <RefreshCw size={10} /> Retry
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* KPI Row */}
+        {summary && (
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {[
+              { label: 'Global Inventory',   value: `${summary.total_units} UNITS`,     icon: Building2,   color: 'text-white' },
+              { label: 'Projected Revenue',  value: `₦${safeF(summary.monthly_potential_ngn)}`, icon: TrendingUp, color: 'text-teal-400' },
+              { label: 'Collected',          value: `₦${safeF(summary.total_collected_ngn)}`,   icon: DollarSign, color: 'text-amber-400' },
+              { label: 'Occupancy',          value: `${summary.occupancy_rate ?? 0}%`,  icon: Home,        color: 'text-teal-400' },
+            ].map(k => {
+              const Icon = k.icon;
+              return (
+                <div key={k.label} className="p-4 rounded-2xl border border-zinc-800 bg-zinc-900/20 space-y-1">
+                  <Icon size={13} className="text-zinc-600" />
+                  <p className={`text-xl font-black font-mono tabular-nums ${k.color}`}>{k.value}</p>
+                  <p className="text-[8px] text-zinc-600 uppercase font-bold tracking-widest">{k.label}</p>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Tabs */}
+        <div className="flex gap-1 border-b border-zinc-800 overflow-x-auto">
+          {TABS.map(t => {
+            const Icon = t.icon;
+            const active = activeTab === t.id;
+            return (
+              <button key={t.id} onClick={() => switchTab(t.id)}
+                className={`flex items-center gap-2 px-5 py-3 text-[10px] font-black uppercase tracking-widest whitespace-nowrap border-b-2 transition-all ${
+                  active ? 'border-teal-500 text-teal-400' : 'border-transparent text-zinc-500 hover:text-zinc-300'
+                }`}>
+                <Icon size={12} /> {t.label}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* ── TAB: INVENTORY ─────────────────────────────────────────────────── */}
+        {activeTab === 'inventory' && (
+          <div className="space-y-4">
+            {/* Register unit form toggle */}
+            <div className="flex items-center justify-between">
+              <p className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest">
+                {units.length} unit{units.length !== 1 ? 's' : ''} registered
+              </p>
+              <button onClick={() => { setShowUnitForm(v => !v); setSubmitErr(''); }}
+                className="flex items-center gap-1.5 text-[9px] text-teal-500 font-black uppercase hover:text-white transition-colors">
+                {showUnitForm ? <><X size={11} /> Cancel</> : <><Plus size={11} /> Register New Unit</>}
+              </button>
+            </div>
+
+            {/* Register unit form */}
+            {showUnitForm && (
+              <div className="p-5 rounded-2xl border border-teal-500/20 bg-teal-500/5 space-y-4">
+                <p className="text-[9px] text-teal-500 uppercase font-black tracking-widest">Register Unit</p>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <div className="space-y-1.5">
+                    <label className="text-[8px] text-zinc-500 uppercase font-bold">Label / Identifier</label>
+                    <input value={unitForm.unit_name}
+                      onChange={e => setUnitForm(f => ({ ...f, unit_name: e.target.value }))}
+                      placeholder="e.g. Flat 3B, Shop 2"
+                      className="w-full bg-black border border-zinc-700 rounded-xl px-4 py-3 text-sm text-white focus:border-teal-500 outline-none" />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-[8px] text-zinc-500 uppercase font-bold">Architecture Type</label>
+                    <select value={unitForm.unit_type}
+                      onChange={e => setUnitForm(f => ({ ...f, unit_type: e.target.value }))}
+                      className="w-full bg-black border border-zinc-700 rounded-xl px-4 py-3 text-sm text-white focus:border-teal-500 outline-none">
+                      {UNIT_TYPES.map(u => (
+                        <option key={u.value} value={u.value}>{u.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-[8px] text-zinc-500 uppercase font-bold">Annual Reserve (₦)</label>
+                    <input type="number" value={unitForm.rent_amount}
+                      onChange={e => setUnitForm(f => ({ ...f, rent_amount: e.target.value }))}
+                      placeholder="e.g. 600000"
+                      className="w-full bg-black border border-zinc-700 rounded-xl px-4 py-3 text-sm text-white font-mono focus:border-teal-500 outline-none" />
+                  </div>
+                </div>
+                {submitErr && (
+                  <p className="text-red-400 text-xs font-bold">{submitErr}</p>
+                )}
+                <button onClick={submitUnit} disabled={submitting}
+                  className="w-full py-3.5 bg-teal-500 text-black font-black text-[10px] uppercase tracking-[0.2em] rounded-xl hover:bg-white transition-all disabled:opacity-60 flex items-center justify-center gap-2">
+                  {submitting ? <Loader2 className="animate-spin" size={13} /> : <><ShieldCheck size={13} /> Deploy to Ledger</>}
+                </button>
+              </div>
+            )}
+
+            {/* Units list */}
+            {units.length === 0 && !showUnitForm ? (
+              <div className="py-20 text-center border border-dashed border-zinc-800 rounded-2xl space-y-4">
+                <Building2 className="text-zinc-700 mx-auto" size={40} />
+                <div>
+                  <p className="text-zinc-400 font-bold">Infrastructure Empty</p>
+                  <p className="text-zinc-600 text-sm mt-1">Register your first unit to activate the Rental Engine</p>
+                </div>
+                <div className="flex flex-wrap justify-center gap-2 text-[8px] text-zinc-600 uppercase font-bold">
+                  {['Tri-Layer Secure Engine', 'Real-Time Yield Oracle'].map(b => (
+                    <span key={b} className="flex items-center gap-1 border border-zinc-800 px-3 py-1.5 rounded-lg">
+                      <ShieldCheck size={9} className="text-teal-500/50" /> {b}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {units.map(u => (
+                  <div key={u.id}
+                    className="flex items-center justify-between p-5 rounded-2xl border border-zinc-800 bg-zinc-900/20 hover:border-zinc-700 transition-all">
+                    <div className="flex items-center gap-4">
+                      <div className={`w-10 h-10 rounded-xl border flex items-center justify-center flex-shrink-0 ${
+                        u.tenancy_status === 'ACTIVE' ? 'bg-teal-500/10 border-teal-500/30' : 'bg-zinc-800 border-zinc-700'
+                      }`}>
+                        <Home size={16} className={u.tenancy_status === 'ACTIVE' ? 'text-teal-400' : 'text-zinc-600'} />
+                      </div>
+                      <div>
+                        <p className="font-bold text-sm uppercase tracking-tight">{u.unit_name}</p>
+                        <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                          <p className="text-[9px] text-zinc-500">{u.unit_type?.replace('_', ' ')}</p>
+                          <span className="text-[9px] text-teal-400 font-mono">₦{safeF(u.rent_amount)}/yr</span>
+                          {u.tenant_name && (
+                            <span className="text-[8px] text-zinc-500">· {u.tenant_name}</span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-3 flex-shrink-0">
+                      <span className={`text-[8px] px-2 py-0.5 rounded border font-bold uppercase ${
+                        u.tenancy_status === 'ACTIVE'
+                          ? 'border-teal-500/40 text-teal-500'
+                          : 'border-zinc-700 text-zinc-500'
+                      }`}>
+                        {u.tenancy_status === 'ACTIVE' ? 'Occupied' : 'Vacant'}
+                      </span>
+                      {u.tenancy_id && (
+                        <Link href={`/tenant/flex-pay/${u.tenancy_id}`}
+                          className="text-[8px] text-zinc-500 hover:text-teal-500 font-bold uppercase transition-colors flex items-center gap-1">
+                          Vault <ChevronRight size={10} />
+                        </Link>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── TAB: TENANTS ───────────────────────────────────────────────────── */}
+        {activeTab === 'tenants' && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <p className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest">
+                {tenancies.length} tenant{tenancies.length !== 1 ? 's' : ''} on ledger
+              </p>
+              <Link href={`/projects/${id}/rental-management/onboard`}
+                className="flex items-center gap-1.5 text-[9px] text-teal-500 font-black uppercase hover:text-white transition-colors">
+                <Plus size={11} /> Onboard Tenant
+              </Link>
+            </div>
+
+            {tenancies.length === 0 ? (
+              <div className="py-20 text-center border border-dashed border-zinc-800 rounded-2xl space-y-4">
+                <Users className="text-zinc-700 mx-auto" size={40} />
+                <div>
+                  <p className="text-zinc-400 font-bold">No tenants yet</p>
+                  <p className="text-zinc-600 text-sm mt-1">Onboard your first tenant to activate Flex-Pay vaults</p>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {tenancies.map((t: Tenancy) => (
+                  <div key={t.id}
+                    className="flex items-center justify-between p-5 rounded-2xl border border-zinc-800 bg-zinc-900/20 hover:border-zinc-700 transition-all">
+                    <div className="flex items-center gap-4">
+                      <div className="w-10 h-10 rounded-xl bg-zinc-800 border border-zinc-700 flex items-center justify-center flex-shrink-0">
+                        <Users size={16} className="text-teal-500" />
+                      </div>
+                      <div>
+                        <p className="font-bold text-sm uppercase tracking-tight">{t.tenant_name}</p>
+                        <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                          <p className="text-[9px] text-zinc-500">{t.tenant_email}</p>
+                          <span className="text-[9px] text-zinc-600">· {t.unit_name}</span>
+                          <span className="text-[9px] text-teal-400 font-mono">₦{safeF(t.rent_amount)}/yr</span>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-3 flex-shrink-0">
+                      {t.tenant_score !== undefined && (
+                        <span className={`text-[8px] px-2 py-0.5 rounded border font-bold ${
+                          safeN(t.tenant_score) >= 80 ? 'border-teal-500/40 text-teal-500' :
+                          safeN(t.tenant_score) >= 50 ? 'border-amber-500/40 text-amber-400' :
+                          'border-red-500/40 text-red-400'
+                        }`}>
+                          Score {t.tenant_score}
+                        </span>
+                      )}
+                      <span className={`text-[8px] px-2 py-0.5 rounded border font-bold uppercase ${
+                        t.status === 'ACTIVE' ? 'border-teal-500/40 text-teal-500' : 'border-zinc-700 text-zinc-500'
+                      }`}>{t.status}</span>
+                      <Link href={`/tenant/flex-pay/${t.id}`}
+                        className="flex items-center gap-1 text-[9px] text-zinc-500 hover:text-teal-500 font-bold uppercase transition-colors">
+                        Vault <ChevronRight size={10} />
+                      </Link>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── TAB: RECEIPTS ──────────────────────────────────────────────────── */}
+        {activeTab === 'receipts' && (
+          <div className="space-y-4">
+            <p className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest">
+              {payments.filter(p => p.status === 'SUCCESS' || p.status === 'DISTRIBUTED').length} successful payments
+            </p>
+
+            {payments.length === 0 ? (
+              <div className="py-20 text-center border border-dashed border-zinc-800 rounded-2xl space-y-4">
+                <Receipt className="text-zinc-700 mx-auto" size={40} />
+                <div>
+                  <p className="text-zinc-400 font-bold">No payments recorded yet</p>
+                  <p className="text-zinc-600 text-sm mt-1">Receipts appear here when tenants pay through Flex-Pay vaults</p>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {payments.map((p: Payment) => (
+                  <div key={p.id}
+                    className="flex items-center justify-between p-5 rounded-2xl border border-zinc-800 bg-zinc-900/20">
+                    <div className="flex items-center gap-4">
+                      <div className={`w-10 h-10 rounded-xl border flex items-center justify-center flex-shrink-0 ${
+                        p.status === 'SUCCESS' || p.status === 'DISTRIBUTED'
+                          ? 'bg-teal-500/10 border-teal-500/30'
+                          : 'bg-zinc-800 border-zinc-700'
+                      }`}>
+                        {p.status === 'SUCCESS' || p.status === 'DISTRIBUTED'
+                          ? <CheckCircle2 size={16} className="text-teal-400" />
+                          : <Clock size={16} className="text-zinc-600" />
+                        }
+                      </div>
+                      <div>
+                        <p className="font-bold text-sm">{p.tenant_name ?? 'Tenant'}</p>
+                        <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                          {p.unit_name && <span className="text-[9px] text-zinc-500">{p.unit_name}</span>}
+                          <span className="text-[9px] text-zinc-600 font-mono">
+                            {new Date(p.created_at).toLocaleDateString()}
+                          </span>
+                          {p.reference && (
+                            <span className="text-[8px] text-zinc-700 font-mono">{p.reference}</span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="text-right flex-shrink-0 space-y-1">
+                      <p className="font-mono font-bold text-lg text-teal-400">₦{safeF(p.amount_ngn)}</p>
+                      <span className={`text-[8px] px-2 py-0.5 rounded border font-bold uppercase ${
+                        p.status === 'SUCCESS' || p.status === 'DISTRIBUTED'
+                          ? 'border-teal-500/30 text-teal-500'
+                          : 'border-zinc-700 text-zinc-500'
+                      }`}>{p.status}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── TAB: LITIGATION ────────────────────────────────────────────────── */}
+        {activeTab === 'litigation' && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <p className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest">
+                {notices.length} notice{notices.length !== 1 ? 's' : ''} issued
+              </p>
+            </div>
+
+            {notices.length === 0 ? (
+              <div className="py-20 text-center border border-dashed border-zinc-800 rounded-2xl space-y-4">
+                <Gavel className="text-zinc-700 mx-auto" size={40} />
+                <div>
+                  <p className="text-zinc-400 font-bold">No legal notices issued</p>
+                  <p className="text-zinc-600 text-sm mt-1">Notices are issued automatically when tenants breach payment terms</p>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {notices.map((n: Notice) => (
+                  <div key={n.id}
+                    className="flex items-center justify-between p-5 rounded-2xl border border-red-500/20 bg-red-500/5">
+                    <div className="flex items-center gap-4">
+                      <div className="w-10 h-10 rounded-xl bg-red-500/10 border border-red-500/30 flex items-center justify-center flex-shrink-0">
+                        <Gavel size={16} className="text-red-400" />
+                      </div>
+                      <div>
+                        <p className="font-bold text-sm">{n.tenant_name ?? 'Tenant'}</p>
+                        <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                          {n.unit_name && <span className="text-[9px] text-zinc-500">{n.unit_name}</span>}
+                          <span className="text-[9px] text-red-400/80 font-mono uppercase">{n.notice_type?.replace('_', ' ')}</span>
+                          <span className="text-[9px] text-zinc-600">
+                            {new Date(n.issued_at).toLocaleDateString()}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                    <span className={`text-[8px] px-2 py-0.5 rounded border font-bold uppercase flex-shrink-0 ${
+                      n.status === 'ISSUED' ? 'border-red-500/40 text-red-400' :
+                      n.status === 'RESOLVED' ? 'border-teal-500/40 text-teal-500' :
+                      'border-zinc-700 text-zinc-500'
+                    }`}>{n.status}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+      </main>
+      <Footer />
+    </div>
   );
 }
