@@ -1,76 +1,62 @@
-import axios from 'axios';
-
-// ── BASE_URL strategy ─────────────────────────────────────────────────────────
-// In the browser  → '' (empty = same origin).  All /api/* requests go to the
-//   Next.js server which proxies them to Render via next.config.js rewrites.
-//   This eliminates CORS completely — the browser never makes a cross-origin call.
-//
-// In SSR / Node   → full Render URL so server-side fetches still work directly.
-//
-// To change the backend, update NEXT_PUBLIC_API_URL in Vercel → Settings → Env Vars.
-// Do NOT hardcode the Render URL anywhere in client code.
-const BASE_URL =
-  typeof window === 'undefined'
-    ? (process.env.NEXT_PUBLIC_API_URL || 'https://nested-ark-api-v3.onrender.com')
-    : ''; // browser always uses same-origin proxy
+/**
+ * src/lib/api.ts
+ *
+ * Single Axios instance for all Nested Ark API calls.
+ * - baseURL is empty → all calls are relative /api/* paths
+ * - next.config.js rewrites /api/* → Render backend URL
+ * - This eliminates all CORS issues (no cross-origin requests)
+ * - Auth: reads JWT from localStorage (both 'ark_token' and legacy 'token')
+ * - Cold-start retry: if Render returns 502/503, retries once after 4s
+ * - 401: clears auth state and redirects to /login
+ */
+import axios, { AxiosError, AxiosRequestConfig } from 'axios';
 
 const api = axios.create({
-  baseURL: BASE_URL,
-  timeout: 30000,
-  headers: {
-    'Content-Type': 'application/json',
-    'Accept': 'application/json',
-  },
-  withCredentials: false,
+  baseURL:         '',     // MUST be empty — next.config.js rewrite handles routing
+  timeout:         30000,
+  headers:         { 'Content-Type': 'application/json' },
+  withCredentials: true,
 });
 
-// ── Request interceptor: attach auth token ────────────────────────────────────
-api.interceptors.request.use((config) => {
+// ── Request interceptor: attach JWT ─────────────────────────────────────────
+api.interceptors.request.use(config => {
   if (typeof window !== 'undefined') {
-    // Support both token keys used across the app for backward compat
-    const token = localStorage.getItem('token') || localStorage.getItem('ark_token');
+    const token = localStorage.getItem('ark_token') || localStorage.getItem('token');
     if (token && config.headers) {
-      config.headers.Authorization = `Bearer ${token}`;
+      config.headers['Authorization'] = `Bearer ${token}`;
     }
   }
   return config;
 });
 
-// ── Response interceptor: handle cold starts + 401 ───────────────────────────
+// ── Response interceptor: cold-start retry + auth redirect ──────────────────
 api.interceptors.response.use(
-  (response) => response,
-  async (error) => {
-    const { config, code, response } = error;
+  res => res,
+  async (error: AxiosError) => {
+    const config = error.config as AxiosRequestConfig & { _retried?: boolean };
 
-    // Cold start: Render free tier sleeps after inactivity (503/504/ECONNABORTED)
-    const isColdStart =
-      code === 'ECONNABORTED' ||
-      response?.status === 503 ||
-      response?.status === 504;
-
-    if (config && !config._retried && isColdStart) {
+    // Render cold-start: retry once after 4s on 502/503
+    if (!config._retried && error.response && [502, 503].includes(error.response.status)) {
       config._retried = true;
-      console.warn('[Nested Ark API] Backend waking up — retrying in 5s…');
-      await new Promise(r => setTimeout(r, 5000));
-      config.timeout = 60000;
+      await new Promise(r => setTimeout(r, 4000));
       return api(config);
     }
 
-    // Clear stale tokens on 401
-    if (response?.status === 401 && typeof window !== 'undefined') {
-      localStorage.removeItem('token');
-      localStorage.removeItem('ark_token');
+    // 401 — token expired/invalid: clear and redirect (except on login/register)
+    if (error.response?.status === 401 && typeof window !== 'undefined') {
+      const isAuthRoute = config.url?.includes('/api/auth/login') ||
+                          config.url?.includes('/api/auth/register') ||
+                          config.url?.includes('/api/auth/forgot-password');
+      if (!isAuthRoute) {
+        localStorage.removeItem('ark_token');
+        localStorage.removeItem('token');
+        document.cookie = 'ark_role=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/';
+        window.location.href = '/login?reason=session_expired';
+      }
     }
 
     return Promise.reject(error);
   }
 );
-
-// ── Immediate wake-up ping on page load (prevents cold-start delay for user) ──
-if (typeof window !== 'undefined') {
-  api.get('/api/health').catch(() => {
-    // Silent — just waking Render's free tier
-  });
-}
 
 export default api;
