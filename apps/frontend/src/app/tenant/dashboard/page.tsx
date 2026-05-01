@@ -16,7 +16,7 @@ import api from '@/lib/api';
 import {
   Home, DollarSign, Calendar, ShieldCheck, Loader2,
   AlertCircle, TrendingUp, ArrowRight, Bell, CheckCircle2,
-  Star, FileText, Building2,
+  Star, FileText, Building2, Gavel,
 } from 'lucide-react';
 
 const safeN = (v:any) => { const n=Number(v); return(v==null||isNaN(n))?0:n; };
