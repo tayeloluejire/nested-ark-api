@@ -12,8 +12,8 @@ import { useCurrency } from '@/hooks/useCurrency';
 import {
   Menu, X, LayoutDashboard, Briefcase, PieChart,
   Milestone, LogOut, ChevronRight, ChevronDown, Database,
-  Search, TrendingUp, ShieldCheck, Building2, Map, User,
-  Home, Globe, HardHat, Landmark, Hammer, Wallet, Gavel,
+  Search, TrendingUp, Building2, Map, User,
+  Home, Globe, HardHat, Landmark, Hammer, Gavel,
   Users, Share2, MessageCircle, Copy, Bell, FileText, ArrowRight,
 } from 'lucide-react';
 

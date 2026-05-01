@@ -112,7 +112,7 @@ export default function NapSearch({
         <div className="absolute top-full left-0 right-0 mt-1.5 rounded-2xl border border-zinc-700 bg-zinc-950 shadow-2xl shadow-black/60 z-[200] overflow-hidden">
           <div className="px-4 py-2.5 border-b border-zinc-800 flex items-center justify-between">
             <p className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest">
-              {results.length} result{results.length !== 1 ? 's' : ''} for "{query}"
+              {results.length} result{results.length !== 1 ? 's' : ''} for &quot;{query}&quot;
             </p>
             <Link href={`/projects/search?q=${encodeURIComponent(query)}`}
               className="text-[8px] text-teal-500 font-bold uppercase hover:text-white transition-colors flex items-center gap-1">
@@ -142,7 +142,7 @@ export default function NapSearch({
       {/* No results */}
       {open && results.length === 0 && !loading && query.trim().length >= 2 && mode === 'inline' && (
         <div className="absolute top-full left-0 right-0 mt-1.5 rounded-xl border border-zinc-800 bg-zinc-950 shadow-xl z-[200] px-4 py-4 text-center">
-          <p className="text-zinc-500 text-xs">No projects found for "{query}"</p>
+          <p className="text-zinc-500 text-xs">No projects found for &quot;{query}&quot;</p>
           <Link href={`/projects/search?q=${encodeURIComponent(query)}`}
             className="text-[9px] text-teal-500 font-bold hover:text-white transition-colors mt-1 block">
             Search full marketplace →

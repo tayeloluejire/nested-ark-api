@@ -5,8 +5,6 @@ import { Download, Loader2, ShieldCheck, FileText } from 'lucide-react';
 // ── Defensive numeric helpers — never crash on undefined/null/NaN ──────────
 const safeN = (v: any): number => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
 const safeF = (v: any): string => safeN(v).toLocaleString();
-const safeD = (v: any, d = 2): string => safeN(v).toFixed(d);
-
 
 interface CertProps {
   investment: {
@@ -36,7 +34,6 @@ export default function InvestmentCertificate({ investment, ledgerHash, investor
     const issueDate   = new Date(investment.created_at).toLocaleDateString('en-GB', {
       day: '2-digit', month: 'long', year: 'numeric'
     });
-    const shortHash   = ledgerHash ? ledgerHash.slice(0, 16) + '...' + ledgerHash.slice(-8) : 'PENDING';
     const projectRef  = projectNumber ?? investment.project_id.slice(0, 8).toUpperCase();
     const amountFmt   = `₦${safeF(investment.amount)}`;
 
