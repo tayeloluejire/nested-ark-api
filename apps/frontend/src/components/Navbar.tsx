@@ -20,7 +20,7 @@ import {
 // ── Solutions menu items (public-facing, role-based) ─────────────────────────
 const SOLUTIONS = [
   {
-    href: '/register?role=landlord',
+    href: '/register',
     icon: Home,
     accent: 'text-teal-400',
     bg: 'hover:bg-teal-500/8',
@@ -29,7 +29,7 @@ const SOLUTIONS = [
     suite: ['Tenant Onboarding', 'Notice to Quit Generator', 'Auto Receipting', 'Ejection Proceedings'],
   },
   {
-    href: '/register?role=investor',
+    href: '/register',
     icon: TrendingUp,
     accent: 'text-amber-400',
     bg: 'hover:bg-amber-500/8',
@@ -45,7 +45,7 @@ const SOLUTIONS = [
     sub: 'Submit projects, raise capital, manage milestones',
   },
   {
-    href: '/register?role=diaspora',
+    href: '/register',
     icon: Globe,
     accent: 'text-rose-400',
     bg: 'hover:bg-rose-500/8',
@@ -78,8 +78,8 @@ function LandlordQuickPanel({ onClose }: { onClose: () => void }) {
   const [shareTab, setShareTab] = useState<'tenant'|'landlord'>('tenant');
 
   const BASE_URL = typeof window !== 'undefined' ? window.location.origin : 'https://nested-ark-frontend.vercel.app';
-  const tenantInviteUrl  = `${BASE_URL}/onboard?ref=landlord`;
-  const landlordShareUrl = `${BASE_URL}/register?role=landlord&ref=nested-ark`;
+  const tenantInviteUrl  = `${BASE_URL}/landlord/onboard/select`;
+  const landlordShareUrl = `${BASE_URL}/register`;
 
   const copyLink = async (url: string) => {
     try { await navigator.clipboard.writeText(url); } catch { prompt('Copy this link:', url); }
@@ -223,6 +223,10 @@ export default function Navbar() {
   // ── Role-aware authenticated nav links ────────────────────────────────────
   const baseLinks = [
     { name: 'Dashboard',   href: '/dashboard',   icon: LayoutDashboard, roles: ['INVESTOR','CONTRACTOR','SUPPLIER','BANK','GOVERNMENT','ADMIN','VERIFIER','DEVELOPER'] },
+    { name: 'My Dashboard', href: '/tenant/dashboard', icon: Home,            roles: ['TENANT'] },
+    { name: 'My Vault',    href: '/tenant/vault',     icon: TrendingUp,      roles: ['TENANT'] },
+    { name: 'Pay Rent',    href: '/tenant/pay',       icon: Briefcase,       roles: ['TENANT'] },
+    { name: 'My Notices',  href: '/tenant/notices',   icon: Gavel,           roles: ['TENANT'] },
     { name: 'Projects',    href: '/projects',    icon: Briefcase,       roles: ['DEVELOPER','GOVERNMENT','CONTRACTOR','SUPPLIER','ADMIN','INVESTOR','VERIFIER','BANK'] },
     { name: 'Investments', href: '/investments', icon: TrendingUp,      roles: ['INVESTOR','ADMIN'] },
     { name: 'My Projects', href: '/projects/my', icon: Building2,       roles: ['DEVELOPER','GOVERNMENT','ADMIN'] },
@@ -245,7 +249,7 @@ export default function Navbar() {
         <div className="mx-auto flex max-w-7xl items-center justify-between gap-3">
 
           {/* Logo */}
-          <Link href={user ? '/dashboard' : '/'} className="flex items-center gap-3 flex-shrink-0">
+          <Link href={user ? (user.role === 'TENANT' ? '/tenant/dashboard' : user.role === 'ADMIN' ? '/admin' : '/dashboard') : '/'} className="flex items-center gap-3 flex-shrink-0">
             <div className="relative h-8 w-8 flex-shrink-0">
               <Image src="/nested_ark_icon.png" alt="Nested Ark" fill sizes="32px" priority className="object-contain" />
             </div>
@@ -371,7 +375,7 @@ export default function Navbar() {
             )}
 
             {/* Landlord quick-panel button — DEVELOPER role only */}
-            {user && (user.role === 'DEVELOPER') && (
+            {user && (user.role === 'DEVELOPER') && (typeof window !== 'undefined' ? localStorage.getItem('ark_account_type') === 'LANDLORD' : false) && (
               <div className="relative" ref={landlordRef}>
                 <button
                   onClick={() => setLandlordPanelOpen(v => !v)}
@@ -494,7 +498,7 @@ export default function Navbar() {
 
           <div className="mt-6 space-y-2">
             {/* Landlord mobile quick-actions */}
-            {user?.role === 'DEVELOPER' && (
+            {user?.role === 'DEVELOPER' && (typeof window !== 'undefined' ? localStorage.getItem('ark_account_type') === 'LANDLORD' : false) && (
               <div className="p-4 rounded-2xl border border-teal-500/20 bg-teal-500/5 space-y-3">
                 <p className="text-[8px] text-teal-500 uppercase font-black tracking-[0.25em]">Landlord Command</p>
                 <div className="space-y-1.5">
@@ -522,7 +526,7 @@ export default function Navbar() {
                   <div className="grid grid-cols-2 gap-2">
                     <button
                       onClick={() => {
-                        const url = `${window.location.origin}/onboard?ref=landlord`;
+                        const url = `${window.location.origin}/landlord/onboard/select`;
                         window.open(`https://wa.me/?text=${encodeURIComponent("You've been invited to join as a tenant on Nested Ark.\n" + url)}`, '_blank');
                       }}
                       className="flex items-center justify-center gap-1.5 py-2.5 bg-[#25D366]/10 border border-[#25D366]/30 text-[#25D366] rounded-xl text-[9px] font-black uppercase">
@@ -530,7 +534,7 @@ export default function Navbar() {
                     </button>
                     <button
                       onClick={() => {
-                        const url = `${window.location.origin}/register?role=landlord&ref=nested-ark`;
+                        const url = `${window.location.origin}/register`;
                         window.open(`https://wa.me/?text=${encodeURIComponent("Manage your property on Nested Ark.\n" + url)}`, '_blank');
                       }}
                       className="flex items-center justify-center gap-1.5 py-2.5 bg-teal-500/10 border border-teal-500/30 text-teal-400 rounded-xl text-[9px] font-black uppercase">
@@ -538,6 +542,30 @@ export default function Navbar() {
                     </button>
                   </div>
                 </div>
+              </div>
+            )}
+            {user?.role === 'TENANT' && (
+              <div className="p-4 rounded-2xl border border-teal-500/20 bg-teal-500/5 space-y-2">
+                <p className="text-[8px] text-teal-500 uppercase font-black tracking-[0.25em]">Tenant Portal</p>
+                {[
+                  { href: '/tenant/dashboard',     icon: Home,      label: 'My Dashboard' },
+                  { href: '/tenant/vault',          icon: TrendingUp, label: 'My Vault' },
+                  { href: '/tenant/pay',            icon: Briefcase,  label: 'Pay Rent' },
+                  { href: '/tenant/contributions',  icon: FileText,   label: 'Payment History' },
+                  { href: '/tenant/notices',        icon: Gavel,      label: 'My Notices' },
+                ].map(item => {
+                  const Icon = item.icon;
+                  return (
+                    <Link key={item.label} href={item.href} onClick={() => setIsOpen(false)}
+                      className="flex items-center justify-between p-3 rounded-xl border border-zinc-800 bg-zinc-900/50 text-white hover:border-teal-500/30 transition-all">
+                      <div className="flex items-center gap-3">
+                        <Icon size={15} className="text-teal-400" />
+                        <span className="text-xs font-bold uppercase tracking-tight">{item.label}</span>
+                      </div>
+                      <ChevronRight size={14} className="text-zinc-600" />
+                    </Link>
+                  );
+                })}
               </div>
             )}
             {user?.role === 'ADMIN' && (
