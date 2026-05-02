@@ -72,6 +72,12 @@ function ProjectDetailContent() {
 
   const load = async () => {
     if (!id) return;
+    // Guard: known non-UUID slugs that should redirect, not hit the project API
+    const NON_PROJECT_SLUGS = ['my', 'my-projects', 'submit', 'search', 'saved'];
+    if (NON_PROJECT_SLUGS.includes(id)) {
+      router.replace('/projects/my');
+      return;
+    }
     setLoading(true); setError('');
     try {
       // api.ts interceptor handles 502/503 cold-start retry automatically

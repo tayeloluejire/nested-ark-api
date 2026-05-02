@@ -179,9 +179,9 @@ export function roleHomePath(role: DbRole, accountType: AccountType): string {
       // DEVELOPER routing depends on accountType
       switch (accountType) {
         case 'LANDLORD':       return '/landlord/tenants';
-        case 'DIASPORA':       return '/projects/my-projects';
-        case 'INFRASTRUCTURE': return '/projects/my-projects';
-        default:               return '/projects/my-projects';
+        case 'DIASPORA':       return '/projects/my';
+        case 'INFRASTRUCTURE': return '/projects/my';
+        default:               return '/projects/my';
       }
     default:                return '/dashboard';
   }

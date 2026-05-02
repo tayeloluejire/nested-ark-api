@@ -249,7 +249,7 @@ export default function Navbar() {
         <div className="mx-auto flex max-w-7xl items-center justify-between gap-3">
 
           {/* Logo */}
-          <Link href={user ? (user.role === 'TENANT' ? '/tenant/dashboard' : user.role === 'ADMIN' ? '/admin' : '/dashboard') : '/'} className="flex items-center gap-3 flex-shrink-0">
+          <Link href={user ? (user.role === 'TENANT' ? '/tenant/dashboard' : user.role === 'ADMIN' ? '/admin' : (user.role === 'DEVELOPER' || user.role === 'PROJECT_SPONSOR') ? '/projects/my' : '/dashboard') : '/'} className="flex items-center gap-3 flex-shrink-0">
             <div className="relative h-8 w-8 flex-shrink-0">
               <Image src="/nested_ark_icon.png" alt="Nested Ark" fill sizes="32px" priority className="object-contain" />
             </div>
@@ -375,7 +375,7 @@ export default function Navbar() {
             )}
 
             {/* Landlord quick-panel button — DEVELOPER role only */}
-            {user && (user.role === 'DEVELOPER') && (typeof window !== 'undefined' ? localStorage.getItem('ark_account_type') === 'LANDLORD' : false) && (
+            {user && (user.role === 'DEVELOPER' || user.role === 'PROJECT_SPONSOR') && (
               <div className="relative" ref={landlordRef}>
                 <button
                   onClick={() => setLandlordPanelOpen(v => !v)}
@@ -498,7 +498,7 @@ export default function Navbar() {
 
           <div className="mt-6 space-y-2">
             {/* Landlord mobile quick-actions */}
-            {user?.role === 'DEVELOPER' && (typeof window !== 'undefined' ? localStorage.getItem('ark_account_type') === 'LANDLORD' : false) && (
+            {(user?.role === 'DEVELOPER' || user?.role === 'PROJECT_SPONSOR') && (
               <div className="p-4 rounded-2xl border border-teal-500/20 bg-teal-500/5 space-y-3">
                 <p className="text-[8px] text-teal-500 uppercase font-black tracking-[0.25em]">Landlord Command</p>
                 <div className="space-y-1.5">

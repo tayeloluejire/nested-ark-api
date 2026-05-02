@@ -16,7 +16,8 @@ const REASON_MSG:Record<string,string> = {
   landlord_only:   'That page requires a landlord account.',
   admin_only:      'Admin access required.',
   access_denied:   'You do not have permission to access that page.',
-  session_expired: 'Your session expired. Please log in again.',
+  session_expired:     'Your session expired. Please log in again.',
+  switch_to_landlord:  'You need a Landlord account to access that page. Log in with your landlord credentials.',
 };
 
 function LoginContent() {

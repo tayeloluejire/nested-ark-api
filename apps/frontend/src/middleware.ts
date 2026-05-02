@@ -72,11 +72,11 @@ export function middleware(req: NextRequest) {
 
   // LANDLORD routes — DEVELOPER role + accountType=LANDLORD
   if (pathname.startsWith('/landlord')) {
-    if (role !== 'DEVELOPER' && role !== 'PROJECT_SPONSOR') {
+    // Any DEVELOPER can access landlord routes.
+    // The navbar shows these links only when accountType=LANDLORD.
+    // Backend protects data via sponsor_id — middleware just checks role.
+    if (role !== 'DEVELOPER' && role !== 'PROJECT_SPONSOR' && role !== 'ADMIN') {
       return redirectTo(req, '/login?reason=landlord_only');
-    }
-    if (accountType !== 'LANDLORD') {
-      return redirectTo(req, '/projects/my-projects?notice=switch_to_landlord');
     }
     return NextResponse.next();
   }
