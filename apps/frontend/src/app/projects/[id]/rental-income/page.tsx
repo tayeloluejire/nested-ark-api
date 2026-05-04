@@ -17,9 +17,15 @@ const safeF = (v: any): string => safeN(v).toLocaleString();
 const safeD = (v: any, d = 2): string => safeN(v).toFixed(d);
 
 interface Distribution {
-  id: string; amount_ngn: number; share_pct: number;
-  project_title: string; project_number: string; unit_name?: string;
-  period_month: string; paid_at?: string; rent_total: number;
+  id: string;
+  amount_ngn: number;
+  share_pct: number;
+  project_title: string;
+  project_number: string;
+  unit_name?: string;
+  period_month: string;
+  paid_at?: string;
+  rent_total: number;
   investment_stake?: number;
 }
 
@@ -52,7 +58,8 @@ export default function RentalPortfolioPage() {
       <div className="max-w-xl mx-auto px-6 py-40 text-center space-y-4">
         <AlertCircle className="text-amber-400 mx-auto" size={36} />
         <p className="text-white font-bold">{error}</p>
-        <Link href="/portfolio" className="inline-block px-6 py-3 border border-zinc-700 text-zinc-400 font-bold text-xs uppercase tracking-widest rounded-xl hover:text-white transition-all">
+        <Link href="/portfolio"
+          className="inline-block px-6 py-3 border border-zinc-700 text-zinc-400 font-bold text-xs uppercase tracking-widest rounded-xl hover:text-white transition-all">
           Back to Portfolio
         </Link>
       </div>
@@ -79,8 +86,9 @@ export default function RentalPortfolioPage() {
           {[
             {
               label: 'Total Received',
+              // ✅ FIXED: was `NumbersafeD(...)` — correct call is safeD(...)
               value: `₦${safeF(summary.total_received_ngn ?? 0)}`,
-              sub: `≈ $${safeD(summary.total_received_usd ?? 0, 2)} USD`,  // ← fixed: was NumbersafeD
+              sub: `≈ $${safeD(summary.total_received_usd ?? 0, 2)} USD`,
               color: 'text-teal-400',
               icon: DollarSign,
             },
@@ -135,7 +143,8 @@ export default function RentalPortfolioPage() {
             <p className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest">Operational projects</p>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {projects.map((p: any) => (
-                <div key={p.id} className="p-5 rounded-2xl border border-teal-500/20 bg-teal-500/5 flex items-center justify-between gap-4">
+                <div key={p.id}
+                  className="p-5 rounded-2xl border border-teal-500/20 bg-teal-500/5 flex items-center justify-between gap-4">
                   <div className="space-y-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="text-[9px] text-teal-500 font-mono font-black">{p.project_number}</span>
@@ -187,8 +196,9 @@ export default function RentalPortfolioPage() {
                       {d.paid_at && <span>{new Date(d.paid_at).toLocaleDateString()}</span>}
                     </div>
                     <div className="flex items-center gap-3 text-[9px] text-zinc-600 flex-wrap">
-                      {d.investment_stake && (
-                        <span>Your stake: {safeD(d.investment_stake, 2)}%</span>  // ← fixed: was NumbersafeD
+                      {d.investment_stake != null && (
+                        // ✅ FIXED: was `NumbersafeD(...)` — correct call is safeD(...)
+                        <span>Your stake: {safeD(d.investment_stake, 2)}%</span>
                       )}
                       <span>Rent total: ₦{safeF(d.rent_total)}</span>
                       <span className="flex items-center gap-1">
