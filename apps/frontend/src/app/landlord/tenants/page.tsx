@@ -71,7 +71,7 @@ function Content() {
   // Choose onboard destination based on how many vacant units exist
   const onboardHref = units.length===1
     ? `/landlord/onboard/${units[0].id}`
-    : units.length>1 ? '/landlord/onboard/select' : '/projects/my-projects';
+    : units.length>1 ? '/landlord/onboard/select' : '/projects/my';
 
   return (
     <div className="min-h-screen bg-[#050505] text-white flex flex-col">
@@ -98,7 +98,7 @@ function Content() {
             </button>
             <Link href={onboardHref}
               className="flex items-center gap-1.5 px-5 py-2.5 bg-teal-500 text-black rounded-xl text-[9px] font-black uppercase tracking-widest hover:bg-white transition-all">
-              <Plus size={12}/> {units.length===0 ? 'Add Unit First' : 'Onboard Tenant'}
+              <Plus size={12}/> {units.length===0 ? 'View My Properties' : 'Onboard Tenant'}
             </Link>
           </div>
         </div>
@@ -146,7 +146,7 @@ function Content() {
             <Users className="text-zinc-700 mx-auto" size={40}/>
             <p className="text-zinc-400 font-bold">No tenants yet</p>
             <p className="text-zinc-600 text-sm">Add units to your properties, then use Onboard Tenant above.</p>
-            <Link href="/projects/my-projects"
+            <Link href="/projects/my"
               className="inline-flex items-center gap-2 px-6 py-3 bg-teal-500 text-black font-bold text-xs uppercase tracking-widest rounded-xl hover:bg-white transition-all">
               View My Properties <ArrowRight size={11}/>
             </Link>

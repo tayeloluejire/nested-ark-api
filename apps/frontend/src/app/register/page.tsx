@@ -7,8 +7,8 @@ export const dynamic = 'force-dynamic';
  *
  * Role→accountType mapping:
  *   DEVELOPER + "I own rental properties" → accountType=LANDLORD → /landlord/tenants
- *   DEVELOPER + "I build infrastructure"  → accountType=INFRASTRUCTURE → /projects/my-projects
- *   DEVELOPER + "I invest from diaspora"  → accountType=DIASPORA → /projects/my-projects
+ *   DEVELOPER + "I build infrastructure"  → accountType=INFRASTRUCTURE → /projects/my
+ *   DEVELOPER + "I invest from diaspora"  → accountType=DIASPORA → /projects/my
  *   INVESTOR                              → accountType=INVESTOR → /portfolio
  *   CONTRACTOR                            → accountType=CONTRACTOR → /dashboard
  *   SUPPLIER                              → accountType=SUPPLIER → /dashboard
@@ -176,7 +176,7 @@ function RegisterContent() {
             <label className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest block">Password *</label>
             <div className="relative">
               <Lock size={14} className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-600"/>
-              <input type={showPw?'text':'password'} value={form.password} onChange={e=>set('password',e.target.value)} required
+              <input type={showPw?'text':'password'} autoComplete="new-password" value={form.password} onChange={e=>set('password',e.target.value)} required
                 placeholder="Minimum 8 characters"
                 className="w-full bg-zinc-900 border border-zinc-800 rounded-xl pl-10 pr-12 py-3 text-sm text-white placeholder:text-zinc-600 focus:border-teal-500 outline-none"/>
               <button type="button" onClick={()=>setShowPw(!showPw)} className="absolute right-4 top-1/2 -translate-y-1/2 text-zinc-600 hover:text-white">

@@ -73,7 +73,7 @@ function LoginContent() {
             <label className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest block">Password</label>
             <div className="relative">
               <Lock size={14} className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-600"/>
-              <input type={showPw?'text':'password'} value={password} onChange={e=>setPassword(e.target.value)} required
+              <input type={showPw?'text':'password'} autoComplete="current-password" value={password} onChange={e=>setPassword(e.target.value)} required
                 placeholder="••••••••"
                 className="w-full bg-zinc-900 border border-zinc-800 rounded-xl pl-10 pr-12 py-3 text-sm text-white placeholder:text-zinc-600 focus:border-teal-500 outline-none"/>
               <button type="button" onClick={()=>setShowPw(!showPw)} className="absolute right-4 top-1/2 -translate-y-1/2 text-zinc-600 hover:text-white">

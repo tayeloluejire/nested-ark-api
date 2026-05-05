@@ -193,7 +193,7 @@ function LandlordNoticesContent() {
     try {
       const [tRes, pRes] = await Promise.allSettled([
         api.get('/api/rental/landlord/tenants'),
-        api.get('/api/projects/my-projects'),
+        api.get('/api/projects/my'),
       ]);
       let tenancyList: any[] = [];
       let projectList: any[] = [];
