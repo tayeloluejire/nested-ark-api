@@ -6,7 +6,7 @@ import {
   Plus, Home, Users, ArrowRight, Loader2,
   PlusCircle, Building2, RefreshCw, ChevronDown,
   ChevronUp, MapPin, Layers, Eye, Settings2,
-  FileText, Bell
+  FileText, Bell, Building
 } from 'lucide-react';
 
 interface Unit {
@@ -92,7 +92,7 @@ export default function MyPropertiesPage() {
         <div>
           <p className="text-[10px] text-teal-500 uppercase font-black tracking-widest mb-1">Landlord · Developer</p>
           <h1 className="text-3xl font-black uppercase italic">My Properties</h1>
-          <p className="text-zinc-500 text-xs mt-1">Projects and properties you manage on Nested Ark OS</p>
+          <p className="text-zinc-500 text-xs mt-1">Manage construction projects or existing rental properties</p>
         </div>
         <div className="flex items-center gap-3">
           <button
@@ -102,39 +102,57 @@ export default function MyPropertiesPage() {
           >
             <RefreshCw size={16} className="text-zinc-400" />
           </button>
+          
+          {/* FIX: Dual Action Buttons in Header */}
           <Link
             href="/projects/submit"
-            className="bg-white text-black px-5 py-3 rounded-xl font-black uppercase text-xs flex items-center gap-2 hover:bg-teal-500 transition-colors"
+            className="bg-zinc-900 border border-zinc-700 text-white px-5 py-3 rounded-xl font-black uppercase text-[10px] flex items-center gap-2 hover:bg-zinc-800 transition-colors"
           >
-            <Plus size={16} /> Submit Project
+            <PlusCircle size={14} className="text-teal-500" /> Submit Project
+          </Link>
+          
+          <Link
+            href="/projects/submit?type=existing"
+            className="bg-white text-black px-5 py-3 rounded-xl font-black uppercase text-[10px] flex items-center gap-2 hover:bg-teal-500 transition-colors shadow-lg shadow-teal-500/10"
+          >
+            <Building size={14} /> Add Property
           </Link>
         </div>
       </header>
 
-      {/* Empty State */}
+      {/* Empty State FIX */}
       {projects.length === 0 ? (
         <div className="text-center py-20 bg-zinc-900/30 border border-dashed border-zinc-800 rounded-3xl">
-          <Home className="mx-auto text-zinc-700 mb-4" size={48} />
-          <h2 className="text-xl font-bold uppercase">No properties yet</h2>
+          <div className="relative inline-block mb-4">
+             <Home className="text-zinc-700" size={48} />
+             <Plus size={20} className="absolute -top-1 -right-1 text-teal-500" />
+          </div>
+          <h2 className="text-xl font-bold uppercase">Ready to Manage?</h2>
           <p className="text-zinc-500 text-sm mb-8 max-w-sm mx-auto">
-            Submit your first property to start adding units and onboarding tenants.
+            Add an existing property to manage rent or submit a new project for infrastructure funding.
           </p>
-          <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
+          <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
             <Link
-              href="/projects/submit"
-              className="bg-teal-500 text-black font-black uppercase text-xs px-8 py-4 rounded-xl hover:bg-teal-400 transition-colors"
+              href="/projects/submit?type=existing"
+              className="w-full sm:w-auto bg-white text-black font-black uppercase text-xs px-8 py-4 rounded-xl hover:bg-teal-500 transition-colors flex items-center justify-center gap-2"
             >
-              Submit a Project
+              <Building size={16} /> Add Existing Property
             </Link>
             <Link
-              href="/projects"
-              className="text-zinc-400 font-bold uppercase text-xs border border-zinc-700 px-8 py-4 rounded-xl hover:border-zinc-500 transition-colors"
+              href="/projects/submit"
+              className="w-full sm:w-auto bg-zinc-800 text-white font-black uppercase text-xs px-8 py-4 rounded-xl hover:bg-zinc-700 transition-colors flex items-center justify-center gap-2"
             >
+              <PlusCircle size={16} className="text-teal-500" /> Submit New Project
+            </Link>
+          </div>
+          <div className="mt-8">
+            <Link href="/projects" className="text-zinc-500 hover:text-white text-[10px] font-bold uppercase tracking-widest border-b border-zinc-800 pb-1">
               Browse Marketplace
             </Link>
           </div>
         </div>
       ) : (
+        /* ... rest of the existing working code remains unchanged ... */
         <div className="space-y-6">
           {projects.map((project) => {
             const units = unitMap[project.id] ?? [];
