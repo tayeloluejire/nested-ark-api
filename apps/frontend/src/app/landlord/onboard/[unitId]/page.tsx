@@ -1,295 +1,333 @@
 'use client';
-export const dynamic = 'force-dynamic';
-/**
- * /landlord/onboard/[unitId]/page.tsx
- * DEVELOPER (landlord) role only — middleware enforces this.
- *
- * Real API: POST /api/tenant/onboard
- * Body: { unitId, fullName, email, phone, pattern,
- *         selfie_url?, former_address?, reason_for_quit?,
- *         former_landlord_contact?, guarantor_json?, digital_signature_url? }
- *
- * Backend creates: tenancy record + flex_pay_vault + system_ledger entry.
- * If user account with that email already exists as TENANT role, it is
- * auto-linked via tenant_user_id. Otherwise landlord sends invite link
- * via GET /api/rental/invite-link/:unitId after onboarding.
- *
- * Unit loaded via: GET /api/rental/units/:projectId (filter by id)
- */
-import { useState, useEffect, Suspense } from 'react';
-import { useParams, useRouter } from 'next/navigation';
-import Navbar from '@/components/Navbar';
-import Footer from '@/components/Footer';
+import { useState, useEffect } from 'react';
 import api from '@/lib/api';
+import Link from 'next/link';
 import {
-  Loader2, AlertCircle, CheckCircle2, User, Mail, Phone,
-  Building2, ArrowLeft, Send, Copy, MessageCircle, Calendar,
+  ArrowLeft, Send, Copy, CheckCircle2, MessageCircle,
+  Mail, Link2, Loader2, Building2, User, Phone,
+  AlertCircle, ChevronRight
 } from 'lucide-react';
 
-const PATTERNS = ['MONTHLY', 'WEEKLY', 'QUARTERLY'];
-
-function OnboardContent() {
-  const { unitId } = useParams<{ unitId: string }>();
-  const router = useRouter();
-
-  const [unit,    setUnit]    = useState<any>(null);
-  const [loading, setLoading] = useState(true);
-  const [saving,  setSaving]  = useState(false);
-  const [done,    setDone]    = useState<any>(null); // onboard result
-  const [error,   setError]   = useState('');
-  const [inviteLink, setInviteLink] = useState('');
-  const [copied,  setCopied]  = useState(false);
-
-  const [form, setForm] = useState({
-    fullName:               '',
-    email:                  '',
-    phone:                  '',
-    pattern:                'MONTHLY',
-    reason_for_quit:        '',
-    former_landlord_contact:'',
-    selfie_url:             '',
-    digital_signature_url:  '',
-  });
-
-  // Load unit info
-  useEffect(() => {
-    if (!unitId) return;
-    // Use /api/rental/management/:projectId is not available for single unit;
-    // use /api/rental/invite-link/:unitId which returns unit context
-    api.get(`/api/rental/invite-link/${unitId}`)
-      .then(r => setUnit(r.data.unit ?? r.data))
-      .catch(() => {
-        // fallback: just show unitId and proceed
-        setUnit({ id: unitId, unit_name: 'Selected Unit' });
-      })
-      .finally(() => setLoading(false));
-  }, [unitId]);
-
-  const set = (k: string, v: string) => setForm(f => ({ ...f, [k]: v }));
-
-  const handleSubmit = async () => {
-    if (!form.fullName.trim() || !form.email.trim()) {
-      setError('Full name and email are required.'); return;
-    }
-    setSaving(true); setError('');
-    try {
-      const res = await api.post('/api/tenant/onboard', {
-        unitId,
-        fullName:               form.fullName.trim(),
-        email:                  form.email.trim().toLowerCase(),
-        phone:                  form.phone.trim() || undefined,
-        pattern:                form.pattern,
-        reason_for_quit:        form.reason_for_quit || undefined,
-        former_landlord_contact:form.former_landlord_contact || undefined,
-        selfie_url:             form.selfie_url || undefined,
-        digital_signature_url:  form.digital_signature_url || undefined,
-      });
-      setDone(res.data);
-      // Also fetch invite link for sharing
-      const linkRes = await api.get(`/api/rental/invite-link/${unitId}`);
-      setInviteLink(linkRes.data.url ?? linkRes.data.invite_url ?? '');
-    } catch (e: any) {
-      setError(e?.response?.data?.error ?? 'Failed to onboard tenant. Please try again.');
-    } finally { setSaving(false); }
-  };
-
-  const copyLink = async () => {
-    try { await navigator.clipboard.writeText(inviteLink); } catch { prompt('Copy:', inviteLink); }
-    setCopied(true); setTimeout(() => setCopied(false), 2500);
-  };
-
-  if (loading) return (
-    <div className="min-h-screen bg-[#050505] text-white"><Navbar />
-      <div className="flex items-center justify-center py-40"><Loader2 className="animate-spin text-teal-500" size={28} /></div>
-    <Footer /></div>
-  );
-
-  // Success state
-  if (done) return (
-    <div className="min-h-screen bg-[#050505] text-white flex flex-col">
-      <Navbar />
-      <main className="flex-1 max-w-xl mx-auto px-6 py-16 space-y-8 w-full">
-        <div className="text-center space-y-4">
-          <CheckCircle2 className="text-teal-500 mx-auto" size={48} />
-          <h1 className="text-2xl font-black uppercase tracking-tighter">Tenant Onboarded!</h1>
-          <p className="text-zinc-500 text-sm">
-            {form.fullName} has been registered to {unit?.unit_name || 'the unit'}.
-            Vault and tenancy record created successfully.
-          </p>
-        </div>
-
-        {/* Share invite link */}
-        {inviteLink && (
-          <div className="p-5 rounded-2xl border border-teal-500/20 bg-teal-500/5 space-y-3">
-            <p className="text-[9px] text-teal-500 uppercase font-black tracking-widest">Share Login Invite</p>
-            <p className="text-[10px] text-zinc-400 leading-relaxed">
-              Send this link to the tenant. They click it to set their password and access their dashboard.
-            </p>
-            <div className="flex gap-2 flex-wrap">
-              <button onClick={copyLink}
-                className={`flex items-center gap-1.5 px-3 py-2 rounded-xl border text-[9px] font-black uppercase transition-all ${copied ? 'border-teal-500/40 bg-teal-500/10 text-teal-400' : 'border-zinc-700 text-zinc-400 hover:text-white'}`}>
-                {copied ? <CheckCircle2 size={11}/> : <Copy size={11}/>} {copied ? 'Copied!' : 'Copy Link'}
-              </button>
-              <a href={`https://wa.me/?text=${encodeURIComponent(`Your Nested Ark tenant account is ready!\n\nClick to activate: ${inviteLink}`)}`}
-                target="_blank" rel="noopener noreferrer"
-                className="flex items-center gap-1.5 px-3 py-2 bg-[#25D366]/10 border border-[#25D366]/30 text-[#25D366] rounded-xl text-[9px] font-black uppercase hover:bg-[#25D366]/20 transition-all">
-                <MessageCircle size={11}/> WhatsApp
-              </a>
-              <a href={`mailto:${form.email}?subject=Your Nested Ark Tenant Account&body=Your account is ready. Click to activate: ${inviteLink}`}
-                className="flex items-center gap-1.5 px-3 py-2 bg-blue-500/10 border border-blue-500/30 text-blue-400 rounded-xl text-[9px] font-black uppercase hover:bg-blue-500/20 transition-all">
-                <Send size={11}/> Email
-              </a>
-            </div>
-          </div>
-        )}
-
-        <div className="flex gap-3">
-          <button onClick={() => router.push('/landlord/tenants')}
-            className="flex-1 py-3 bg-teal-500 text-black rounded-xl font-black text-xs uppercase tracking-widest hover:bg-teal-400 transition-all">
-            View All Tenants
-          </button>
-          <button onClick={() => { setDone(null); setForm({fullName:'',email:'',phone:'',pattern:'MONTHLY',reason_for_quit:'',former_landlord_contact:'',selfie_url:'',digital_signature_url:''}); }}
-            className="flex-1 py-3 border border-zinc-800 text-zinc-500 rounded-xl font-bold text-xs uppercase tracking-widest hover:text-white transition-all">
-            Onboard Another
-          </button>
-        </div>
-      </main>
-      <Footer />
-    </div>
-  );
-
-  return (
-    <div className="min-h-screen bg-[#050505] text-white flex flex-col">
-      <Navbar />
-      <main className="flex-1 max-w-2xl mx-auto px-6 py-12 space-y-8 w-full">
-
-        <button onClick={() => router.back()}
-          className="flex items-center gap-2 text-zinc-500 hover:text-white text-xs font-bold uppercase tracking-widest transition-colors">
-          <ArrowLeft size={13} /> Back
-        </button>
-
-        <div className="border-l-2 border-teal-500 pl-5">
-          <p className="text-[9px] text-teal-500 font-mono font-black tracking-widest uppercase mb-1">Landlord · Onboarding</p>
-          <h1 className="text-3xl font-black uppercase tracking-tighter">Onboard Tenant</h1>
-          {unit && (
-            <p className="text-zinc-500 text-sm mt-1 flex items-center gap-1.5">
-              <Building2 size={12} /> {unit.unit_name}
-            </p>
-          )}
-        </div>
-
-        {unit && (
-          <div className="p-4 rounded-2xl border border-teal-500/20 bg-teal-500/5 space-y-1">
-            <p className="text-[9px] text-teal-500 uppercase font-black tracking-widest">Unit</p>
-            <p className="font-bold text-sm">{unit.unit_name} {unit.unit_type ? `· ${unit.unit_type}` : ''}</p>
-            {unit.rent_amount && (
-              <p className="text-[10px] text-zinc-400">
-                {unit.currency || 'NGN'} {Number(unit.rent_amount).toLocaleString()}/month
-              </p>
-            )}
-          </div>
-        )}
-
-        {error && (
-          <div className="p-4 rounded-xl border border-red-500/20 bg-red-500/5 text-red-400 text-sm font-bold flex items-center gap-2">
-            <AlertCircle size={14} /> {error}
-          </div>
-        )}
-
-        <div className="space-y-5">
-          <p className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest border-b border-zinc-800 pb-2">
-            Tenant Details
-          </p>
-
-          {/* Full name */}
-          <div className="space-y-1.5">
-            <label className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest block">Full Name *</label>
-            <div className="relative">
-              <User size={14} className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-600" />
-              <input value={form.fullName} onChange={e => set('fullName', e.target.value)}
-                placeholder="e.g. Adaeze Okafor"
-                className="w-full bg-zinc-900 border border-zinc-800 rounded-xl pl-10 pr-4 py-3 text-sm text-white placeholder:text-zinc-600 focus:border-teal-500 outline-none" />
-            </div>
-          </div>
-
-          {/* Email */}
-          <div className="space-y-1.5">
-            <label className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest block">Email Address *</label>
-            <div className="relative">
-              <Mail size={14} className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-600" />
-              <input type="email" value={form.email} onChange={e => set('email', e.target.value)}
-                placeholder="tenant@email.com"
-                className="w-full bg-zinc-900 border border-zinc-800 rounded-xl pl-10 pr-4 py-3 text-sm text-white placeholder:text-zinc-600 focus:border-teal-500 outline-none" />
-            </div>
-          </div>
-
-          {/* Phone */}
-          <div className="space-y-1.5">
-            <label className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest block">Phone</label>
-            <div className="relative">
-              <Phone size={14} className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-600" />
-              <input type="tel" value={form.phone} onChange={e => set('phone', e.target.value)}
-                placeholder="+234 800 000 0000"
-                className="w-full bg-zinc-900 border border-zinc-800 rounded-xl pl-10 pr-4 py-3 text-sm text-white placeholder:text-zinc-600 focus:border-teal-500 outline-none" />
-            </div>
-          </div>
-
-          {/* Payment pattern */}
-          <div className="space-y-1.5">
-            <label className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest block">Payment Pattern</label>
-            <div className="flex gap-2">
-              {PATTERNS.map(p => (
-                <button key={p} onClick={() => set('pattern', p)}
-                  className={`flex-1 py-3 rounded-xl border text-xs font-black uppercase tracking-wide transition-all ${form.pattern === p ? 'border-teal-500/40 bg-teal-500/10 text-teal-400' : 'border-zinc-800 text-zinc-500 hover:border-zinc-600'}`}>
-                  {p}
-                </button>
-              ))}
-            </div>
-            <p className="text-[9px] text-zinc-700">Controls Flex-Pay vault installment frequency</p>
-          </div>
-
-          {/* KYC fields (optional) */}
-          <p className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest border-b border-zinc-800 pb-2 pt-2">
-            KYC / Background (Optional)
-          </p>
-
-          <div className="space-y-1.5">
-            <label className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest block">Reason for leaving previous address</label>
-            <textarea value={form.reason_for_quit} onChange={e => set('reason_for_quit', e.target.value)} rows={2}
-              placeholder="e.g. Relocating for work, lease expired…"
-              className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 text-sm text-white placeholder:text-zinc-600 focus:border-teal-500 outline-none resize-none" />
-          </div>
-
-          <div className="space-y-1.5">
-            <label className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest block">Former Landlord Contact</label>
-            <input value={form.former_landlord_contact} onChange={e => set('former_landlord_contact', e.target.value)}
-              placeholder="Phone or email of previous landlord"
-              className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 text-sm text-white placeholder:text-zinc-600 focus:border-teal-500 outline-none" />
-          </div>
-        </div>
-
-        <div className="flex gap-3 pt-2">
-          <button onClick={() => router.back()}
-            className="flex-1 py-3 border border-zinc-800 rounded-xl text-zinc-500 font-bold text-xs uppercase tracking-widest hover:border-zinc-600 hover:text-zinc-300 transition-all">
-            Cancel
-          </button>
-          <button onClick={handleSubmit} disabled={saving}
-            className="flex-1 py-3 bg-teal-500 text-black rounded-xl font-black text-xs uppercase tracking-widest hover:bg-teal-400 transition-all disabled:opacity-60 flex items-center justify-center gap-2">
-            {saving ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
-            {saving ? 'Creating Tenancy…' : 'Onboard Tenant'}
-          </button>
-        </div>
-
-      </main>
-      <Footer />
-    </div>
-  );
+interface Unit {
+  id: string;
+  unit_name: string;
+  rent_amount: number;
+  security_deposit: number;
+  service_charge: number;
+  agency_fee: number;
+  legal_fee: number;
+  caution_fee: number;
+  specs: string;
+  status: string;
+  bedrooms: string;
+  bathrooms: string;
+  currency: string;
+  payment_frequency: string;
+  project_id: string;
+  project_title?: string;
 }
 
-export default function LandlordOnboardPage() {
+const BASE_URL = process.env.NEXT_PUBLIC_APP_URL || 'https://nested-ark-api.vercel.app';
+
+export default function OnboardTenantPage({ params }: { params: { unitId: string } }) {
+  const [unit, setUnit] = useState<Unit | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [copied, setCopied] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [emailForm, setEmailForm] = useState({ name: '', email: '', phone: '' });
+  const [sendError, setSendError] = useState('');
+  const [activeTab, setActiveTab] = useState<'whatsapp' | 'email' | 'link'>('whatsapp');
+
+  const inviteLink = `${BASE_URL}/onboard/${params.unitId}`;
+
+  useEffect(() => {
+    api.get(`/api/rental/units/${params.unitId}`)
+      .then(res => setUnit(res.data))
+      .catch(console.error)
+      .finally(() => setLoading(false));
+  }, [params.unitId]);
+
+  const copyLink = () => {
+    navigator.clipboard.writeText(inviteLink).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 3000);
+    });
+  };
+
+  const openWhatsApp = () => {
+    if (!unit) return;
+    const fees = [
+      unit.rent_amount && `Rent: ${unit.currency} ${Number(unit.rent_amount).toLocaleString()} / ${unit.payment_frequency || 'month'}`,
+      unit.security_deposit && `Security Deposit: ${unit.currency} ${Number(unit.security_deposit).toLocaleString()}`,
+      unit.agency_fee && `Agency Fee: ${unit.currency} ${Number(unit.agency_fee).toLocaleString()}`,
+      unit.legal_fee && `Legal Fee: ${unit.currency} ${Number(unit.legal_fee).toLocaleString()}`,
+    ].filter(Boolean).join('%0A');
+
+    const text = [
+      `🏠 *Nested Ark OS — Tenancy Invitation*`,
+      ``,
+      `Hello,`,
+      ``,
+      `You have been invited to complete your lease for:`,
+      `*${unit.unit_name}*${unit.project_title ? ` at ${unit.project_title}` : ''}`,
+      unit.specs ? `📐 ${unit.specs}` : null,
+      ``,
+      `*Move-In Fees:*`,
+      fees,
+      ``,
+      `Please complete your *AI KYC verification* and secure your tenancy via our blockchain-ledger escrow system:`,
+      ``,
+      `🔗 ${inviteLink}`,
+      ``,
+      `_Powered by Nested Ark OS · Impressions & Impacts Ltd_`,
+    ].filter(v => v !== null).join('%0A');
+
+    window.open(`https://wa.me/?text=${text}`, '_blank');
+  };
+
+  const sendEmailInvite = async () => {
+    setSendError('');
+    if (!emailForm.email) { setSendError('Email address is required.'); return; }
+    setSending(true);
+    try {
+      await api.post('/api/rental/invite', {
+        unit_id: params.unitId,
+        tenant_name: emailForm.name,
+        tenant_email: emailForm.email,
+        tenant_phone: emailForm.phone,
+        invite_link: inviteLink,
+      });
+      setSent(true);
+      setEmailForm({ name: '', email: '', phone: '' });
+      setTimeout(() => setSent(false), 5000);
+    } catch (e: any) {
+      setSendError(e?.response?.data?.message || 'Failed to send email. Please try again.');
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const totalMoveIn = unit
+    ? [unit.rent_amount, unit.security_deposit, unit.service_charge, unit.agency_fee, unit.legal_fee, unit.caution_fee]
+        .reduce((a, v) => a + (Number(v) || 0), 0)
+    : 0;
+
+  if (loading) return (
+    <div className="flex h-96 items-center justify-center">
+      <Loader2 className="animate-spin text-teal-500" size={32} />
+    </div>
+  );
+
+  if (!unit) return (
+    <div className="flex flex-col h-96 items-center justify-center gap-4">
+      <AlertCircle className="text-red-500" size={48} />
+      <p className="text-zinc-400 font-bold">Unit not found or could not be loaded.</p>
+      <Link href="/projects/my" className="text-teal-500 text-xs font-bold uppercase border border-teal-500/30 px-6 py-3 rounded-xl">
+        Back to My Properties
+      </Link>
+    </div>
+  );
+
   return (
-    <Suspense fallback={<div className="h-screen bg-[#050505] flex items-center justify-center"><Loader2 className="animate-spin text-teal-500" size={28} /></div>}>
-      <OnboardContent />
-    </Suspense>
+    <div className="max-w-4xl mx-auto p-4 md:p-6 space-y-8">
+      {/* Header */}
+      <header className="border-b border-zinc-800 pb-6">
+        <Link
+          href="/projects/my"
+          className="text-zinc-500 text-xs uppercase font-bold flex items-center gap-2 mb-4 hover:text-white transition-colors"
+        >
+          <ArrowLeft size={14} /> My Properties
+        </Link>
+        <p className="text-[10px] text-teal-500 uppercase font-black tracking-widest mb-1">Tenant Onboarding</p>
+        <h1 className="text-2xl md:text-3xl font-black uppercase italic">{unit.unit_name}</h1>
+        {unit.project_title && <p className="text-zinc-500 text-xs mt-1">{unit.project_title}</p>}
+      </header>
+
+      {/* Unit Summary */}
+      <div className="bg-zinc-900 border border-zinc-800 rounded-3xl p-6">
+        <h2 className="text-xs font-black uppercase tracking-widest text-zinc-400 mb-4 flex items-center gap-2">
+          <Building2 size={14} className="text-teal-500" /> Unit Summary
+        </h2>
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+          {[
+            { label: 'Rent', val: `${unit.currency || 'NGN'} ${Number(unit.rent_amount || 0).toLocaleString()}`, sub: `per ${unit.payment_frequency || 'month'}` },
+            { label: 'Security Deposit', val: `${unit.currency || 'NGN'} ${Number(unit.security_deposit || 0).toLocaleString()}` },
+            { label: 'Agency Fee', val: `${unit.currency || 'NGN'} ${Number(unit.agency_fee || 0).toLocaleString()}` },
+            { label: 'Legal Fee', val: `${unit.currency || 'NGN'} ${Number(unit.legal_fee || 0).toLocaleString()}` },
+            { label: 'Specs', val: unit.specs || `${unit.bedrooms || '?'} Bed / ${unit.bathrooms || '?'} Bath` },
+            { label: 'Total Move-In', val: `${unit.currency || 'NGN'} ${totalMoveIn.toLocaleString()}`, highlight: true },
+          ].map(item => (
+            <div key={item.label} className={`bg-black border rounded-2xl p-4 ${item.highlight ? 'border-teal-500/40' : 'border-zinc-800'}`}>
+              <p className="text-[10px] text-zinc-500 uppercase font-black mb-1">{item.label}</p>
+              <p className={`font-black text-sm ${item.highlight ? 'text-teal-400' : 'text-white'}`}>{item.val}</p>
+              {item.sub && <p className="text-zinc-600 text-[10px]">{item.sub}</p>}
+            </div>
+          ))}
+        </div>
+
+        {unit.status === 'occupied' && (
+          <div className="mt-4 flex items-center gap-3 bg-amber-500/10 border border-amber-500/30 rounded-2xl p-4 text-amber-400 text-sm font-bold">
+            <AlertCircle size={18} />
+            This unit is currently occupied. Inviting a new tenant will queue them for the next available date.
+          </div>
+        )}
+      </div>
+
+      {/* Invite Tabs */}
+      <div className="bg-zinc-900 border border-zinc-800 rounded-3xl overflow-hidden">
+        <div className="flex border-b border-zinc-800">
+          {([
+            { id: 'whatsapp', label: 'WhatsApp', icon: <MessageCircle size={14} /> },
+            { id: 'email', label: 'Email', icon: <Mail size={14} /> },
+            { id: 'link', label: 'Copy Link', icon: <Link2 size={14} /> },
+          ] as const).map(tab => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`flex-1 py-4 text-xs font-black uppercase flex items-center justify-center gap-2 transition-colors ${
+                activeTab === tab.id
+                  ? 'bg-teal-500/10 text-teal-400 border-b-2 border-teal-500'
+                  : 'text-zinc-500 hover:text-zinc-300'
+              }`}
+            >
+              {tab.icon} {tab.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="p-6 md:p-8">
+          {/* WhatsApp Tab */}
+          {activeTab === 'whatsapp' && (
+            <div className="space-y-4">
+              <p className="text-zinc-400 text-sm">
+                Opens WhatsApp with a pre-filled invitation message containing unit details, move-in fees, and the secure onboarding link.
+              </p>
+              <div className="bg-black border border-zinc-800 rounded-2xl p-4 text-xs font-mono text-zinc-500 space-y-1">
+                <p className="text-zinc-300 font-bold">Preview:</p>
+                <p>🏠 Nested Ark OS — Tenancy Invitation</p>
+                <p>You have been invited to complete your lease for:</p>
+                <p className="text-teal-400">*{unit.unit_name}*</p>
+                <p>Rent: {unit.currency || 'NGN'} {Number(unit.rent_amount).toLocaleString()} / {unit.payment_frequency || 'month'}</p>
+                <p>🔗 {inviteLink.substring(0, 45)}...</p>
+              </div>
+              <button
+                onClick={openWhatsApp}
+                className="w-full py-4 bg-green-500 text-black font-black uppercase text-sm rounded-2xl hover:bg-green-400 transition-colors flex items-center justify-center gap-3"
+              >
+                <MessageCircle size={18} /> Open in WhatsApp
+              </button>
+            </div>
+          )}
+
+          {/* Email Tab */}
+          {activeTab === 'email' && (
+            <div className="space-y-4">
+              {sent && (
+                <div className="flex items-center gap-3 bg-teal-500/10 border border-teal-500/30 rounded-2xl p-4 text-teal-400 text-sm font-bold">
+                  <CheckCircle2 size={18} /> Invitation email sent successfully!
+                </div>
+              )}
+              {sendError && (
+                <div className="bg-red-500/10 border border-red-500/30 rounded-2xl p-4 text-red-400 text-sm font-bold">
+                  ⚠️ {sendError}
+                </div>
+              )}
+              <div className="space-y-3">
+                <div>
+                  <label className="text-[10px] text-zinc-500 uppercase font-black block mb-1.5">Tenant Name</label>
+                  <input
+                    value={emailForm.name}
+                    onChange={e => setEmailForm(f => ({ ...f, name: e.target.value }))}
+                    placeholder="e.g. Amaka Johnson"
+                    className="w-full bg-black border border-zinc-800 p-4 rounded-xl outline-none focus:border-teal-500 text-sm transition-colors"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] text-zinc-500 uppercase font-black block mb-1.5">Email Address *</label>
+                  <input
+                    value={emailForm.email}
+                    onChange={e => setEmailForm(f => ({ ...f, email: e.target.value }))}
+                    placeholder="tenant@email.com"
+                    type="email"
+                    className="w-full bg-black border border-zinc-800 p-4 rounded-xl outline-none focus:border-teal-500 text-sm transition-colors"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] text-zinc-500 uppercase font-black block mb-1.5">Phone (optional)</label>
+                  <input
+                    value={emailForm.phone}
+                    onChange={e => setEmailForm(f => ({ ...f, phone: e.target.value }))}
+                    placeholder="+234 800 000 0000"
+                    type="tel"
+                    className="w-full bg-black border border-zinc-800 p-4 rounded-xl outline-none focus:border-teal-500 text-sm transition-colors"
+                  />
+                </div>
+              </div>
+              <button
+                onClick={sendEmailInvite}
+                disabled={sending}
+                className="w-full py-4 bg-teal-500 text-black font-black uppercase text-sm rounded-2xl hover:bg-teal-400 transition-colors disabled:opacity-50 flex items-center justify-center gap-3"
+              >
+                {sending ? <><Loader2 className="animate-spin" size={18} /> Sending…</> : <><Send size={18} /> Send Email Invitation</>}
+              </button>
+            </div>
+          )}
+
+          {/* Link Tab */}
+          {activeTab === 'link' && (
+            <div className="space-y-4">
+              <p className="text-zinc-400 text-sm">
+                Share this link directly with your prospective tenant. They will be guided through KYC verification and secure payment.
+              </p>
+              <div className="flex items-center gap-3 bg-black border border-zinc-800 rounded-2xl p-4">
+                <Link2 size={16} className="text-zinc-500 shrink-0" />
+                <span className="text-xs font-mono text-zinc-300 flex-1 break-all">{inviteLink}</span>
+                <button
+                  onClick={copyLink}
+                  className={`shrink-0 p-2 rounded-xl transition-colors ${copied ? 'bg-teal-500/20 text-teal-400' : 'bg-zinc-800 text-zinc-400 hover:text-white'}`}
+                >
+                  {copied ? <CheckCircle2 size={16} /> : <Copy size={16} />}
+                </button>
+              </div>
+              <button
+                onClick={copyLink}
+                className="w-full py-4 bg-zinc-800 text-white font-black uppercase text-sm rounded-2xl hover:bg-zinc-700 transition-colors flex items-center justify-center gap-3"
+              >
+                {copied ? <><CheckCircle2 size={18} className="text-teal-400" /> Copied!</> : <><Copy size={18} /> Copy Onboarding Link</>}
+              </button>
+              <p className="text-zinc-600 text-xs text-center">
+                The tenant will complete KYC, sign digitally, then pay via Paystack escrow.
+              </p>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Onboarding Flow Steps */}
+      <div className="bg-zinc-900 border border-zinc-800 rounded-3xl p-6">
+        <h2 className="text-xs font-black uppercase tracking-widest text-zinc-400 mb-5">Tenant Onboarding Flow</h2>
+        <div className="space-y-3">
+          {[
+            { step: '01', label: 'Receive Invite Link', desc: 'Tenant receives WhatsApp message, email, or direct link' },
+            { step: '02', label: 'AI KYC Verification', desc: 'Identity document upload and automated verification' },
+            { step: '03', label: 'Review Lease Terms', desc: 'Digital lease agreement with all fees displayed' },
+            { step: '04', label: 'Secure Payment via Escrow', desc: 'Paystack payment held in escrow until keys are handed over' },
+            { step: '05', label: 'Ledger Updated', desc: 'Tenancy confirmed, unit marked occupied on-chain' },
+          ].map((item, i) => (
+            <div key={item.step} className="flex items-start gap-4">
+              <div className="shrink-0 w-8 h-8 bg-teal-500/10 border border-teal-500/30 rounded-xl flex items-center justify-center">
+                <span className="text-[9px] font-black text-teal-500">{item.step}</span>
+              </div>
+              <div className="pt-1">
+                <p className="text-sm font-black uppercase">{item.label}</p>
+                <p className="text-zinc-500 text-xs">{item.desc}</p>
+              </div>
+              {i < 4 && <ChevronRight className="text-zinc-700 shrink-0 mt-1 ml-auto" size={14} />}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
   );
 }
