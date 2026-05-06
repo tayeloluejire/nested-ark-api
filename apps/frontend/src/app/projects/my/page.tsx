@@ -67,7 +67,7 @@ export default function MyPropertiesPage() {
     if (!unitMap[projectId]) {
       setUnitsLoading(projectId);
       try {
-        const res = await api.get(`/api/rental/units?project_id=${projectId}`);
+        const res = await api.get(`/api/rental/units/${projectId}`);
         const data = res.data;
         setUnitMap(prev => ({
           ...prev,

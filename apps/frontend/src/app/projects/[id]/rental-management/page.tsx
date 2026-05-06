@@ -54,7 +54,8 @@ export default function RentalManagementPage({ params }: { params: { id: string 
 
   const reloadUnits = () => {
     setLoadingUnits(true);
-    api.get(`/api/rental/units?project_id=${params.id}`)
+    // Correct endpoint: /api/rental/units/:projectId (path param, not query string)
+    api.get(`/api/rental/units/${params.id}`)
       .then(r => { const d = r.data; setUnits(Array.isArray(d) ? d : (d.units ?? [])); })
       .catch(() => {})
       .finally(() => setLoadingUnits(false));
@@ -74,7 +75,8 @@ export default function RentalManagementPage({ params }: { params: { id: string 
 
     setSubmitting(true);
     try {
-      const res = await api.post(`/api/rental/units/${params.id}`, {
+      // Correct endpoint: /api/rental/project/:projectId/units
+      const res = await api.post(`/api/rental/project/${params.id}/units`, {
         ...form,
         rent_amount: safeN(form.rent_amount), security_deposit: safeN(form.security_deposit),
         service_charge: safeN(form.service_charge), agency_fee: safeN(form.agency_fee),
