@@ -1,26 +1,22 @@
 'use client';
-import { useState, useRef, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
-import Image from 'next/image';
-import { usePathname } from 'next/navigation';
+import { useRouter, usePathname } from 'next/navigation';
 import { useAuth } from '@/lib/AuthContext';
-import MarketTicker from './MarketTicker';
-import CurrencySelector from './CurrencySelector';
-import ThemeToggle from './ThemeToggle';
-import NapSearch from './NapSearch';
-import { useCurrency } from '@/hooks/useCurrency';
+import NapSearch from '@/components/NapSearch';
 import {
-  Menu, X, LayoutDashboard, Briefcase, PieChart,
-  Milestone, LogOut, ChevronRight, ChevronDown, Database,
-  Search, TrendingUp, Building2, Map, User,
-  Home, Globe, HardHat, Landmark, Hammer, Gavel,
-  Users, Share2, MessageCircle, Copy, Bell, FileText, ArrowRight,
+  LayoutDashboard, Briefcase, TrendingUp, Building2, Users,
+  Home, HardHat, ShieldCheck, Gavel, Receipt, FileText,
+  LogOut, Menu, X, ChevronDown, ChevronRight,
+  Globe, Wallet, User, Bell, Settings,
+  DollarSign, MapPin, BookOpen, Layers,
 } from 'lucide-react';
 
-// ── Solutions menu items (public-facing, role-based) ─────────────────────────
+// ── Solutions mega-menu data ──────────────────────────────────────────────────
 const SOLUTIONS = [
   {
-    href: '/register',
+    // PROPERTY TOOL — routes to /onboard (Register New Property)
+    href: '/onboard',
     icon: Home,
     accent: 'text-teal-400',
     bg: 'hover:bg-teal-500/8',
@@ -29,572 +25,411 @@ const SOLUTIONS = [
     suite: ['Tenant Onboarding', 'Notice to Quit Generator', 'Auto Receipting', 'Ejection Proceedings'],
   },
   {
-    href: '/register',
-    icon: TrendingUp,
-    accent: 'text-amber-400',
-    bg: 'hover:bg-amber-500/8',
-    label: 'Investors',
-    sub: 'Earn 12% ROI on escrow-backed infrastructure',
-  },
-  {
+    // NAP INFRASTRUCTURE LEDGER — routes to /projects/submit
     href: '/projects/submit',
     icon: HardHat,
     accent: 'text-blue-400',
     bg: 'hover:bg-blue-500/8',
     label: 'Developers & Builders',
     sub: 'Submit projects, raise capital, manage milestones',
+    suite: ['NAP Project ID', 'Milestone Escrow', 'Contractor Bidding', 'Diaspora Tracking'],
   },
   {
-    href: '/register',
+    href: '/investments',
+    icon: Wallet,
+    accent: 'text-amber-400',
+    bg: 'hover:bg-amber-500/8',
+    label: 'Investors',
+    sub: 'Fractional infrastructure investment with yield tracking',
+    suite: ['Fractional Shares', 'Yield Engine', 'Rental Income', 'Exit Liquidity'],
+  },
+  {
+    href: '/gov',
     icon: Globe,
-    accent: 'text-rose-400',
-    bg: 'hover:bg-rose-500/8',
-    label: 'Diaspora Construction',
-    sub: 'Fund and track your build remotely from anywhere',
-  },
-  {
-    href: '/register',
-    icon: Hammer,
-    accent: 'text-zinc-400',
-    bg: 'hover:bg-zinc-800',
-    label: 'Contractors & Suppliers',
-    sub: 'Bid on milestones, get paid on verified completion',
-  },
-  {
-    href: '/register',
-    icon: Landmark,
     accent: 'text-purple-400',
     bg: 'hover:bg-purple-500/8',
-    label: 'Government & Verifiers',
-    sub: 'Approve, verify, and monitor infrastructure projects',
+    label: 'Government & Regulators',
+    sub: 'Oversight dashboards, permit verification & compliance',
+    suite: ['Permit Registry', 'Compliance Dashboard', 'AML Reporting', 'Asset Inventory'],
   },
 ];
 
-// ── Landlord Quick Panel ──────────────────────────────────────────────────────
-// Floating dropdown that gives DEVELOPER/landlord role one-click access to
-// tenant onboarding, notice generation, and referral sharing.
+// ── Landlord quick panel (sidebar dropdown) ───────────────────────────────────
 function LandlordQuickPanel({ onClose }: { onClose: () => void }) {
-  const [copied, setCopied] = useState(false);
-  const [shareTab, setShareTab] = useState<'tenant'|'landlord'>('tenant');
-
-  const BASE_URL = typeof window !== 'undefined' ? window.location.origin : 'https://nested-ark-frontend.vercel.app';
-  const tenantInviteUrl  = `${BASE_URL}/landlord/onboard/select`;
-  const landlordShareUrl = `${BASE_URL}/register`;
-
-  const copyLink = async (url: string) => {
-    try { await navigator.clipboard.writeText(url); } catch { prompt('Copy this link:', url); }
-    setCopied(true); setTimeout(() => setCopied(false), 2500);
-  };
-
-  const whatsappShare = (url: string, msg: string) => {
-    window.open(`https://wa.me/?text=${encodeURIComponent(msg + '\n' + url)}`, '_blank');
-  };
-
-  const emailShare = (url: string, subject: string, body: string) => {
-    window.open(`mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body + '\n\n' + url)}`, '_blank');
-  };
-
-  const tenantMsg  = "You've been invited to join as a tenant on Nested Ark. Set up your Flex-Pay vault and manage your tenancy digitally in 60 seconds.";
-  const landlordMsg = "Nested Ark OS automates rent collection, legal notices, and tenant onboarding for landlords. Join free and manage your property with zero hassle.";
+  const ITEMS = [
+    {
+      // PROPERTY TOOL entry point — separate from NAP Ledger
+      href: '/onboard',
+      icon: Home,
+      label: 'Add New Property',
+      sub: 'Register apartments & rental units',
+      accent: 'text-teal-400',
+      bg: 'hover:bg-teal-500/10',
+    },
+    {
+      href: '/landlord/tenants',
+      icon: Users,
+      label: 'Manage Tenants',
+      sub: 'Onboard, view & manage tenants',
+      accent: 'text-blue-400',
+      bg: 'hover:bg-blue-500/10',
+    },
+    {
+      href: '/landlord/notices',
+      icon: Gavel,
+      label: 'Legal Notices',
+      sub: 'Issue & track formal notices',
+      accent: 'text-red-400',
+      bg: 'hover:bg-red-500/10',
+    },
+    {
+      href: '/landlord/receipts',
+      icon: Receipt,
+      label: 'Receipts & Ledger',
+      sub: 'Payment history per property',
+      accent: 'text-amber-400',
+      bg: 'hover:bg-amber-500/10',
+    },
+    {
+      // NAP Ledger — clearly labeled separately
+      href: '/projects/my',
+      icon: Building2,
+      label: 'NAP Infrastructure Projects',
+      sub: 'Projects on the global ledger',
+      accent: 'text-zinc-400',
+      bg: 'hover:bg-zinc-800/60',
+    },
+  ];
 
   return (
-    <div className="absolute top-full right-0 mt-2 w-[340px] bg-zinc-950 border border-zinc-800 rounded-2xl shadow-2xl overflow-hidden z-[200]">
-      {/* Header */}
-      <div className="p-4 border-b border-zinc-900 flex items-center justify-between">
-        <div>
-          <p className="text-[8px] text-teal-500 uppercase font-black tracking-[0.25em]">Landlord Command</p>
-          <p className="text-xs font-bold text-white mt-0.5">Quick Actions</p>
-        </div>
-        <button onClick={onClose} className="p-1.5 rounded-lg text-zinc-600 hover:text-white hover:bg-zinc-800 transition-all"><X size={14} /></button>
+    <div className="absolute right-0 top-full mt-2 w-72 bg-zinc-950 border border-zinc-800 rounded-2xl shadow-2xl shadow-black/70 z-[300] overflow-hidden">
+      <div className="px-4 py-3 border-b border-zinc-900">
+        <p className="text-[9px] text-teal-500 font-black uppercase tracking-widest">Landlord Command</p>
       </div>
-
-      {/* Quick nav actions */}
-      <div className="p-3 space-y-1 border-b border-zinc-900">
-        {[
-          { href: '/projects/my',                    icon: Building2,    label: 'My Properties',         sub: 'View all project units',             accent: 'text-teal-400',   bg: 'hover:bg-teal-500/8' },
-          { href: '/landlord/tenants',               icon: Users,        label: 'Manage Tenants',         sub: 'Onboard, view & manage tenants',    accent: 'text-blue-400',   bg: 'hover:bg-blue-500/8' },
-          { href: '/landlord/notices',               icon: Gavel,        label: 'Issue Legal Notice',     sub: 'Notice to Quit / Pay / Eviction',   accent: 'text-red-400',    bg: 'hover:bg-red-500/8'  },
-          { href: '/landlord/receipts',              icon: FileText,     label: 'View Receipts & Ledger', sub: 'Court-admissible payment history',   accent: 'text-amber-400',  bg: 'hover:bg-amber-500/8'},
-        ].map(item => {
+      <div className="p-2 space-y-0.5">
+        {ITEMS.map(item => {
           const Icon = item.icon;
           return (
-            <Link key={item.label} href={item.href} onClick={onClose}
-              className={`flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all ${item.bg} group`}>
-              <div className="w-7 h-7 rounded-lg bg-zinc-900 border border-zinc-800 flex items-center justify-center flex-shrink-0 group-hover:border-zinc-700">
-                <Icon size={13} className={item.accent} />
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-[11px] font-bold text-white">{item.label}</p>
+            <Link
+              key={item.href}
+              href={item.href}
+              onClick={onClose}
+              className={`flex items-center gap-3 px-3 py-2.5 rounded-xl transition-colors ${item.bg}`}
+            >
+              <Icon size={16} className={`${item.accent} shrink-0`} />
+              <div className="min-w-0">
+                <p className={`text-xs font-black uppercase ${item.accent}`}>{item.label}</p>
                 <p className="text-[9px] text-zinc-600">{item.sub}</p>
               </div>
-              <ArrowRight size={11} className="text-zinc-700 group-hover:text-zinc-400 flex-shrink-0" />
             </Link>
           );
         })}
-      </div>
-
-      {/* Invite & Share Panel */}
-      <div className="p-3">
-        <p className="text-[8px] text-zinc-600 uppercase font-black tracking-[0.25em] mb-2">Invite & Share Links</p>
-
-        {/* Tab toggle */}
-        <div className="flex gap-1 mb-3 p-1 bg-zinc-900 rounded-xl border border-zinc-800">
-          {(['tenant', 'landlord'] as const).map(tab => (
-            <button key={tab} onClick={() => setShareTab(tab)}
-              className={`flex-1 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-wider transition-all ${shareTab === tab ? 'bg-teal-500 text-black' : 'text-zinc-500 hover:text-white'}`}>
-              {tab === 'tenant' ? '🏠 Invite Tenant' : '🤝 Invite Landlord'}
-            </button>
-          ))}
-        </div>
-
-        {shareTab === 'tenant' ? (
-          <div className="space-y-2">
-            <p className="text-[9px] text-zinc-500 leading-relaxed">Send this link to your tenant — they self-register, sign their digital lease, and activate their Flex-Pay vault in 60 seconds.</p>
-            <div className="flex items-center gap-1.5 p-2 bg-zinc-900 border border-zinc-800 rounded-xl font-mono text-[8px] text-zinc-500 truncate">
-              <span className="flex-1 truncate">{tenantInviteUrl}</span>
-            </div>
-            <div className="grid grid-cols-3 gap-1.5">
-              <button onClick={() => whatsappShare(tenantInviteUrl, tenantMsg)}
-                className="flex flex-col items-center gap-1 py-2 bg-[#25D366]/10 border border-[#25D366]/30 text-[#25D366] rounded-xl text-[8px] font-black uppercase hover:bg-[#25D366]/20 transition-all">
-                <MessageCircle size={13} /> WhatsApp
-              </button>
-              <button onClick={() => emailShare(tenantInviteUrl, 'Your Nested Ark Tenant Invitation', tenantMsg)}
-                className="flex flex-col items-center gap-1 py-2 bg-blue-500/10 border border-blue-500/30 text-blue-400 rounded-xl text-[8px] font-black uppercase hover:bg-blue-500/20 transition-all">
-                <Bell size={13} /> Email
-              </button>
-              <button onClick={() => copyLink(tenantInviteUrl)}
-                className={`flex flex-col items-center gap-1 py-2 border rounded-xl text-[8px] font-black uppercase transition-all ${copied ? 'bg-teal-500/20 border-teal-500/40 text-teal-400' : 'bg-zinc-900 border-zinc-700 text-zinc-400 hover:text-white'}`}>
-                <Copy size={13} /> {copied ? 'Copied!' : 'Copy'}
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div className="space-y-2">
-            <p className="text-[9px] text-zinc-500 leading-relaxed">Know another landlord? Share this link — when they sign up, they get instant access to the full Property Suite.</p>
-            <div className="flex items-center gap-1.5 p-2 bg-zinc-900 border border-zinc-800 rounded-xl font-mono text-[8px] text-zinc-500 truncate">
-              <span className="flex-1 truncate">{landlordShareUrl}</span>
-            </div>
-            <div className="grid grid-cols-3 gap-1.5">
-              <button onClick={() => whatsappShare(landlordShareUrl, landlordMsg)}
-                className="flex flex-col items-center gap-1 py-2 bg-[#25D366]/10 border border-[#25D366]/30 text-[#25D366] rounded-xl text-[8px] font-black uppercase hover:bg-[#25D366]/20 transition-all">
-                <MessageCircle size={13} /> WhatsApp
-              </button>
-              <button onClick={() => emailShare(landlordShareUrl, 'Manage Your Properties on Nested Ark', landlordMsg)}
-                className="flex flex-col items-center gap-1 py-2 bg-blue-500/10 border border-blue-500/30 text-blue-400 rounded-xl text-[8px] font-black uppercase hover:bg-blue-500/20 transition-all">
-                <Bell size={13} /> Email
-              </button>
-              <button onClick={() => copyLink(landlordShareUrl)}
-                className={`flex flex-col items-center gap-1 py-2 border rounded-xl text-[8px] font-black uppercase transition-all ${copied ? 'bg-teal-500/20 border-teal-500/40 text-teal-400' : 'bg-zinc-900 border-zinc-700 text-zinc-400 hover:text-white'}`}>
-                <Copy size={13} /> {copied ? 'Copied!' : 'Copy'}
-              </button>
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );
 }
 
-export default function Navbar() {
-  const [isOpen,           setIsOpen]           = useState(false);
-  const [showSearch,       setShowSearch]       = useState(false);
-  const [solutionsOpen,    setSolutionsOpen]    = useState(false);
-  const [landlordPanelOpen, setLandlordPanelOpen] = useState(false);
-  const solutionsRef   = useRef<HTMLDivElement>(null);
-  const landlordRef    = useRef<HTMLDivElement>(null);
-  const { user, logout } = useAuth();
-  const pathname = usePathname();
-  const { currency, setCurrency } = useCurrency();
+// ── Solutions mega-menu ───────────────────────────────────────────────────────
+function SolutionsMenu({ onClose }: { onClose: () => void }) {
+  return (
+    <div className="absolute left-1/2 -translate-x-1/2 top-full mt-2 w-[680px] bg-zinc-950 border border-zinc-800 rounded-2xl shadow-2xl shadow-black/70 z-[300] overflow-hidden">
+      <div className="px-5 py-3 border-b border-zinc-900 flex items-center justify-between">
+        <p className="text-[9px] text-zinc-500 font-black uppercase tracking-widest">Solutions by Role</p>
+        <button onClick={onClose} className="text-zinc-700 hover:text-white transition-colors">
+          <X size={14} />
+        </button>
+      </div>
+      <div className="grid grid-cols-2 gap-px bg-zinc-900 p-0">
+        {SOLUTIONS.map(s => {
+          const Icon = s.icon;
+          return (
+            <Link
+              key={s.href}
+              href={s.href}
+              onClick={onClose}
+              className={`flex gap-4 p-5 bg-zinc-950 ${s.bg} transition-colors group`}
+            >
+              <div className={`w-9 h-9 rounded-xl bg-zinc-900 border border-zinc-800 flex items-center justify-center shrink-0 group-hover:border-current transition-colors ${s.accent}`}>
+                <Icon size={16} />
+              </div>
+              <div className="min-w-0">
+                <p className={`text-xs font-black uppercase ${s.accent}`}>{s.label}</p>
+                <p className="text-[10px] text-zinc-500 mt-0.5 leading-relaxed">{s.sub}</p>
+                {s.suite && (
+                  <div className="flex flex-wrap gap-1 mt-2">
+                    {s.suite.map(tag => (
+                      <span key={tag} className="text-[7px] font-bold uppercase tracking-wide bg-zinc-900 border border-zinc-800 text-zinc-500 px-1.5 py-0.5 rounded">
+                        {tag}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </Link>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
-  // Close solutions dropdown on outside click
+// ── Main Navbar ───────────────────────────────────────────────────────────────
+export default function Navbar() {
+  const { user, logout } = useAuth();
+  const router   = useRouter();
+  const pathname = usePathname();
+
+  const [mobileOpen,    setMobileOpen]    = useState(false);
+  const [solutionsOpen, setSolutionsOpen] = useState(false);
+  const [landlordOpen,  setLandlordOpen]  = useState(false);
+  const [userMenuOpen,  setUserMenuOpen]  = useState(false);
+
+  const solutionsRef = useRef<HTMLDivElement>(null);
+  const landlordRef  = useRef<HTMLDivElement>(null);
+  const userRef      = useRef<HTMLDivElement>(null);
+
+  // Close dropdowns on outside click
   useEffect(() => {
     const handler = (e: MouseEvent) => {
-      if (solutionsRef.current && !solutionsRef.current.contains(e.target as Node)) {
-        setSolutionsOpen(false);
-      }
-      if (landlordRef.current && !landlordRef.current.contains(e.target as Node)) {
-        setLandlordPanelOpen(false);
-      }
+      if (solutionsRef.current && !solutionsRef.current.contains(e.target as Node)) setSolutionsOpen(false);
+      if (landlordRef.current  && !landlordRef.current.contains(e.target as Node))  setLandlordOpen(false);
+      if (userRef.current      && !userRef.current.contains(e.target as Node))      setUserMenuOpen(false);
     };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
   }, []);
 
-  // ── Role-aware authenticated nav links ────────────────────────────────────
+  // Close mobile on route change
+  useEffect(() => { setMobileOpen(false); }, [pathname]);
+
+  const role = user?.role ?? '';
+
+  // ── Role-based nav links ────────────────────────────────────────────────────
+  // IMPORTANT separation:
+  //   My Projects  (/projects/my)  = NAP Infrastructure Ledger — DEVELOPER/GOVT/ADMIN
+  //   Add Property (/onboard)      = Rental Property Tool      — DEVELOPER (landlord)
+  //   Tenants      (/landlord/tenants) — DEVELOPER (landlord)
   const baseLinks = [
-    { name: 'Dashboard',   href: '/dashboard',   icon: LayoutDashboard, roles: ['INVESTOR','CONTRACTOR','SUPPLIER','BANK','GOVERNMENT','ADMIN','VERIFIER','DEVELOPER'] },
-    { name: 'My Dashboard', href: '/tenant/dashboard', icon: Home,            roles: ['TENANT'] },
-    { name: 'My Vault',    href: '/tenant/vault',     icon: TrendingUp,      roles: ['TENANT'] },
-    { name: 'Pay Rent',    href: '/tenant/pay',       icon: Briefcase,       roles: ['TENANT'] },
-    { name: 'My Notices',  href: '/tenant/notices',   icon: Gavel,           roles: ['TENANT'] },
-    { name: 'Projects',    href: '/projects',    icon: Briefcase,       roles: ['DEVELOPER','GOVERNMENT','CONTRACTOR','SUPPLIER','ADMIN','INVESTOR','VERIFIER','BANK'] },
-    { name: 'Investments', href: '/investments', icon: TrendingUp,      roles: ['INVESTOR','ADMIN'] },
-    { name: 'My Projects', href: '/projects/my', icon: Building2,       roles: ['DEVELOPER','GOVERNMENT','ADMIN'] },
-    { name: 'Tenants',     href: '/landlord/tenants', icon: Users,           roles: ['DEVELOPER'] },
-    { name: 'Milestones',  href: '/milestones',  icon: Milestone,       roles: ['GOVERNMENT','DEVELOPER','CONTRACTOR','ADMIN','VERIFIER'] },
-    { name: 'Portfolio',   href: '/portfolio',   icon: PieChart,        roles: ['INVESTOR','ADMIN'] },
-    { name: 'Ledger',      href: '/ledger',      icon: Database,        roles: ['ADMIN','GOVERNMENT','BANK','INVESTOR','VERIFIER','DEVELOPER'] },
-    { name: 'Map',         href: '/map',         icon: Map,             roles: ['INVESTOR','GOVERNMENT','ADMIN','BANK','CONTRACTOR','DEVELOPER','VERIFIER'] },
+    { name: 'Dashboard',    href: '/dashboard',         icon: LayoutDashboard, roles: ['INVESTOR','CONTRACTOR','SUPPLIER','BANK','GOVERNMENT','ADMIN','VERIFIER','DEVELOPER'] },
+    // Tenant-only links
+    { name: 'My Dashboard', href: '/tenant/dashboard',  icon: Home,            roles: ['TENANT'] },
+    { name: 'My Vault',     href: '/tenant/vault',      icon: TrendingUp,      roles: ['TENANT'] },
+    { name: 'Pay Rent',     href: '/tenant/pay',        icon: DollarSign,      roles: ['TENANT'] },
+    { name: 'My Notices',   href: '/tenant/notices',    icon: Gavel,           roles: ['TENANT'] },
+    // Shared project links
+    { name: 'Projects',     href: '/projects',          icon: Briefcase,       roles: ['DEVELOPER','GOVERNMENT','CONTRACTOR','SUPPLIER','ADMIN','INVESTOR','VERIFIER','BANK'] },
+    { name: 'Investments',  href: '/investments',       icon: Wallet,          roles: ['INVESTOR','ADMIN'] },
+    { name: 'Milestones',   href: '/milestones',        icon: Layers,          roles: ['DEVELOPER','CONTRACTOR','ADMIN'] },
+    { name: 'Ledger',       href: '/ledger',            icon: BookOpen,        roles: ['DEVELOPER','GOVERNMENT','ADMIN','INVESTOR','VERIFIER'] },
+    { name: 'Map',          href: '/map',               icon: MapPin,          roles: ['DEVELOPER','GOVERNMENT','ADMIN','INVESTOR','CONTRACTOR'] },
+    // DEVELOPER / Landlord — NAP Ledger (infrastructure projects)
+    { name: 'My Projects',  href: '/projects/my',       icon: Building2,       roles: ['DEVELOPER','GOVERNMENT','ADMIN'] },
+    // DEVELOPER / Landlord — Property Tool (rental management)
+    { name: 'My Properties',href: '/onboard',           icon: Home,            roles: ['DEVELOPER'] },
+    { name: 'Tenants',      href: '/landlord/tenants',  icon: Users,           roles: ['DEVELOPER'] },
+    { name: 'Notices',      href: '/landlord/notices',  icon: Gavel,           roles: ['DEVELOPER'] },
+    // Government / Admin
+    { name: 'Gov Portal',   href: '/gov',               icon: Globe,           roles: ['GOVERNMENT','ADMIN'] },
+    { name: 'Admin',        href: '/admin',             icon: Settings,        roles: ['ADMIN'] },
   ];
 
-  const navLinks = user
-    ? baseLinks.filter(l => !l.roles || l.roles.includes(user.role)).slice(0, 5)
-    : [];
+  const visibleLinks = baseLinks.filter(l => !role || l.roles.includes(role));
+  const isDeveloper  = role === 'DEVELOPER';
+  const isTenant     = role === 'TENANT';
+
+  const active = (href: string) =>
+    pathname === href || (href !== '/' && pathname.startsWith(href))
+      ? 'text-white'
+      : 'text-zinc-500 hover:text-zinc-300';
 
   return (
-    <>
-      <MarketTicker />
+    <nav className="sticky top-0 z-[200] border-b border-zinc-900 bg-[#050505]/95 backdrop-blur-md">
+      <div className="max-w-7xl mx-auto px-4 md:px-6 h-14 flex items-center justify-between gap-4">
 
-      <nav className="sticky top-0 z-[100] border-b border-zinc-800 bg-black/80 backdrop-blur-xl px-4 md:px-8 py-3">
-        <div className="mx-auto flex max-w-7xl items-center justify-between gap-3">
+        {/* ── Logo ── */}
+        <Link href={user ? '/dashboard' : '/'} className="flex items-center gap-2 shrink-0">
+          <div className="w-6 h-6 bg-teal-500 rounded-md flex items-center justify-center">
+            <span className="text-black font-black text-[9px]">NA</span>
+          </div>
+          <span className="font-black uppercase text-xs tracking-widest hidden sm:block">Nested Ark</span>
+        </Link>
 
-          {/* Logo */}
-          <Link href={user ? (user.role === 'TENANT' ? '/tenant/dashboard' : user.role === 'ADMIN' ? '/admin' : (user.role === 'DEVELOPER' || user.role === 'PROJECT_SPONSOR') ? '/projects/my' : '/dashboard') : '/'} className="flex items-center gap-3 flex-shrink-0">
-            <div className="relative h-8 w-8 flex-shrink-0">
-              <Image src="/nested_ark_icon.png" alt="Nested Ark" fill sizes="32px" priority className="object-contain" />
+        {/* ── Desktop center: Solutions + NAP Search ── */}
+        <div className="hidden md:flex items-center gap-3 flex-1 justify-center max-w-2xl">
+          {/* Solutions dropdown */}
+          <div ref={solutionsRef} className="relative">
+            <button
+              onClick={() => { setSolutionsOpen(o => !o); setLandlordOpen(false); }}
+              className={`flex items-center gap-1.5 text-xs font-black uppercase tracking-widest transition-colors px-3 py-2 rounded-xl ${solutionsOpen ? 'text-teal-400 bg-teal-500/10' : 'text-zinc-500 hover:text-white'}`}
+            >
+              Solutions <ChevronDown size={12} className={`transition-transform ${solutionsOpen ? 'rotate-180' : ''}`} />
+            </button>
+            {solutionsOpen && <SolutionsMenu onClose={() => setSolutionsOpen(false)} />}
+          </div>
+
+          {/* NAP Search */}
+          <NapSearch mode="inline" compact />
+
+          {/* Desktop nav links (condensed) */}
+          {user && (
+            <div className="flex items-center gap-1">
+              {visibleLinks.slice(0, 5).map(link => {
+                const Icon = link.icon;
+                return (
+                  <Link
+                    key={link.href}
+                    href={link.href}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-colors ${active(link.href)}`}
+                  >
+                    <Icon size={12} />
+                    <span className="hidden lg:block">{link.name}</span>
+                  </Link>
+                );
+              })}
             </div>
-            <h1 className="text-sm font-bold tracking-tighter uppercase hidden sm:block">
-              Nested Ark <span className="text-teal-500">OS</span>
-            </h1>
-          </Link>
+          )}
+        </div>
 
-          {/* Desktop nav */}
-          <div className="hidden lg:flex items-center gap-0.5 flex-1 justify-center">
+        {/* ── Right side ── */}
+        <div className="flex items-center gap-2 shrink-0">
+          {user ? (
+            <>
+              {/* Landlord quick panel — DEVELOPER only */}
+              {isDeveloper && (
+                <div ref={landlordRef} className="relative">
+                  <button
+                    onClick={() => { setLandlordOpen(o => !o); setSolutionsOpen(false); }}
+                    className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-colors ${landlordOpen ? 'text-teal-400 bg-teal-500/10' : 'text-zinc-500 hover:text-white'}`}
+                  >
+                    <Building2 size={14} />
+                    <span className="hidden sm:block">Landlord</span>
+                    <ChevronDown size={11} className={`transition-transform ${landlordOpen ? 'rotate-180' : ''}`} />
+                  </button>
+                  {landlordOpen && <LandlordQuickPanel onClose={() => setLandlordOpen(false)} />}
+                </div>
+              )}
 
-            {/* PUBLIC: Solutions dropdown */}
-            {!user && (
-              <div className="relative" ref={solutionsRef}>
+              {/* User menu */}
+              <div ref={userRef} className="relative">
                 <button
-                  onClick={() => setSolutionsOpen(v => !v)}
-                  className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all whitespace-nowrap ${
-                    solutionsOpen ? 'bg-teal-500/10 text-teal-500' : 'text-zinc-500 hover:text-white hover:bg-zinc-900'
-                  }`}>
-                  Solutions <ChevronDown size={11} className={`transition-transform ${solutionsOpen ? 'rotate-180' : ''}`} />
+                  onClick={() => setUserMenuOpen(o => !o)}
+                  className="flex items-center gap-2 px-2 py-1.5 rounded-xl hover:bg-zinc-900 transition-colors"
+                >
+                  <div className="w-7 h-7 rounded-lg bg-teal-500/20 border border-teal-500/30 flex items-center justify-center">
+                    <span className="text-teal-400 font-black text-[10px]">
+                      {user.full_name?.[0]?.toUpperCase() ?? user.email?.[0]?.toUpperCase() ?? 'U'}
+                    </span>
+                  </div>
+                  <div className="hidden sm:block text-left">
+                    <p className="text-[10px] font-black text-white leading-none">{user.full_name?.split(' ')[0] ?? 'User'}</p>
+                    <p className="text-[8px] text-teal-500 font-bold uppercase leading-none mt-0.5">{role}</p>
+                  </div>
+                  <ChevronDown size={11} className={`text-zinc-600 transition-transform ${userMenuOpen ? 'rotate-180' : ''}`} />
                 </button>
 
-                {solutionsOpen && (
-                  <div className="absolute top-full left-0 mt-2 w-[380px] bg-zinc-950 border border-zinc-800 rounded-2xl shadow-2xl overflow-hidden z-50">
-                    <div className="p-3 border-b border-zinc-900">
-                      <p className="text-[8px] text-zinc-600 uppercase font-bold tracking-[0.25em]">Choose your role</p>
+                {userMenuOpen && (
+                  <div className="absolute right-0 top-full mt-2 w-52 bg-zinc-950 border border-zinc-800 rounded-2xl shadow-2xl z-[300] overflow-hidden">
+                    <div className="px-4 py-3 border-b border-zinc-900">
+                      <p className="text-xs font-black text-white truncate">{user.full_name}</p>
+                      <p className="text-[9px] text-zinc-500 truncate">{user.email}</p>
+                      <p className="text-[8px] text-teal-500 font-bold uppercase mt-0.5">{role}</p>
                     </div>
-                    <div className="p-2">
-                      {SOLUTIONS.map(s => {
-                        const Icon = s.icon;
+                    <div className="p-2 space-y-0.5">
+                      {[
+                        { href: '/kyc',      icon: ShieldCheck, label: 'KYC Verification' },
+                        { href: '/profile',  icon: User,        label: 'My Profile' },
+                        { href: '/settings', icon: Settings,    label: 'Settings' },
+                      ].map(item => {
+                        const Icon = item.icon;
                         return (
-                          <Link key={s.href + s.label} href={s.href}
-                            onClick={() => setSolutionsOpen(false)}
-                            className={`flex items-center gap-3 px-3 py-3 rounded-xl transition-all ${s.bg}`}>
-                            <div className="flex-shrink-0 w-8 h-8 rounded-xl bg-zinc-900 flex items-center justify-center">
-                              <Icon size={15} className={s.accent} />
-                            </div>
-                            <div className="flex-1 min-w-0">
-                              <p className="text-xs font-bold text-white">{s.label}</p>
-                              <p className="text-[9px] text-zinc-500 mt-0.5">{s.sub}</p>
-                              {(s as any).suite && (
-                                <div className="flex flex-wrap gap-1 mt-1.5">
-                                  {(s as any).suite.map((f: string) => (
-                                    <span key={f} className="text-[7px] px-1.5 py-0.5 rounded bg-teal-500/10 text-teal-500 border border-teal-500/20 font-bold uppercase tracking-wide">{f}</span>
-                                  ))}
-                                </div>
-                              )}
-                            </div>
-                            <ChevronRight size={12} className="text-zinc-700 ml-auto flex-shrink-0" />
+                          <Link key={item.href} href={item.href} onClick={() => setUserMenuOpen(false)}
+                            className="flex items-center gap-3 px-3 py-2 rounded-xl text-zinc-400 hover:text-white hover:bg-zinc-900 transition-colors text-xs font-bold">
+                            <Icon size={14} /> {item.label}
                           </Link>
                         );
                       })}
-                    </div>
-                    <div className="p-3 border-t border-zinc-900 flex gap-2">
-                      <Link href="/explore" onClick={() => setSolutionsOpen(false)}
-                        className="flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl border border-zinc-800 text-zinc-500 text-[9px] font-bold uppercase tracking-widest hover:border-zinc-600 hover:text-zinc-300 transition-all">
-                        <Search size={10} /> Explore Projects
-                      </Link>
-                      <Link href="/register" onClick={() => setSolutionsOpen(false)}
-                        className="flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl bg-teal-500 text-black text-[9px] font-black uppercase tracking-widest hover:bg-teal-400 transition-all">
-                        Get Started
-                      </Link>
+                      <button
+                        onClick={() => { logout(); setUserMenuOpen(false); }}
+                        className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-red-400 hover:bg-red-500/10 transition-colors text-xs font-bold"
+                      >
+                        <LogOut size={14} /> Sign Out
+                      </button>
                     </div>
                   </div>
                 )}
               </div>
-            )}
 
-            {/* Public quick links */}
-            {!user && (
-              <>
-                <Link href="/explore"
-                  className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all whitespace-nowrap ${pathname === '/explore' ? 'bg-teal-500/10 text-teal-500' : 'text-zinc-500 hover:text-white hover:bg-zinc-900'}`}>
-                  <Search size={12} /> Explore
-                </Link>
-                <Link href="/landing"
-                  className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all whitespace-nowrap ${pathname === '/landing' ? 'bg-teal-500/10 text-teal-500' : 'text-zinc-500 hover:text-white hover:bg-zinc-900'}`}>
-                  About
-                </Link>
-              </>
-            )}
+              {/* Mobile hamburger */}
+              <button
+                onClick={() => setMobileOpen(o => !o)}
+                className="md:hidden p-2 text-zinc-500 hover:text-white transition-colors"
+              >
+                {mobileOpen ? <X size={20} /> : <Menu size={20} />}
+              </button>
+            </>
+          ) : (
+            <div className="flex items-center gap-2">
+              <Link href="/login"  className="text-zinc-400 text-xs font-bold uppercase px-4 py-2 rounded-xl hover:text-white transition-colors">Sign In</Link>
+              <Link href="/register" className="bg-teal-500 text-black text-xs font-black uppercase px-4 py-2 rounded-xl hover:bg-white transition-colors">Get Started</Link>
+            </div>
+          )}
+        </div>
+      </div>
 
-            {/* Authenticated nav links */}
-            {navLinks.map(link => {
-              const Icon = link.icon;
-              const isActive = pathname === link.href || (link.href !== '/dashboard' && pathname.startsWith(link.href));
+      {/* ── Mobile menu ── */}
+      {mobileOpen && user && (
+        <div className="md:hidden border-t border-zinc-900 bg-[#050505] px-4 py-4 space-y-1 max-h-[80vh] overflow-y-auto">
+          {/* Mobile NAP Search */}
+          <div className="mb-4">
+            <NapSearch mode="inline" placeholder="Search by NAP Project ID…" />
+          </div>
+
+          {/* Mobile Solutions */}
+          <div className="mb-3">
+            <p className="text-[9px] text-zinc-600 uppercase font-bold tracking-widest px-3 mb-2">Solutions</p>
+            {SOLUTIONS.map(s => {
+              const Icon = s.icon;
               return (
-                <Link key={link.href} href={link.href}
-                  className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all whitespace-nowrap ${
-                    isActive ? 'bg-teal-500/10 text-teal-500' : 'text-zinc-500 hover:text-white hover:bg-zinc-900'
-                  }`}>
-                  <Icon size={13} /> {link.name}
+                <Link key={s.href} href={s.href}
+                  className={`flex items-center gap-3 px-3 py-2.5 rounded-xl transition-colors ${s.bg}`}
+                >
+                  <Icon size={16} className={s.accent} />
+                  <div>
+                    <p className={`text-xs font-black uppercase ${s.accent}`}>{s.label}</p>
+                    <p className="text-[9px] text-zinc-600">{s.sub}</p>
+                  </div>
                 </Link>
               );
             })}
           </div>
 
-          {/* Right controls */}
-          <div className="flex items-center gap-2 flex-shrink-0">
-
-            {/* Search — authenticated */}
-            {user && (showSearch ? (
-              <div className="hidden md:flex items-center gap-2">
-                <NapSearch mode="inline" compact />
-                <button onClick={() => setShowSearch(false)} className="text-zinc-500 hover:text-white transition-colors">
-                  <X size={16} />
-                </button>
-              </div>
-            ) : (
-              <button onClick={() => setShowSearch(true)}
-                className="hidden md:flex items-center gap-1.5 px-3 py-2 rounded-lg border border-zinc-800 text-zinc-500 hover:text-teal-500 hover:border-teal-500/40 text-[10px] font-bold uppercase tracking-widest transition-all">
-                <Search size={12} /> Track
-              </button>
-            ))}
-
-            <ThemeToggle />
-            <CurrencySelector currency={currency} onSelect={setCurrency} compact />
-
-            {user && (
-              <span className="hidden xl:flex items-center gap-1.5 text-[9px] text-zinc-600 font-mono uppercase max-w-[120px] truncate">
-                <User size={9} /> {user.email}
-              </span>
-            )}
-
-            {/* Landlord quick-panel button — DEVELOPER role only */}
-            {user && (user.role === 'DEVELOPER' || user.role === 'PROJECT_SPONSOR') && (
-              <div className="relative" ref={landlordRef}>
-                <button
-                  onClick={() => setLandlordPanelOpen(v => !v)}
-                  title="Landlord Command Centre"
-                  className={`hidden md:flex items-center gap-1.5 px-3 py-2 rounded-lg border text-[10px] font-bold uppercase tracking-widest transition-all ${
-                    landlordPanelOpen
-                      ? 'bg-teal-500/10 border-teal-500/40 text-teal-400'
-                      : 'border-zinc-800 text-zinc-500 hover:border-teal-500/40 hover:text-teal-400'
-                  }`}>
-                  <Home size={13} /> Landlord
-                  <ChevronDown size={10} className={`transition-transform ${landlordPanelOpen ? 'rotate-180' : ''}`} />
-                </button>
-                {landlordPanelOpen && <LandlordQuickPanel onClose={() => setLandlordPanelOpen(false)} />}
-              </div>
-            )}
-
-            {/* Public CTA */}
-            {!user && (
-              <>
-                <Link href="/login"
-                  className="hidden md:flex items-center gap-1.5 px-3 py-2 rounded-lg border border-zinc-800 text-zinc-500 text-[10px] font-bold uppercase tracking-widest hover:border-zinc-600 hover:text-zinc-300 transition-all">
-                  Sign In
+          {/* Mobile nav links */}
+          <div className="border-t border-zinc-900 pt-3">
+            <p className="text-[9px] text-zinc-600 uppercase font-bold tracking-widest px-3 mb-2">Navigation</p>
+            {visibleLinks.map(link => {
+              const Icon = link.icon;
+              return (
+                <Link key={link.href} href={link.href}
+                  className={`flex items-center gap-3 px-3 py-2.5 rounded-xl transition-colors hover:bg-zinc-900 ${active(link.href)}`}
+                >
+                  <Icon size={16} />
+                  <span className="text-sm font-bold">{link.name}</span>
                 </Link>
-                <Link href="/register"
-                  className="hidden md:flex items-center gap-1.5 px-4 py-2 rounded-lg bg-teal-500 text-black text-[10px] font-black uppercase tracking-widest hover:bg-teal-400 transition-all">
-                  Get Started
-                </Link>
-              </>
-            )}
+              );
+            })}
+          </div>
 
-            {user && (
-              <button onClick={logout}
-                className="hidden md:flex items-center gap-1.5 rounded-lg border border-zinc-800 px-3 py-2 text-[10px] font-bold uppercase tracking-tighter text-zinc-500 hover:bg-red-500/10 hover:text-red-400 hover:border-red-500/30 transition-all">
-                <LogOut size={13} /> Out
-              </button>
-            )}
-
-            <button onClick={() => setIsOpen(!isOpen)} className="lg:hidden p-2 text-zinc-400 hover:text-teal-500 transition-colors">
-              {isOpen ? <X size={22} /> : <Menu size={22} />}
+          {/* Mobile sign out */}
+          <div className="border-t border-zinc-900 pt-3">
+            <button
+              onClick={() => { logout(); setMobileOpen(false); }}
+              className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-red-400 hover:bg-red-500/10 transition-colors text-sm font-bold"
+            >
+              <LogOut size={16} /> Sign Out
             </button>
           </div>
         </div>
-      </nav>
-
-      {/* Mobile full-screen menu */}
-      <div className={`fixed inset-0 z-[90] bg-black/96 backdrop-blur-xl transition-all duration-300 lg:hidden ${isOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}>
-        <div className="flex flex-col h-full pt-20 px-6 pb-10 overflow-y-auto">
-
-          {/* Identity */}
-          <div className="mb-6 px-4 pb-6 border-b border-zinc-800">
-            <p className="text-[10px] font-bold uppercase tracking-[0.3em] text-zinc-500">
-              {user ? 'Operator Terminal' : 'Nested Ark OS'}
-            </p>
-            <p className="text-white font-medium mt-1">{user?.email ?? 'Infrastructure Protocol'}</p>
-            {user?.role && <p className="text-teal-500 text-[10px] uppercase font-bold tracking-widest mt-1">{user.role}</p>}
-            <div className="mt-3 flex items-center gap-3 flex-wrap">
-              <CurrencySelector currency={currency} onSelect={setCurrency} compact={false} />
-              <ThemeToggle />
-            </div>
-            {user && <div className="mt-3"><NapSearch mode="inline" placeholder="Search projects…" /></div>}
-          </div>
-
-          <div className="space-y-2 flex-1">
-            {/* Public: role entry links */}
-            {!user && (
-              <>
-                <p className="text-[8px] text-zinc-700 uppercase font-bold tracking-[0.25em] px-2 mb-3">Choose Your Path</p>
-                {SOLUTIONS.map(s => {
-                  const Icon = s.icon;
-                  return (
-                    <Link key={s.label} href={s.href} onClick={() => setIsOpen(false)}
-                      className="flex items-center justify-between p-4 rounded-2xl border border-zinc-800 bg-zinc-900/50 text-white hover:border-zinc-600 transition-all">
-                      <div className="flex items-center gap-3">
-                        <Icon size={18} className={s.accent} />
-                        <div>
-                          <span className="text-sm font-bold uppercase tracking-tight block">{s.label}</span>
-                          <span className="text-[9px] text-zinc-500">{s.sub}</span>
-                        </div>
-                      </div>
-                      <ChevronRight size={16} className="text-zinc-600 flex-shrink-0" />
-                    </Link>
-                  );
-                })}
-                <div className="pt-2 space-y-2">
-                  <Link href="/explore" onClick={() => setIsOpen(false)}
-                    className="flex items-center justify-between p-4 rounded-2xl border border-zinc-800/50 bg-zinc-900/20 text-zinc-400 hover:text-white transition-all">
-                    <span className="text-sm font-bold uppercase tracking-tight">Explore Projects</span>
-                    <ChevronRight size={16} />
-                  </Link>
-                </div>
-              </>
-            )}
-
-            {/* Authenticated links */}
-            {user && baseLinks.filter(l => !l.roles || l.roles.includes(user.role)).map(link => {
-              const Icon = link.icon;
-              const isActive = pathname === link.href;
-              return (
-                <Link key={link.href} href={link.href} onClick={() => setIsOpen(false)}
-                  className={`flex items-center justify-between p-4 rounded-2xl border transition-all ${
-                    isActive ? 'bg-teal-500 border-teal-400 text-black' : 'bg-zinc-900/50 border-zinc-800 text-white hover:border-zinc-600'
-                  }`}>
-                  <div className="flex items-center gap-3"><Icon size={18} /><span className="text-base font-bold uppercase tracking-tight">{link.name}</span></div>
-                  <ChevronRight size={16} />
-                </Link>
-              );
-            })}
-
-            {user && [
-              { href: '/about', label: 'About' },
-              { href: '/kyc', label: 'KYC Verification' },
-            ].map(l => (
-              <Link key={l.href} href={l.href} onClick={() => setIsOpen(false)}
-                className="flex items-center justify-between p-4 rounded-2xl border border-zinc-800/50 bg-zinc-900/20 text-zinc-500 hover:text-white hover:border-zinc-700 transition-all">
-                <span className="text-sm font-bold uppercase tracking-tight">{l.label}</span>
-                <ChevronRight size={16} />
-              </Link>
-            ))}
-          </div>
-
-          <div className="mt-6 space-y-2">
-            {/* Landlord mobile quick-actions */}
-            {(user?.role === 'DEVELOPER' || user?.role === 'PROJECT_SPONSOR') && (
-              <div className="p-4 rounded-2xl border border-teal-500/20 bg-teal-500/5 space-y-3">
-                <p className="text-[8px] text-teal-500 uppercase font-black tracking-[0.25em]">Landlord Command</p>
-                <div className="space-y-1.5">
-                  {[
-                    { href: '/projects/my',        icon: Building2,    label: 'My Properties & Units' },
-                    { href: '/landlord/tenants',   icon: Users,        label: 'Onboard Tenants' },
-                    { href: '/landlord/notices',   icon: Gavel,        label: 'Issue Legal Notice' },
-                  ].map(item => {
-                    const Icon = item.icon;
-                    return (
-                      <Link key={item.label} href={item.href} onClick={() => setIsOpen(false)}
-                        className="flex items-center justify-between p-3 rounded-xl border border-zinc-800 bg-zinc-900/50 text-white hover:border-teal-500/30 transition-all">
-                        <div className="flex items-center gap-3">
-                          <Icon size={15} className="text-teal-400" />
-                          <span className="text-xs font-bold uppercase tracking-tight">{item.label}</span>
-                        </div>
-                        <ChevronRight size={14} className="text-zinc-600" />
-                      </Link>
-                    );
-                  })}
-                </div>
-                {/* Mobile share links */}
-                <div className="pt-2 border-t border-zinc-800 space-y-2">
-                  <p className="text-[8px] text-zinc-600 uppercase font-black tracking-[0.25em]">Share & Invite</p>
-                  <div className="grid grid-cols-2 gap-2">
-                    <button
-                      onClick={() => {
-                        const url = `${window.location.origin}/landlord/onboard/select`;
-                        window.open(`https://wa.me/?text=${encodeURIComponent("You've been invited to join as a tenant on Nested Ark.\n" + url)}`, '_blank');
-                      }}
-                      className="flex items-center justify-center gap-1.5 py-2.5 bg-[#25D366]/10 border border-[#25D366]/30 text-[#25D366] rounded-xl text-[9px] font-black uppercase">
-                      <MessageCircle size={12} /> Invite Tenant
-                    </button>
-                    <button
-                      onClick={() => {
-                        const url = `${window.location.origin}/register`;
-                        window.open(`https://wa.me/?text=${encodeURIComponent("Manage your property on Nested Ark.\n" + url)}`, '_blank');
-                      }}
-                      className="flex items-center justify-center gap-1.5 py-2.5 bg-teal-500/10 border border-teal-500/30 text-teal-400 rounded-xl text-[9px] font-black uppercase">
-                      <Share2 size={12} /> Invite Landlord
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
-            {user?.role === 'TENANT' && (
-              <div className="p-4 rounded-2xl border border-teal-500/20 bg-teal-500/5 space-y-2">
-                <p className="text-[8px] text-teal-500 uppercase font-black tracking-[0.25em]">Tenant Portal</p>
-                {[
-                  { href: '/tenant/dashboard',     icon: Home,      label: 'My Dashboard' },
-                  { href: '/tenant/vault',          icon: TrendingUp, label: 'My Vault' },
-                  { href: '/tenant/pay',            icon: Briefcase,  label: 'Pay Rent' },
-                  { href: '/tenant/contributions',  icon: FileText,   label: 'Payment History' },
-                  { href: '/tenant/notices',        icon: Gavel,      label: 'My Notices' },
-                ].map(item => {
-                  const Icon = item.icon;
-                  return (
-                    <Link key={item.label} href={item.href} onClick={() => setIsOpen(false)}
-                      className="flex items-center justify-between p-3 rounded-xl border border-zinc-800 bg-zinc-900/50 text-white hover:border-teal-500/30 transition-all">
-                      <div className="flex items-center gap-3">
-                        <Icon size={15} className="text-teal-400" />
-                        <span className="text-xs font-bold uppercase tracking-tight">{item.label}</span>
-                      </div>
-                      <ChevronRight size={14} className="text-zinc-600" />
-                    </Link>
-                  );
-                })}
-              </div>
-            )}
-            {user?.role === 'ADMIN' && (
-              <Link href="/admin" onClick={() => setIsOpen(false)}
-                className="flex items-center justify-between p-4 rounded-2xl border border-red-500/30 bg-red-500/10 text-red-400">
-                <span className="text-sm font-bold uppercase">Admin Command Center</span>
-                <ChevronRight size={16} />
-              </Link>
-            )}
-            {user ? (
-              <button onClick={() => { logout(); setIsOpen(false); }}
-                className="w-full flex items-center justify-center gap-3 p-4 rounded-2xl bg-red-500/10 border border-red-500/20 text-red-500 font-bold uppercase text-xs tracking-[0.2em]">
-                <LogOut size={16} /> Terminate Session
-              </button>
-            ) : (
-              <div className="flex gap-2">
-                <Link href="/login" onClick={() => setIsOpen(false)}
-                  className="flex-1 flex items-center justify-center py-4 rounded-2xl border border-zinc-800 text-zinc-400 font-bold uppercase text-xs tracking-widest hover:border-zinc-600 transition-all">
-                  Sign In
-                </Link>
-                <Link href="/register" onClick={() => setIsOpen(false)}
-                  className="flex-1 flex items-center justify-center py-4 rounded-2xl bg-teal-500 text-black font-black uppercase text-xs tracking-widest hover:bg-teal-400 transition-all">
-                  Get Started
-                </Link>
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-    </>
+      )}
+    </nav>
   );
 }
