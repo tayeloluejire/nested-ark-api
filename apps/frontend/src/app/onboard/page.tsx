@@ -70,20 +70,46 @@ export default function OnboardPropertyPage() {
 
     setLoading(true); setError(''); setSuccess('');
     try {
-      const res = await api.post('/api/properties', {
-        ...form,
-        total_units: Number(form.total_units) || 1,
+      // POST /api/projects — the existing backend endpoint.
+      // /api/properties does not exist on the backend.
+      // We pass mode=PRIVATE + is_rental=true so the backend knows this is
+      // a landlord property (not a crowdfunded infrastructure project).
+      const res = await api.post('/api/projects', {
+        title:           form.name,           // projects table uses "title"
+        location:        form.city,
+        country:         form.country,
+        address:         form.address,
+        state:           form.state,
+        description:     form.description,
+        category:        'Residential',
+        mode:            'PRIVATE',
+        project_status:  'OPERATIONAL',
+        is_rental:       true,
+        total_units:     Number(form.total_units) || 1,
+        property_type:   form.property_type,
+        management_mode: form.management_mode,
+        budget:          0,
+        expected_roi:    0,
       });
 
-      // Backend returns { id, project_id, ... }
-      // We redirect to the rental-management page to add units
-      const projectId = res.data?.project_id ?? res.data?.id;
-      setSuccess('Property registered! Setting up unit management…');
+      // Backend returns { project: { id, ... } } or { id, ... }
+      const projectId = res.data?.project?.id ?? res.data?.id;
+
+      if (!projectId) {
+        setError('Property registered but no ID returned. Please go to My Projects.');
+        setLoading(false);
+        return;
+      }
+
+      setSuccess('Property registered! Redirecting to add units…');
       setTimeout(() => {
         router.push(`/projects/${projectId}/rental-management`);
       }, 1400);
     } catch (ex: any) {
-      setError(ex?.response?.data?.error ?? 'Registration failed. Please check your connection.');
+      const msg = ex?.response?.data?.error
+        ?? ex?.response?.data?.message
+        ?? `Error ${ex?.response?.status ?? ''}: Registration failed.`;
+      setError(msg);
     } finally {
       setLoading(false);
     }
