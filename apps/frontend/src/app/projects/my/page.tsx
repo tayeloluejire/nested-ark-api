@@ -2,11 +2,15 @@
 export const dynamic = 'force-dynamic';
 /**
  * /projects/my/page.tsx
- * NAP Infrastructure Ledger — projects submitted to the global ledger.
- * "Add Unit" links here go to /projects/[id]/rental-management.
- * "Onboard Tenant" links go to /landlord/onboard/[unitId].
  *
- * SEPARATE from /onboard which is the Landlord Property Tool entry.
+ * BACKEND ENDPOINTS (verified from index.ts):
+ *   GET /api/projects/my
+ *       → { success: true, projects: [ { id, title, location, country,
+ *            status, project_number, ... } ] }
+ *
+ *   GET /api/rental/units/:projectId
+ *       → { success: true, units: [ { id, unit_name, rent_amount, currency,
+ *            status, tenant_name, tenancy_status } ] }
  */
 import { useState, useEffect, useCallback } from 'react';
 import api from '@/lib/api';
@@ -29,6 +33,7 @@ interface Unit {
   currency?: string;
   status?: string;
   tenant_name?: string;
+  tenancy_status?: string;
 }
 
 interface Project {
@@ -52,8 +57,9 @@ export default function MyPropertiesPage() {
     setLoading(true); setError('');
     api.get('/api/projects/my')
       .then(res => {
+        // Backend returns { success: true, projects: [] }
         const data = res.data;
-        setProjects(Array.isArray(data) ? data : (data.projects ?? []));
+        setProjects(Array.isArray(data) ? data : (data?.projects ?? []));
       })
       .catch(e => setError(e?.response?.data?.error ?? 'Could not load projects.'))
       .finally(() => setLoading(false));
@@ -67,11 +73,12 @@ export default function MyPropertiesPage() {
     if (!unitMap[projectId]) {
       setUnitsLoading(projectId);
       try {
+        // GET /api/rental/units/:projectId — path param, not query string
         const res = await api.get(`/api/rental/units/${projectId}`);
         const data = res.data;
         setUnitMap(prev => ({
           ...prev,
-          [projectId]: Array.isArray(data) ? data : (data.units ?? []),
+          [projectId]: Array.isArray(data) ? data : (data?.units ?? []),
         }));
       } catch {
         setUnitMap(prev => ({ ...prev, [projectId]: [] }));
@@ -81,11 +88,14 @@ export default function MyPropertiesPage() {
     }
   };
 
-  const projectStatusStyle = (s?: string) => {
+  const statusStyle = (s?: string) => {
     const map: Record<string, string> = {
-      active: 'bg-teal-500/10 text-teal-400', funded: 'bg-emerald-500/10 text-emerald-400',
-      pending: 'bg-amber-500/10 text-amber-400', draft: 'bg-zinc-800 text-zinc-500',
-      approved: 'bg-teal-500/10 text-teal-400', operational: 'bg-teal-500/10 text-teal-400',
+      active: 'bg-teal-500/10 text-teal-400',
+      funded: 'bg-emerald-500/10 text-emerald-400',
+      pending: 'bg-amber-500/10 text-amber-400',
+      draft: 'bg-zinc-800 text-zinc-500',
+      operational: 'bg-teal-500/10 text-teal-400',
+      private: 'bg-zinc-800 text-zinc-400',
     };
     return map[(s || '').toLowerCase()] ?? 'bg-zinc-800 text-zinc-400';
   };
@@ -108,25 +118,19 @@ export default function MyPropertiesPage() {
         {/* Header */}
         <header className="flex flex-col sm:flex-row justify-between sm:items-end gap-4 border-b border-zinc-800 pb-6">
           <div>
-            <p className="text-[10px] text-teal-500 uppercase font-black tracking-widest mb-1">
-              NAP Infrastructure Ledger
-            </p>
+            <p className="text-[10px] text-teal-500 uppercase font-black tracking-widest mb-1">NAP Infrastructure Ledger</p>
             <h1 className="text-3xl font-black uppercase italic">My Projects</h1>
-            <p className="text-zinc-500 text-xs mt-1">
-              Projects you have submitted to the Nested Ark global infrastructure ledger
-            </p>
+            <p className="text-zinc-500 text-xs mt-1">Projects submitted to the Nested Ark global ledger</p>
           </div>
           <div className="flex items-center gap-3 flex-wrap">
             <button onClick={fetchProjects}
               className="p-3 bg-zinc-900 border border-zinc-800 rounded-xl hover:border-zinc-600 transition-colors" title="Refresh">
               <RefreshCw size={16} className="text-zinc-400" />
             </button>
-            {/* Property Tool shortcut */}
             <Link href="/onboard"
               className="border border-zinc-700 text-zinc-400 px-4 py-3 rounded-xl font-black uppercase text-xs flex items-center gap-2 hover:border-zinc-500 hover:text-white transition-colors">
               <Home size={14} /> Add Property
             </Link>
-            {/* NAP Ledger submit */}
             <Link href="/projects/submit"
               className="bg-white text-black px-5 py-3 rounded-xl font-black uppercase text-xs flex items-center gap-2 hover:bg-teal-500 transition-colors">
               <Plus size={16} /> Submit Project
@@ -147,16 +151,16 @@ export default function MyPropertiesPage() {
             <Building2 className="mx-auto text-zinc-700 mb-4" size={48} />
             <h2 className="text-xl font-bold uppercase">No projects yet</h2>
             <p className="text-zinc-500 text-sm mb-8 max-w-sm mx-auto">
-              Submit your first infrastructure project to the NAP Global Ledger, or register a rental property.
+              Register a rental property or submit an infrastructure project to the NAP Global Ledger.
             </p>
             <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
-              <Link href="/projects/submit"
-                className="bg-teal-500 text-black font-black uppercase text-xs px-8 py-4 rounded-xl hover:bg-teal-400 transition-colors">
-                Submit Infrastructure Project
-              </Link>
               <Link href="/onboard"
-                className="text-zinc-400 font-bold uppercase text-xs border border-zinc-700 px-8 py-4 rounded-xl hover:border-zinc-500 transition-colors">
+                className="bg-teal-500 text-black font-black uppercase text-xs px-8 py-4 rounded-xl hover:bg-teal-400 transition-colors">
                 Register Rental Property
+              </Link>
+              <Link href="/projects/submit"
+                className="text-zinc-400 font-bold uppercase text-xs border border-zinc-700 px-8 py-4 rounded-xl hover:border-zinc-500 transition-colors">
+                Submit Infrastructure Project
               </Link>
               <Link href="/projects"
                 className="text-zinc-500 font-bold uppercase text-xs border border-zinc-800 px-8 py-4 rounded-xl hover:border-zinc-600 transition-colors">
@@ -175,7 +179,9 @@ export default function MyPropertiesPage() {
               const isLoadingU = unitsLoading === project.id;
 
               return (
-                <div key={project.id} className="bg-zinc-900 border border-zinc-800 rounded-3xl overflow-hidden hover:border-zinc-700 transition-all">
+                <div key={project.id}
+                  className="bg-zinc-900 border border-zinc-800 rounded-3xl overflow-hidden hover:border-zinc-700 transition-all">
+
                   <div className="p-6">
                     {/* Project header */}
                     <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 mb-6">
@@ -184,7 +190,8 @@ export default function MyPropertiesPage() {
                         <div className="flex items-center gap-3 mt-1 flex-wrap">
                           {project.location && (
                             <p className="text-zinc-500 text-xs font-mono uppercase flex items-center gap-1">
-                              <MapPin size={10} /> {project.location}{project.country ? `, ${project.country}` : ''}
+                              <MapPin size={10} />
+                              {project.location}{project.country ? `, ${project.country}` : ''}
                             </p>
                           )}
                           {project.project_number && (
@@ -192,7 +199,7 @@ export default function MyPropertiesPage() {
                           )}
                         </div>
                       </div>
-                      <span className={`text-[9px] font-black px-3 py-1.5 rounded-lg uppercase tracking-wider shrink-0 ${projectStatusStyle(project.status)}`}>
+                      <span className={`text-[9px] font-black px-3 py-1.5 rounded-lg uppercase tracking-wider shrink-0 ${statusStyle(project.status)}`}>
                         {project.status || 'Active'}
                       </span>
                     </div>
@@ -266,7 +273,8 @@ export default function MyPropertiesPage() {
                       ) : (
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                           {units.map(unit => (
-                            <div key={unit.id} className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4 flex items-center justify-between gap-3">
+                            <div key={unit.id}
+                              className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4 flex items-center justify-between gap-3">
                               <div className="min-w-0">
                                 <p className="font-black uppercase text-sm truncate">{unit.unit_name}</p>
                                 <p className="text-zinc-500 text-xs font-mono">
@@ -279,10 +287,13 @@ export default function MyPropertiesPage() {
                                 )}
                               </div>
                               <div className="flex flex-col items-end gap-2 shrink-0">
-                                <span className={`text-[9px] font-black px-2 py-1 rounded uppercase ${unit.status?.toLowerCase() === 'occupied' ? 'bg-teal-500/10 text-teal-400' : 'bg-amber-500/10 text-amber-400'}`}>
-                                  {unit.status || 'Vacant'}
+                                <span className={`text-[9px] font-black px-2 py-1 rounded uppercase ${
+                                  unit.tenancy_status === 'ACTIVE'
+                                    ? 'bg-teal-500/10 text-teal-400'
+                                    : 'bg-amber-500/10 text-amber-400'
+                                }`}>
+                                  {unit.tenancy_status === 'ACTIVE' ? 'Occupied' : (unit.status || 'Vacant')}
                                 </span>
-                                {/* ALWAYS routes to landlord onboard — never public /onboard */}
                                 <Link href={`/landlord/onboard/${unit.id}`}
                                   className="text-[9px] font-black uppercase text-teal-500 border border-teal-500/30 px-2 py-1 rounded hover:bg-teal-500/10 transition-colors whitespace-nowrap">
                                   Onboard Tenant

@@ -1,28 +1,25 @@
 'use client';
 export const dynamic = 'force-dynamic';
 /**
- * /onboard/page.tsx
- * LANDLORD PROPERTY TOOL entry point.
- * This is SEPARATE from /projects/submit (NAP Infrastructure Ledger).
+ * /onboard/page.tsx — Landlord Property Registration
  *
- * Flow:
- *   /onboard  →  register property  →  POST /api/properties
- *             →  redirect to /projects/[id]/rental-management
- *             →  Add units, bank details, fees
- *             →  /landlord/onboard/[unitId]  →  invite tenant
- *             →  tenant opens /tenant/onboard/[unitId]  →  KYC + pay
+ * Backend endpoint: POST /api/projects
+ * Required fields:  title, description, location, country, budget, category
+ *
+ * NOTE: budget=0 is FALSY in JS and fails the backend's !budget check.
+ * We send budget=1 as a placeholder for rental properties (not investment assets).
+ * On success → redirect to /projects/[id]/rental-management to add units.
  */
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import Navbar from '@/components/Navbar';
 import Footer from '@/components/Footer';
-import { useAuth } from '@/lib/AuthContext';
 import api from '@/lib/api';
 import {
   Home, MapPin, Key, Loader2, ShieldCheck,
-  ArrowLeft, CheckCircle2, AlertCircle, Building2,
-  ChevronRight,
+  ArrowLeft, CheckCircle2, AlertCircle,
+  Building2, ChevronRight,
 } from 'lucide-react';
 
 const PROPERTY_TYPES = [
@@ -41,18 +38,16 @@ const NIGERIAN_STATES = [
 
 export default function OnboardPropertyPage() {
   const router = useRouter();
-  const { user } = useAuth();
 
   const [form, setForm] = useState({
-    name:            '',
-    address:         '',
-    city:            'Lagos',
-    state:           'Lagos',
-    country:         'Nigeria',
-    property_type:   'Apartment / Flat',
-    total_units:     '1',
-    description:     '',
-    management_mode: 'PRIVATE',
+    name:          '',
+    address:       '',
+    city:          'Lagos',
+    state:         'Lagos',
+    country:       'Nigeria',
+    property_type: 'Apartment / Flat',
+    total_units:   '1',
+    description:   '',
   });
 
   const [loading, setLoading] = useState(false);
@@ -70,45 +65,59 @@ export default function OnboardPropertyPage() {
 
     setLoading(true); setError(''); setSuccess('');
     try {
-      // POST /api/projects — the existing backend endpoint.
-      // /api/properties does not exist on the backend.
-      // We pass mode=PRIVATE + is_rental=true so the backend knows this is
-      // a landlord property (not a crowdfunded infrastructure project).
+      /**
+       * POST /api/projects — all 6 required fields must be present and truthy:
+       *   title       = property name (required, non-empty string)
+       *   description = required by backend validation — use property_type as fallback
+       *   location    = city / LGA
+       *   country     = country
+       *   budget      = backend check is !budget, so 0 fails → send 1 for rental properties
+       *   category    = 'Residential'
+       *
+       * Extra fields for rental identification:
+       *   project_type     = 'RESIDENTIAL' triggers PRIVATE project_mode in backend SQL
+       *   project_mode     = 'PRIVATE'
+       *   lifecycle_stage  = 'OPERATIONAL'
+       *   visibility       = 'PRIVATE'
+       */
       const res = await api.post('/api/projects', {
-        title:           form.name,           // projects table uses "title"
-        location:        form.city,
+        title:           form.name.trim(),
+        description:     form.description.trim() || `${form.property_type} — ${form.address.trim()}`,
+        location:        `${form.city}, ${form.state}`,
         country:         form.country,
-        address:         form.address,
-        state:           form.state,
-        description:     form.description,
+        budget:          1,               // placeholder — rental properties have no investment budget
+        currency:        'NGN',
         category:        'Residential',
-        mode:            'PRIVATE',
-        project_status:  'OPERATIONAL',
-        is_rental:       true,
-        total_units:     Number(form.total_units) || 1,
-        property_type:   form.property_type,
-        management_mode: form.management_mode,
-        budget:          0,
+        project_type:    'RESIDENTIAL',   // triggers PRIVATE mode in backend CASE statement
+        project_mode:    'PRIVATE',
+        lifecycle_stage: 'OPERATIONAL',
+        visibility:      'PRIVATE',
         expected_roi:    0,
+        // Rental-specific metadata stored via tags
+        tags:            ['rental', 'landlord', form.property_type.toLowerCase().replace(/\s+/g, '-')],
+        // Pass address details for reference (backend ignores unknown fields gracefully)
+        address:         form.address.trim(),
+        total_units:     Number(form.total_units) || 1,
       });
 
-      // Backend returns { project: { id, ... } } or { id, ... }
+      // Backend returns: { success: true, project: { id, ... }, project_number }
       const projectId = res.data?.project?.id ?? res.data?.id;
 
       if (!projectId) {
-        setError('Property registered but no ID returned. Please go to My Projects.');
-        setLoading(false);
+        setError('Property registered but no project ID returned. Please go to My Projects.');
         return;
       }
 
-      setSuccess('Property registered! Redirecting to add units…');
+      setSuccess(`Property registered! Redirecting to add units…`);
       setTimeout(() => {
         router.push(`/projects/${projectId}/rental-management`);
-      }, 1400);
+      }, 1200);
+
     } catch (ex: any) {
+      // Show the exact backend error message so we can diagnose quickly
       const msg = ex?.response?.data?.error
         ?? ex?.response?.data?.message
-        ?? `Error ${ex?.response?.status ?? ''}: Registration failed.`;
+        ?? `Request failed (${ex?.response?.status ?? 'network error'})`;
       setError(msg);
     } finally {
       setLoading(false);
@@ -120,15 +129,12 @@ export default function OnboardPropertyPage() {
       <Navbar />
       <main className="flex-1 max-w-3xl mx-auto px-4 md:px-6 py-12 space-y-8 w-full">
 
-        {/* Breadcrumb */}
+        {/* Header */}
         <div>
-          <Link
-            href="/dashboard"
-            className="flex items-center gap-2 text-zinc-500 hover:text-white text-xs font-bold uppercase tracking-widest transition-colors mb-6 w-fit"
-          >
+          <Link href="/dashboard"
+            className="flex items-center gap-2 text-zinc-500 hover:text-white text-xs font-bold uppercase tracking-widest transition-colors mb-6 w-fit">
             <ArrowLeft size={12} /> Dashboard
           </Link>
-
           <div className="flex items-center gap-2 mb-2">
             <Key size={16} className="text-teal-500" />
             <p className="text-[9px] text-teal-500 font-mono font-black tracking-widest uppercase">
@@ -141,14 +147,12 @@ export default function OnboardPropertyPage() {
           <p className="text-zinc-500 text-sm mt-2 leading-relaxed">
             Add a building or unit to your portfolio for tenant onboarding, rent tracking, and Flex-Pay automation.
           </p>
-
-          {/* Distinguish from NAP Ledger */}
           <div className="flex items-center gap-3 mt-4 flex-wrap">
             <span className="text-[9px] font-bold uppercase text-teal-500 border border-teal-500/30 bg-teal-500/5 px-3 py-1.5 rounded-lg">
               Property Tool
             </span>
             <span className="text-[9px] text-zinc-600">
-              For submitting infrastructure projects to the NAP Global Ledger →{' '}
+              For infrastructure projects on the NAP Global Ledger →{' '}
               <Link href="/projects/submit" className="text-zinc-400 hover:text-teal-500 transition-colors font-bold">
                 Submit Project
               </Link>
@@ -156,14 +160,15 @@ export default function OnboardPropertyPage() {
           </div>
         </div>
 
-        {/* Flow Steps */}
+        {/* Progress steps */}
         <div className="grid grid-cols-3 gap-3">
           {[
-            { n: '01', label: 'Register Property',   active: true },
-            { n: '02', label: 'Add Units & Fees',     active: false },
-            { n: '03', label: 'Onboard Tenants',      active: false },
+            { n: '01', label: 'Register Property', active: true  },
+            { n: '02', label: 'Add Units & Fees',  active: false },
+            { n: '03', label: 'Onboard Tenants',   active: false },
           ].map(step => (
-            <div key={step.n} className={`p-3 rounded-2xl border text-center ${step.active ? 'border-teal-500/40 bg-teal-500/5' : 'border-zinc-800 bg-zinc-900/10'}`}>
+            <div key={step.n}
+              className={`p-3 rounded-2xl border text-center ${step.active ? 'border-teal-500/40 bg-teal-500/5' : 'border-zinc-800 bg-zinc-900/10'}`}>
               <p className={`text-[9px] font-mono font-black uppercase tracking-widest ${step.active ? 'text-teal-500' : 'text-zinc-600'}`}>{step.n}</p>
               <p className={`text-[10px] font-black uppercase mt-0.5 ${step.active ? 'text-white' : 'text-zinc-600'}`}>{step.label}</p>
             </div>
@@ -183,47 +188,33 @@ export default function OnboardPropertyPage() {
               <label className="text-[9px] text-zinc-400 uppercase font-bold tracking-widest block">
                 Property Name / Alias *
               </label>
-              <input
-                value={form.name}
-                onChange={set('name')}
-                placeholder="e.g. Hassan Court Annex, Green Estate Block B"
-                required
-                className="w-full bg-black border border-zinc-800 rounded-xl px-4 py-3 text-sm text-white focus:border-teal-500 outline-none transition-colors"
-              />
+              <input value={form.name} onChange={set('name')} required
+                placeholder="e.g. Hassan Court, Glory Apartments Block B"
+                className="w-full bg-black border border-zinc-800 rounded-xl px-4 py-3 text-sm text-white focus:border-teal-500 outline-none transition-colors" />
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-1.5">
                 <label className="text-[9px] text-zinc-400 uppercase font-bold tracking-widest block">Property Type</label>
-                <select
-                  value={form.property_type}
-                  onChange={set('property_type')}
-                  className="w-full bg-black border border-zinc-800 rounded-xl px-4 py-3 text-sm text-white focus:border-teal-500 outline-none transition-colors"
-                >
+                <select value={form.property_type} onChange={set('property_type')}
+                  className="w-full bg-black border border-zinc-800 rounded-xl px-4 py-3 text-sm text-white focus:border-teal-500 outline-none transition-colors">
                   {PROPERTY_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
                 </select>
               </div>
               <div className="space-y-1.5">
                 <label className="text-[9px] text-zinc-400 uppercase font-bold tracking-widest block">Total Units</label>
-                <input
-                  type="number"
-                  value={form.total_units}
-                  onChange={set('total_units')}
-                  min="1"
-                  className="w-full bg-black border border-zinc-800 rounded-xl px-4 py-3 text-sm text-white focus:border-teal-500 outline-none transition-colors font-mono"
-                />
+                <input type="number" value={form.total_units} onChange={set('total_units')} min="1"
+                  className="w-full bg-black border border-zinc-800 rounded-xl px-4 py-3 text-sm text-white focus:border-teal-500 outline-none transition-colors font-mono" />
               </div>
             </div>
 
             <div className="space-y-1.5">
-              <label className="text-[9px] text-zinc-400 uppercase font-bold tracking-widest block">Description (optional)</label>
-              <textarea
-                value={form.description}
-                onChange={set('description')}
-                placeholder="Brief description of the property…"
-                rows={2}
-                className="w-full bg-black border border-zinc-800 rounded-xl px-4 py-3 text-sm text-white focus:border-teal-500 outline-none transition-colors resize-none"
-              />
+              <label className="text-[9px] text-zinc-400 uppercase font-bold tracking-widest block">
+                Description <span className="text-zinc-700 normal-case">(optional — auto-filled if blank)</span>
+              </label>
+              <textarea value={form.description} onChange={set('description')} rows={2}
+                placeholder="e.g. 4 flats of 2-bedroom self-contained units with parking and generator..."
+                className="w-full bg-black border border-zinc-800 rounded-xl px-4 py-3 text-sm text-white focus:border-teal-500 outline-none transition-colors resize-none" />
             </div>
           </section>
 
@@ -236,42 +227,28 @@ export default function OnboardPropertyPage() {
 
             <div className="space-y-1.5">
               <label className="text-[9px] text-zinc-400 uppercase font-bold tracking-widest block">Street Address *</label>
-              <input
-                value={form.address}
-                onChange={set('address')}
-                placeholder="e.g. 14 Adeniyi Jones Avenue, Ikeja"
-                required
-                className="w-full bg-black border border-zinc-800 rounded-xl px-4 py-3 text-sm text-white focus:border-teal-500 outline-none transition-colors"
-              />
+              <input value={form.address} onChange={set('address')} required
+                placeholder="e.g. 17, Olowookere Street, Alimosho"
+                className="w-full bg-black border border-zinc-800 rounded-xl px-4 py-3 text-sm text-white focus:border-teal-500 outline-none transition-colors" />
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div className="space-y-1.5">
                 <label className="text-[9px] text-zinc-400 uppercase font-bold tracking-widest block">City / LGA</label>
-                <input
-                  value={form.city}
-                  onChange={set('city')}
-                  placeholder="Lagos"
-                  className="w-full bg-black border border-zinc-800 rounded-xl px-4 py-3 text-sm text-white focus:border-teal-500 outline-none transition-colors"
-                />
+                <input value={form.city} onChange={set('city')} placeholder="Lagos"
+                  className="w-full bg-black border border-zinc-800 rounded-xl px-4 py-3 text-sm text-white focus:border-teal-500 outline-none transition-colors" />
               </div>
               <div className="space-y-1.5">
                 <label className="text-[9px] text-zinc-400 uppercase font-bold tracking-widest block">State</label>
-                <select
-                  value={form.state}
-                  onChange={set('state')}
-                  className="w-full bg-black border border-zinc-800 rounded-xl px-4 py-3 text-sm text-white focus:border-teal-500 outline-none transition-colors"
-                >
+                <select value={form.state} onChange={set('state')}
+                  className="w-full bg-black border border-zinc-800 rounded-xl px-4 py-3 text-sm text-white focus:border-teal-500 outline-none transition-colors">
                   {NIGERIAN_STATES.map(s => <option key={s} value={s}>{s}</option>)}
                 </select>
               </div>
               <div className="space-y-1.5">
                 <label className="text-[9px] text-zinc-400 uppercase font-bold tracking-widest block">Country</label>
-                <input
-                  value={form.country}
-                  onChange={set('country')}
-                  className="w-full bg-black border border-zinc-800 rounded-xl px-4 py-3 text-sm text-white focus:border-teal-500 outline-none transition-colors"
-                />
+                <input value={form.country} onChange={set('country')}
+                  className="w-full bg-black border border-zinc-800 rounded-xl px-4 py-3 text-sm text-white focus:border-teal-500 outline-none transition-colors" />
               </div>
             </div>
           </section>
@@ -285,29 +262,27 @@ export default function OnboardPropertyPage() {
             </p>
           </div>
 
-          {/* Feedback */}
+          {/* Error / Success */}
           {error && (
-            <div className="p-4 rounded-xl bg-red-500/5 border border-red-500/20 flex items-center gap-2 text-red-400 text-sm font-bold">
-              <AlertCircle size={14} /> {error}
+            <div className="p-4 rounded-xl bg-red-500/5 border border-red-500/20 flex items-start gap-2 text-red-400 text-sm font-bold">
+              <AlertCircle size={16} className="shrink-0 mt-0.5" /> {error}
             </div>
           )}
           {success && (
             <div className="p-4 rounded-xl bg-teal-500/10 border border-teal-500/20 flex items-center gap-2 text-teal-400 text-sm font-bold">
-              <CheckCircle2 size={14} /> {success}
+              <CheckCircle2 size={16} /> {success}
             </div>
           )}
 
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full py-5 bg-teal-500 text-black font-black text-xs uppercase tracking-[0.2em] rounded-2xl hover:bg-white transition-all disabled:opacity-60 flex items-center justify-center gap-2"
-          >
+          <button type="submit" disabled={loading}
+            className="w-full py-5 bg-teal-500 text-black font-black text-xs uppercase tracking-[0.2em] rounded-2xl hover:bg-white transition-all disabled:opacity-60 flex items-center justify-center gap-2">
             {loading
               ? <><Loader2 className="animate-spin" size={16} /> Registering…</>
               : <><Building2 size={16} /> Register Property &amp; Continue to Units <ChevronRight size={16} /></>
             }
           </button>
         </form>
+
       </main>
       <Footer />
     </div>
