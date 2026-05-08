@@ -3,12 +3,14 @@ export const dynamic = 'force-dynamic';
 /**
  * /onboard/page.tsx — Landlord Property Registration
  *
- * Backend endpoint: POST /api/projects
- * Required fields:  title, description, location, country, budget, category
+ * Backend: POST /api/projects
+ * Required: title, description, location, country, budget, category
  *
- * NOTE: budget=0 is FALSY in JS and fails the backend's !budget check.
- * We send budget=1 as a placeholder for rental properties (not investment assets).
- * On success → redirect to /projects/[id]/rental-management to add units.
+ * FIX: Removed project_mode and lifecycle_stage from request body.
+ * The backend SQL uses a CASE on project_type ($18) to set project_mode,
+ * and these extra fields caused "inconsistent types deduced for parameter $18".
+ *
+ * budget=0 is falsy → backend !budget check fails → send budget=1 as placeholder.
  */
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
@@ -66,58 +68,41 @@ export default function OnboardPropertyPage() {
     setLoading(true); setError(''); setSuccess('');
     try {
       /**
-       * POST /api/projects — all 6 required fields must be present and truthy:
-       *   title       = property name (required, non-empty string)
-       *   description = required by backend validation — use property_type as fallback
-       *   location    = city / LGA
-       *   country     = country
-       *   budget      = backend check is !budget, so 0 fails → send 1 for rental properties
-       *   category    = 'Residential'
+       * IMPORTANT: Do NOT send project_mode or lifecycle_stage.
+       * The backend SQL has CASE WHEN $18 IN ('RESIDENTIAL','RENOVATION') THEN 'PRIVATE'
+       * Sending project_mode as $28 AND in the CASE on $18 causes
+       * "inconsistent types deduced for parameter $18" PostgreSQL error.
        *
-       * Extra fields for rental identification:
-       *   project_type     = 'RESIDENTIAL' triggers PRIVATE project_mode in backend SQL
-       *   project_mode     = 'PRIVATE'
-       *   lifecycle_stage  = 'OPERATIONAL'
-       *   visibility       = 'PRIVATE'
+       * project_type = 'RESIDENTIAL' automatically sets project_mode = 'PRIVATE'
+       * via the backend CASE statement. No need to pass it explicitly.
        */
       const res = await api.post('/api/projects', {
-        title:           form.name.trim(),
-        description:     form.description.trim() || `${form.property_type} — ${form.address.trim()}`,
-        location:        `${form.city}, ${form.state}`,
-        country:         form.country,
-        budget:          1,               // placeholder — rental properties have no investment budget
-        currency:        'NGN',
-        category:        'Residential',
-        project_type:    'RESIDENTIAL',   // triggers PRIVATE mode in backend CASE statement
-        project_mode:    'PRIVATE',
-        lifecycle_stage: 'OPERATIONAL',
-        visibility:      'PRIVATE',
-        expected_roi:    0,
-        // Rental-specific metadata stored via tags
-        tags:            ['rental', 'landlord', form.property_type.toLowerCase().replace(/\s+/g, '-')],
-        // Pass address details for reference (backend ignores unknown fields gracefully)
-        address:         form.address.trim(),
-        total_units:     Number(form.total_units) || 1,
+        title:        form.name.trim(),
+        description:  form.description.trim() || `${form.property_type} — ${form.address.trim()}`,
+        location:     `${form.city}, ${form.state}`,
+        country:      form.country,
+        budget:       1,            // placeholder: !budget fails for 0
+        currency:     'NGN',
+        category:     'Residential',
+        project_type: 'RESIDENTIAL', // triggers PRIVATE mode via backend CASE
+        visibility:   'PRIVATE',
+        expected_roi: 0,
+        tags:         ['rental', 'landlord', form.property_type.toLowerCase().replace(/\s+/g, '-')],
       });
 
-      // Backend returns: { success: true, project: { id, ... }, project_number }
       const projectId = res.data?.project?.id ?? res.data?.id;
-
       if (!projectId) {
-        setError('Property registered but no project ID returned. Please go to My Projects.');
+        setError('Property registered but no project ID returned. Please check My Projects.');
         return;
       }
 
-      setSuccess(`Property registered! Redirecting to add units…`);
-      setTimeout(() => {
-        router.push(`/projects/${projectId}/rental-management`);
-      }, 1200);
+      setSuccess('Property registered! Redirecting to add units…');
+      setTimeout(() => router.push(`/projects/${projectId}/rental-management`), 1200);
 
     } catch (ex: any) {
-      // Show the exact backend error message so we can diagnose quickly
       const msg = ex?.response?.data?.error
         ?? ex?.response?.data?.message
-        ?? `Request failed (${ex?.response?.status ?? 'network error'})`;
+        ?? `Error ${ex?.response?.status ?? ''}: Registration failed.`;
       setError(msg);
     } finally {
       setLoading(false);
@@ -129,7 +114,6 @@ export default function OnboardPropertyPage() {
       <Navbar />
       <main className="flex-1 max-w-3xl mx-auto px-4 md:px-6 py-12 space-y-8 w-full">
 
-        {/* Header */}
         <div>
           <Link href="/dashboard"
             className="flex items-center gap-2 text-zinc-500 hover:text-white text-xs font-bold uppercase tracking-widest transition-colors mb-6 w-fit">
@@ -183,7 +167,6 @@ export default function OnboardPropertyPage() {
               <Home size={14} className="text-teal-500" />
               <p className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest">Property Identity</p>
             </div>
-
             <div className="space-y-1.5">
               <label className="text-[9px] text-zinc-400 uppercase font-bold tracking-widest block">
                 Property Name / Alias *
@@ -192,7 +175,6 @@ export default function OnboardPropertyPage() {
                 placeholder="e.g. Hassan Court, Glory Apartments Block B"
                 className="w-full bg-black border border-zinc-800 rounded-xl px-4 py-3 text-sm text-white focus:border-teal-500 outline-none transition-colors" />
             </div>
-
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-1.5">
                 <label className="text-[9px] text-zinc-400 uppercase font-bold tracking-widest block">Property Type</label>
@@ -207,7 +189,6 @@ export default function OnboardPropertyPage() {
                   className="w-full bg-black border border-zinc-800 rounded-xl px-4 py-3 text-sm text-white focus:border-teal-500 outline-none transition-colors font-mono" />
               </div>
             </div>
-
             <div className="space-y-1.5">
               <label className="text-[9px] text-zinc-400 uppercase font-bold tracking-widest block">
                 Description <span className="text-zinc-700 normal-case">(optional — auto-filled if blank)</span>
@@ -224,14 +205,12 @@ export default function OnboardPropertyPage() {
               <MapPin size={14} className="text-zinc-500" />
               <p className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest">Physical Address</p>
             </div>
-
             <div className="space-y-1.5">
               <label className="text-[9px] text-zinc-400 uppercase font-bold tracking-widest block">Street Address *</label>
               <input value={form.address} onChange={set('address')} required
                 placeholder="e.g. 17, Olowookere Street, Alimosho"
                 className="w-full bg-black border border-zinc-800 rounded-xl px-4 py-3 text-sm text-white focus:border-teal-500 outline-none transition-colors" />
             </div>
-
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div className="space-y-1.5">
                 <label className="text-[9px] text-zinc-400 uppercase font-bold tracking-widest block">City / LGA</label>
@@ -253,7 +232,6 @@ export default function OnboardPropertyPage() {
             </div>
           </section>
 
-          {/* Trust badge */}
           <div className="p-4 rounded-2xl border border-zinc-800/50 bg-zinc-900/10 flex items-start gap-3">
             <ShieldCheck size={14} className="text-teal-500/70 shrink-0 mt-0.5" />
             <p className="text-[9px] text-zinc-500 leading-relaxed uppercase tracking-wider">
@@ -262,7 +240,6 @@ export default function OnboardPropertyPage() {
             </p>
           </div>
 
-          {/* Error / Success */}
           {error && (
             <div className="p-4 rounded-xl bg-red-500/5 border border-red-500/20 flex items-start gap-2 text-red-400 text-sm font-bold">
               <AlertCircle size={16} className="shrink-0 mt-0.5" /> {error}
@@ -282,7 +259,6 @@ export default function OnboardPropertyPage() {
             }
           </button>
         </form>
-
       </main>
       <Footer />
     </div>

@@ -1,141 +1,228 @@
 'use client';
-import { useState, useEffect } from 'react';
-import { useSearchParams } from 'next/navigation';
-import api from '@/lib/api';
+export const dynamic = 'force-dynamic';
+/**
+ * /onboard/[unitId]/page.tsx — Tenant-facing invite page
+ *
+ * This is the PUBLIC page tenants land on when they click the landlord's invite link.
+ * It replaces the broken 4-step KYC+payment page that was calling:
+ *   POST /api/rental/onboard  ← DOES NOT EXIST → 404
+ *
+ * CORRECT FLOW (verified against index.ts):
+ *
+ *   Step 1: Load unit via GET /api/rental/invite-link/:unitId
+ *           → { url, whatsapp_link, unit_name, project_title }
+ *
+ *   Step 2: Tenant fills name / email / phone
+ *
+ *   Step 3: POST /api/tenant/onboard
+ *           body: { unitId, fullName, email, phone, pattern }
+ *           → { success, tenancy_id, vault_id, frequency,
+ *                installment_amount, message, ledger_hash }
+ *           Backend creates tenancy + flex_pay_vault + ledger entry
+ *           and sends the tenant their invite link to set a password
+ *
+ *   Step 4: Success — show vault details, link to /tenant/dashboard
+ *
+ * NOTE: There is NO Paystack payment here. Payments happen via /tenant/pay
+ * after the tenant activates their account via the invite link.
+ */
+import { useState, useEffect, Suspense } from 'react';
+import { useParams } from 'next/navigation';
 import Link from 'next/link';
+import api from '@/lib/api';
 import {
-  CheckCircle2, Loader2, Building2, ShieldCheck,
-  CreditCard, FileText, ChevronRight, AlertCircle,
-  User, Mail, Phone, MapPin, Briefcase, Camera
+  CheckCircle2, Loader2, AlertCircle, Building2,
+  ShieldCheck, ChevronRight, User, Mail, Phone,
+  ArrowRight, Home,
 } from 'lucide-react';
 
-interface Unit {
-  id: string;
-  unit_name: string;
-  rent_amount: number;
-  security_deposit: number;
-  service_charge: number;
-  agency_fee: number;
-  legal_fee: number;
-  caution_fee: number;
-  specs: string;
-  bedrooms: string;
-  bathrooms: string;
-  currency: string;
-  payment_frequency: string;
-  project_title?: string;
-  project_location?: string;
-}
+const safeF = (v: any) => { const n = Number(v); return (v == null || isNaN(n)) ? '0' : n.toLocaleString(); };
 
-const STEPS = ['Unit Details', 'KYC Verification', 'Lease Review', 'Secure Payment'];
+const STEPS = ['Your Unit', 'Your Details', 'Confirm'];
 
-export default function TenantOnboardPage({ params }: { params: { unitId: string } }) {
-  const [unit, setUnit] = useState<Unit | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [step, setStep] = useState(0);
-  const [kycForm, setKycForm] = useState({
-    full_name: '', email: '', phone: '', nin: '',
-    bvn: '', employer: '', monthly_income: '',
-    address: '', id_type: 'nin', guarantor_name: '', guarantor_phone: '',
-  });
-  const [leaseAccepted, setLeaseAccepted] = useState(false);
+function OnboardContent() {
+  const { unitId } = useParams<{ unitId: string }>();
+
+  const [inviteData, setInviteData] = useState<any>(null);
+  const [loading,    setLoading]    = useState(true);
+  const [step,       setStep]       = useState(0);
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState('');
-  const [paymentInitialized, setPaymentInitialized] = useState(false);
+  const [done,       setDone]       = useState<any>(null);
+  const [error,      setError]      = useState('');
 
+  const [form, setForm] = useState({
+    fullName: '',
+    email:    '',
+    phone:    '',
+    pattern:  'MONTHLY',
+  });
+
+  // Load unit info from invite-link endpoint
   useEffect(() => {
-    api.get(`/api/rental/units/${params.unitId}`)
-      .then(res => setUnit(res.data))
-      .catch(() => setError('Unable to load unit details. This invite link may be invalid.'))
+    if (!unitId) return;
+    api.get(`/api/rental/invite-link/${unitId}`)
+      .then(r => setInviteData(r.data))
+      .catch(e => setError(e?.response?.data?.error ?? 'Invalid or expired invite link.'))
       .finally(() => setLoading(false));
-  }, [params.unitId]);
+  }, [unitId]);
 
-  const setKyc = (key: string, val: string) => setKycForm(f => ({ ...f, [key]: val }));
+  const set = (k: string, v: string) => setForm(f => ({ ...f, [k]: v }));
 
-  const totalMoveIn = unit
-    ? [unit.rent_amount, unit.security_deposit, unit.service_charge, unit.agency_fee, unit.legal_fee, unit.caution_fee]
-        .reduce((a, v) => a + (Number(v) || 0), 0)
-    : 0;
-
-  const handleKycSubmit = async () => {
+  const handleSubmit = async () => {
     setError('');
-    if (!kycForm.full_name) { setError('Full name is required.'); return; }
-    if (!kycForm.email) { setError('Email address is required.'); return; }
-    if (!kycForm.phone) { setError('Phone number is required.'); return; }
-    setStep(2); // Move to lease review
-  };
+    if (!form.fullName.trim()) { setError('Full name is required.'); return; }
+    if (!form.email.trim())    { setError('Email address is required.'); return; }
 
-  const handlePayment = async () => {
-    if (!unit || !leaseAccepted) return;
-    setError('');
     setSubmitting(true);
     try {
-      // Submit KYC + initiate payment
-      const res = await api.post('/api/rental/onboard', {
-        unit_id: params.unitId,
-        ...kycForm,
-        total_amount: totalMoveIn,
+      // POST /api/tenant/onboard — the correct endpoint (verified in index.ts)
+      const res = await api.post('/api/tenant/onboard', {
+        unitId,
+        fullName: form.fullName.trim(),
+        email:    form.email.trim().toLowerCase(),
+        phone:    form.phone.trim() || undefined,
+        pattern:  form.pattern,
       });
-
-      const { payment_url } = res.data;
-      if (payment_url) {
-        window.location.href = payment_url;
-      } else {
-        setPaymentInitialized(true);
-        setStep(3);
-      }
+      setDone(res.data);
     } catch (e: any) {
-      setError(e?.response?.data?.message || 'Payment initialization failed. Please try again.');
+      setError(
+        e?.response?.data?.error ??
+        e?.response?.data?.message ??
+        `Error ${e?.response?.status ?? ''}: Onboarding failed. Please try again.`
+      );
     } finally {
       setSubmitting(false);
     }
   };
 
+  // ── Loading ───────────────────────────────────────────────────────────────
   if (loading) return (
-    <div className="flex h-screen items-center justify-center bg-black">
+    <div className="min-h-screen bg-[#050505] flex items-center justify-center">
       <div className="text-center space-y-4">
-        <Loader2 className="animate-spin text-teal-500 mx-auto" size={40} />
+        <Loader2 className="animate-spin text-teal-500 mx-auto" size={36} />
         <p className="text-zinc-500 text-sm">Loading your tenancy details…</p>
       </div>
     </div>
   );
 
-  if (error && !unit) return (
-    <div className="flex flex-col h-screen items-center justify-center gap-6 bg-black p-6">
+  // ── Invalid link ──────────────────────────────────────────────────────────
+  if (error && !inviteData) return (
+    <div className="min-h-screen bg-[#050505] text-white flex flex-col items-center justify-center gap-6 p-6">
       <AlertCircle className="text-red-500" size={56} />
       <div className="text-center">
         <h2 className="font-black uppercase text-xl mb-2">Invalid Invite</h2>
         <p className="text-zinc-400 text-sm max-w-sm">{error}</p>
       </div>
-      <Link href="/" className="text-teal-500 text-xs font-bold uppercase border border-teal-500/30 px-6 py-3 rounded-xl">
+      <Link href="/"
+        className="text-teal-500 text-xs font-bold uppercase border border-teal-500/30 px-6 py-3 rounded-xl hover:bg-teal-500/10 transition-colors">
         Go to Nested Ark
       </Link>
     </div>
   );
 
+  // ── Success ───────────────────────────────────────────────────────────────
+  if (done) return (
+    <div className="min-h-screen bg-[#050505] text-white">
+      {/* Brand header */}
+      <div className="border-b border-zinc-900 px-4 py-4 flex items-center justify-between max-w-lg mx-auto">
+        <div>
+          <p className="text-[9px] text-teal-500 uppercase font-black tracking-widest">Nested Ark OS</p>
+          <p className="text-xs font-black uppercase">Tenant Portal</p>
+        </div>
+        <ShieldCheck className="text-teal-500" size={22} />
+      </div>
+
+      <div className="max-w-lg mx-auto px-4 py-10 space-y-8 text-center">
+        <CheckCircle2 className="text-teal-500 mx-auto" size={64} />
+
+        <div>
+          <h1 className="text-2xl font-black uppercase tracking-tighter">You're Registered!</h1>
+          <p className="text-zinc-400 text-sm mt-2">
+            Your tenancy for{' '}
+            <span className="text-teal-400 font-bold">{inviteData?.unit_name ?? 'your unit'}</span>{' '}
+            has been created.
+          </p>
+        </div>
+
+        {/* Vault info */}
+        {done.installment_amount && (
+          <div className="bg-zinc-900 border border-teal-500/20 rounded-3xl p-6 text-left space-y-3">
+            <p className="text-[9px] text-teal-500 uppercase font-black tracking-widest">
+              Flex-Pay Vault Active
+            </p>
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-3xl font-black font-mono text-teal-400">
+                  NGN {safeF(done.installment_amount)}
+                </p>
+                <p className="text-xs text-zinc-500 mt-0.5">per installment · {done.frequency}</p>
+              </div>
+              <div className="text-right">
+                <p className="text-[9px] text-zinc-500 uppercase font-black">Status</p>
+                <p className="text-teal-400 font-bold text-sm">Active</p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* What happens next */}
+        <div className="bg-zinc-900 border border-zinc-800 rounded-3xl p-6 text-left space-y-4">
+          <p className="text-[9px] text-zinc-400 uppercase font-black tracking-widest">What Happens Next</p>
+          {[
+            { n: '01', text: 'Check your email for an activation link to set your password.' },
+            { n: '02', text: 'Log in to your Tenant Dashboard to view your vault and payment schedule.' },
+            { n: '03', text: 'Make your first installment via Paystack to start building your rent.' },
+          ].map(s => (
+            <div key={s.n} className="flex items-start gap-3">
+              <div className="w-7 h-7 bg-teal-500/10 border border-teal-500/30 rounded-lg flex items-center justify-center shrink-0">
+                <span className="text-[9px] font-black text-teal-500">{s.n}</span>
+              </div>
+              <p className="text-zinc-400 text-xs leading-relaxed pt-1">{s.text}</p>
+            </div>
+          ))}
+        </div>
+
+        {done.ledger_hash && (
+          <div className="flex items-center justify-center gap-2 text-[9px] text-teal-500">
+            <ShieldCheck size={10} />
+            <span className="font-mono">{done.ledger_hash.slice(0, 24)}…</span>
+            <span className="text-zinc-600">SHA-256 Ledger Hash</span>
+          </div>
+        )}
+
+        <Link href="/tenant/dashboard"
+          className="w-full flex items-center justify-center gap-2 py-4 bg-teal-500 text-black font-black uppercase text-sm rounded-2xl hover:bg-teal-400 transition-all">
+          Go to Tenant Dashboard <ArrowRight size={16} />
+        </Link>
+      </div>
+    </div>
+  );
+
+  // ── Main Flow ─────────────────────────────────────────────────────────────
   return (
-    <div className="min-h-screen bg-black">
-      {/* Brand Header */}
-      <div className="border-b border-zinc-900 px-4 md:px-6 py-4 flex items-center justify-between">
+    <div className="min-h-screen bg-[#050505] text-white">
+      {/* Brand header */}
+      <div className="border-b border-zinc-900 px-4 py-4 flex items-center justify-between">
         <div>
           <p className="text-[9px] text-teal-500 uppercase font-black tracking-widest">Nested Ark OS</p>
           <p className="text-xs font-black uppercase">Tenant Onboarding</p>
         </div>
-        <ShieldCheck className="text-teal-500" size={24} />
+        <ShieldCheck className="text-teal-500" size={22} />
       </div>
 
-      <div className="max-w-2xl mx-auto p-4 md:p-6 space-y-8">
-        {/* Progress Steps */}
-        <div className="flex items-center justify-between">
+      <div className="max-w-lg mx-auto px-4 md:px-6 py-8 space-y-8">
+
+        {/* Progress steps */}
+        <div className="flex items-center">
           {STEPS.map((label, i) => (
-            <div key={label} className="flex items-center gap-2 flex-1">
-              <div className="flex flex-col items-center">
+            <div key={label} className="flex items-center flex-1">
+              <div className="flex flex-col items-center flex-shrink-0">
                 <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-black transition-all ${
-                  i < step ? 'bg-teal-500 text-black' :
+                  i < step  ? 'bg-teal-500 text-black' :
                   i === step ? 'bg-teal-500/20 border-2 border-teal-500 text-teal-400' :
-                  'bg-zinc-900 border border-zinc-800 text-zinc-600'
+                               'bg-zinc-900 border border-zinc-800 text-zinc-600'
                 }`}>
-                  {i < step ? <CheckCircle2 size={16} /> : i + 1}
+                  {i < step ? <CheckCircle2 size={14} /> : i + 1}
                 </div>
                 <p className={`text-[8px] font-black uppercase mt-1 hidden sm:block text-center ${i <= step ? 'text-teal-400' : 'text-zinc-600'}`}>
                   {label}
@@ -148,54 +235,44 @@ export default function TenantOnboardPage({ params }: { params: { unitId: string
           ))}
         </div>
 
-        {/* Step 0: Unit Details */}
-        {step === 0 && unit && (
+        {/* Error banner */}
+        {error && (
+          <div className="flex items-start gap-3 bg-red-500/10 border border-red-500/30 rounded-2xl p-4 text-red-400">
+            <AlertCircle size={16} className="shrink-0 mt-0.5" />
+            <p className="font-bold text-sm">{error}</p>
+          </div>
+        )}
+
+        {/* ── STEP 0: Unit Details ── */}
+        {step === 0 && inviteData && (
           <div className="space-y-6">
             <div>
-              <h1 className="text-2xl font-black uppercase italic">{unit.unit_name}</h1>
-              {unit.project_title && <p className="text-zinc-500 text-xs mt-1">{unit.project_title}{unit.project_location ? ` · ${unit.project_location}` : ''}</p>}
+              <h1 className="text-2xl font-black uppercase italic">
+                {inviteData.unit_name ?? 'Your Unit'}
+              </h1>
+              {inviteData.project_title && (
+                <p className="text-zinc-500 text-xs mt-1">
+                  {inviteData.project_title}
+                </p>
+              )}
             </div>
 
-            <div className="bg-zinc-900 border border-zinc-800 rounded-3xl p-6">
-              <h2 className="text-xs font-black uppercase tracking-widest text-zinc-400 mb-4 flex items-center gap-2">
-                <Building2 size={14} className="text-teal-500" /> Apartment Details
+            <div className="bg-zinc-900 border border-zinc-800 rounded-3xl p-6 space-y-4">
+              <h2 className="text-xs font-black uppercase tracking-widest text-zinc-400 flex items-center gap-2">
+                <Building2 size={14} className="text-teal-500" /> About This Tenancy
               </h2>
-              <div className="grid grid-cols-2 gap-3 mb-4">
-                {unit.bedrooms && (
-                  <div className="bg-black border border-zinc-800 rounded-xl p-3">
-                    <p className="text-[9px] text-zinc-500 uppercase font-black">Bedrooms</p>
-                    <p className="font-black">{unit.bedrooms}</p>
-                  </div>
-                )}
-                {unit.bathrooms && (
-                  <div className="bg-black border border-zinc-800 rounded-xl p-3">
-                    <p className="text-[9px] text-zinc-500 uppercase font-black">Bathrooms</p>
-                    <p className="font-black">{unit.bathrooms}</p>
-                  </div>
-                )}
-              </div>
-              {unit.specs && <p className="text-zinc-400 text-sm">{unit.specs}</p>}
-            </div>
-
-            <div className="bg-zinc-900 border border-zinc-800 rounded-3xl p-6">
-              <h2 className="text-xs font-black uppercase tracking-widest text-zinc-400 mb-4">Move-In Fees Breakdown</h2>
-              <div className="space-y-2 text-sm font-mono">
-                {[
-                  { label: `Rent (${unit.payment_frequency || 'monthly'})`, val: unit.rent_amount },
-                  { label: 'Security Deposit', val: unit.security_deposit },
-                  { label: 'Service Charge', val: unit.service_charge },
-                  { label: 'Agency Fee', val: unit.agency_fee },
-                  { label: 'Legal Fee', val: unit.legal_fee },
-                  { label: 'Caution Fee', val: unit.caution_fee },
-                ].filter(i => Number(i.val) > 0).map(item => (
-                  <div key={item.label} className="flex justify-between text-zinc-400">
-                    <span>{item.label}</span>
-                    <span>{unit.currency || 'NGN'} {Number(item.val).toLocaleString()}</span>
-                  </div>
-                ))}
-                <div className="border-t border-zinc-800 pt-3 mt-3 flex justify-between font-black text-white">
-                  <span>TOTAL MOVE-IN</span>
-                  <span className="text-teal-400">{unit.currency || 'NGN'} {totalMoveIn.toLocaleString()}</span>
+              <div className="space-y-3 text-sm">
+                <div className="flex items-center gap-3">
+                  <ShieldCheck size={16} className="text-teal-500 shrink-0" />
+                  <p className="text-zinc-300">Your rent is held in <span className="text-teal-400 font-bold">Paystack escrow</span> until key handover is confirmed.</p>
+                </div>
+                <div className="flex items-center gap-3">
+                  <Home size={16} className="text-teal-500 shrink-0" />
+                  <p className="text-zinc-300">Flex-Pay lets you pay in <span className="text-teal-400 font-bold">weekly, monthly or quarterly</span> installments.</p>
+                </div>
+                <div className="flex items-center gap-3">
+                  <CheckCircle2 size={16} className="text-teal-500 shrink-0" />
+                  <p className="text-zinc-300">Every payment is <span className="text-teal-400 font-bold">SHA-256 hashed</span> and court-admissible.</p>
                 </div>
               </div>
             </div>
@@ -204,174 +281,166 @@ export default function TenantOnboardPage({ params }: { params: { unitId: string
               onClick={() => setStep(1)}
               className="w-full py-5 bg-teal-500 text-black font-black uppercase italic text-sm rounded-2xl hover:bg-teal-400 transition-all flex items-center justify-center gap-3"
             >
-              Proceed to KYC Verification <ChevronRight size={18} />
+              Continue to Registration <ChevronRight size={18} />
             </button>
 
             <p className="text-center text-zinc-600 text-xs">
-              🔒 Payments are held in secure escrow until your keys are confirmed received.
+              🔒 Your details are encrypted and used only for tenancy verification.
             </p>
           </div>
         )}
 
-        {/* Step 1: KYC */}
+        {/* ── STEP 1: Personal Details ── */}
         {step === 1 && (
           <div className="space-y-6">
             <div>
-              <h2 className="text-xl font-black uppercase italic flex items-center gap-3">
-                <ShieldCheck className="text-teal-500" size={24} /> KYC Verification
-              </h2>
-              <p className="text-zinc-500 text-xs mt-1">Your information is encrypted and only used to verify your identity.</p>
+              <h2 className="text-xl font-black uppercase italic">Your Details</h2>
+              <p className="text-zinc-500 text-xs mt-1">
+                We need a few details to create your tenancy and Flex-Pay vault.
+              </p>
             </div>
 
-            {error && (
-              <div className="bg-red-500/10 border border-red-500/30 rounded-2xl p-4 text-red-400 text-sm font-bold">⚠️ {error}</div>
-            )}
-
-            <section className="bg-zinc-900 border border-zinc-800 p-6 rounded-3xl space-y-4">
-              <h3 className="text-[10px] font-black uppercase text-zinc-400 tracking-widest flex items-center gap-2">
-                <User size={12} className="text-teal-500" /> Personal Information
-              </h3>
-              <input value={kycForm.full_name} onChange={e => setKyc('full_name', e.target.value)}
-                placeholder="Full Legal Name *" className="w-full bg-black border border-zinc-800 p-4 rounded-xl outline-none focus:border-teal-500 text-sm transition-colors" />
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <input value={kycForm.email} onChange={e => setKyc('email', e.target.value)}
-                  placeholder="Email Address *" type="email" className="bg-black border border-zinc-800 p-4 rounded-xl outline-none focus:border-teal-500 text-sm transition-colors" />
-                <input value={kycForm.phone} onChange={e => setKyc('phone', e.target.value)}
-                  placeholder="Phone Number *" type="tel" className="bg-black border border-zinc-800 p-4 rounded-xl outline-none focus:border-teal-500 text-sm transition-colors" />
+            <div className="space-y-4">
+              <div className="space-y-1.5">
+                <label className="text-[9px] text-zinc-400 uppercase font-black block">Full Legal Name *</label>
+                <div className="relative">
+                  <User size={14} className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-600" />
+                  <input value={form.fullName} onChange={e => set('fullName', e.target.value)}
+                    placeholder="As on your ID"
+                    className="w-full bg-zinc-900 border border-zinc-800 rounded-xl pl-10 pr-4 py-3 text-sm text-white focus:border-teal-500 outline-none transition-colors" />
+                </div>
               </div>
-              <input value={kycForm.address} onChange={e => setKyc('address', e.target.value)}
-                placeholder="Current Residential Address" className="w-full bg-black border border-zinc-800 p-4 rounded-xl outline-none focus:border-teal-500 text-sm transition-colors" />
-            </section>
 
-            <section className="bg-zinc-900 border border-zinc-800 p-6 rounded-3xl space-y-4">
-              <h3 className="text-[10px] font-black uppercase text-zinc-400 tracking-widest flex items-center gap-2">
-                <ShieldCheck size={12} className="text-teal-500" /> Government ID
-              </h3>
-              <select value={kycForm.id_type} onChange={e => setKyc('id_type', e.target.value)}
-                className="w-full bg-black border border-zinc-800 p-4 rounded-xl outline-none focus:border-teal-500 text-sm transition-colors">
-                <option value="nin">National Identity Number (NIN)</option>
-                <option value="bvn">Bank Verification Number (BVN)</option>
-                <option value="passport">International Passport</option>
-                <option value="drivers_license">Driver's License</option>
-                <option value="voters_card">Voter's Card</option>
-              </select>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <input value={kycForm.nin} onChange={e => setKyc('nin', e.target.value)}
-                  placeholder="NIN Number" className="bg-black border border-zinc-800 p-4 rounded-xl outline-none focus:border-teal-500 text-sm font-mono transition-colors" />
-                <input value={kycForm.bvn} onChange={e => setKyc('bvn', e.target.value)}
-                  placeholder="BVN (optional)" className="bg-black border border-zinc-800 p-4 rounded-xl outline-none focus:border-teal-500 text-sm font-mono transition-colors" />
+              <div className="space-y-1.5">
+                <label className="text-[9px] text-zinc-400 uppercase font-black block">Email Address *</label>
+                <div className="relative">
+                  <Mail size={14} className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-600" />
+                  <input type="email" value={form.email} onChange={e => set('email', e.target.value)}
+                    placeholder="you@email.com"
+                    className="w-full bg-zinc-900 border border-zinc-800 rounded-xl pl-10 pr-4 py-3 text-sm text-white focus:border-teal-500 outline-none transition-colors" />
+                </div>
+                <p className="text-[9px] text-zinc-600">
+                  Your account activation link will be sent here.
+                </p>
               </div>
-            </section>
 
-            <section className="bg-zinc-900 border border-zinc-800 p-6 rounded-3xl space-y-4">
-              <h3 className="text-[10px] font-black uppercase text-zinc-400 tracking-widest flex items-center gap-2">
-                <Briefcase size={12} className="text-teal-500" /> Employment & Income
-              </h3>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <input value={kycForm.employer} onChange={e => setKyc('employer', e.target.value)}
-                  placeholder="Employer / Business Name" className="bg-black border border-zinc-800 p-4 rounded-xl outline-none focus:border-teal-500 text-sm transition-colors" />
-                <input value={kycForm.monthly_income} onChange={e => setKyc('monthly_income', e.target.value)}
-                  placeholder="Monthly Net Income" type="number" className="bg-black border border-zinc-800 p-4 rounded-xl outline-none focus:border-teal-500 text-sm transition-colors" />
+              <div className="space-y-1.5">
+                <label className="text-[9px] text-zinc-400 uppercase font-black block">Phone Number</label>
+                <div className="relative">
+                  <Phone size={14} className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-600" />
+                  <input type="tel" value={form.phone} onChange={e => set('phone', e.target.value)}
+                    placeholder="+234 800 000 0000"
+                    className="w-full bg-zinc-900 border border-zinc-800 rounded-xl pl-10 pr-4 py-3 text-sm text-white focus:border-teal-500 outline-none transition-colors" />
+                </div>
               </div>
-            </section>
 
-            <section className="bg-zinc-900 border border-zinc-800 p-6 rounded-3xl space-y-4">
-              <h3 className="text-[10px] font-black uppercase text-zinc-400 tracking-widest flex items-center gap-2">
-                <User size={12} className="text-amber-500" /> Guarantor (Recommended)
-              </h3>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <input value={kycForm.guarantor_name} onChange={e => setKyc('guarantor_name', e.target.value)}
-                  placeholder="Guarantor Full Name" className="bg-black border border-zinc-800 p-4 rounded-xl outline-none focus:border-amber-500 text-sm transition-colors" />
-                <input value={kycForm.guarantor_phone} onChange={e => setKyc('guarantor_phone', e.target.value)}
-                  placeholder="Guarantor Phone" type="tel" className="bg-black border border-zinc-800 p-4 rounded-xl outline-none focus:border-amber-500 text-sm transition-colors" />
+              <div className="space-y-2">
+                <label className="text-[9px] text-zinc-400 uppercase font-black block">
+                  Preferred Payment Frequency
+                </label>
+                <div className="grid grid-cols-3 gap-2">
+                  {[
+                    { v: 'WEEKLY',    label: 'Weekly',    sub: 'Every 7 days'  },
+                    { v: 'MONTHLY',   label: 'Monthly',   sub: 'Once a month'  },
+                    { v: 'QUARTERLY', label: 'Quarterly', sub: 'Every 3 months'},
+                  ].map(opt => (
+                    <button key={opt.v} onClick={() => set('pattern', opt.v)}
+                      className={`p-3 rounded-xl border text-left transition-all ${form.pattern === opt.v ? 'border-teal-500 bg-teal-500/10' : 'border-zinc-800 bg-zinc-900 hover:border-zinc-700'}`}>
+                      <p className={`text-xs font-black uppercase ${form.pattern === opt.v ? 'text-teal-400' : 'text-zinc-400'}`}>
+                        {opt.label}
+                      </p>
+                      <p className="text-[9px] text-zinc-600 mt-0.5">{opt.sub}</p>
+                    </button>
+                  ))}
+                </div>
               </div>
-            </section>
+            </div>
 
             <button
-              onClick={handleKycSubmit}
+              onClick={() => {
+                if (!form.fullName.trim()) { setError('Full name is required.'); return; }
+                if (!form.email.trim())    { setError('Email is required.'); return; }
+                setError('');
+                setStep(2);
+              }}
               className="w-full py-5 bg-teal-500 text-black font-black uppercase italic text-sm rounded-2xl hover:bg-teal-400 transition-all flex items-center justify-center gap-3"
             >
-              Save & Review Lease <ChevronRight size={18} />
+              Review &amp; Confirm <ChevronRight size={18} />
+            </button>
+
+            <button onClick={() => setStep(0)}
+              className="w-full py-2 text-zinc-600 text-xs font-bold uppercase hover:text-zinc-400 transition-colors">
+              ← Back
             </button>
           </div>
         )}
 
-        {/* Step 2: Lease Review */}
-        {step === 2 && unit && (
+        {/* ── STEP 2: Confirm & Submit ── */}
+        {step === 2 && (
           <div className="space-y-6">
             <div>
-              <h2 className="text-xl font-black uppercase italic flex items-center gap-3">
-                <FileText className="text-teal-500" size={24} /> Lease Agreement
-              </h2>
-              <p className="text-zinc-500 text-xs mt-1">Review the terms before completing payment.</p>
+              <h2 className="text-xl font-black uppercase italic">Confirm Details</h2>
+              <p className="text-zinc-500 text-xs mt-1">
+                Review before submitting — a vault and tenancy will be created.
+              </p>
             </div>
 
-            {error && (
-              <div className="bg-red-500/10 border border-red-500/30 rounded-2xl p-4 text-red-400 text-sm font-bold">⚠️ {error}</div>
-            )}
-
-            <div className="bg-zinc-900 border border-zinc-800 rounded-3xl p-6 max-h-80 overflow-y-auto">
-              <h3 className="font-black uppercase text-sm mb-4">STANDARD TENANCY AGREEMENT</h3>
-              <div className="text-zinc-400 text-xs space-y-3 leading-relaxed">
-                <p><strong className="text-white">TENANT:</strong> {kycForm.full_name} ({kycForm.email})</p>
-                <p><strong className="text-white">PROPERTY:</strong> {unit.unit_name}{unit.project_title ? ` — ${unit.project_title}` : ''}</p>
-                <p><strong className="text-white">RENT:</strong> {unit.currency || 'NGN'} {Number(unit.rent_amount).toLocaleString()} payable {unit.payment_frequency || 'monthly'}</p>
-                <p><strong className="text-white">SECURITY DEPOSIT:</strong> {unit.currency || 'NGN'} {Number(unit.security_deposit || 0).toLocaleString()} (refundable, subject to condition)</p>
-                <p>The tenant agrees to: (1) Pay rent as stipulated via the Nested Ark escrow system; (2) Maintain the property in good condition; (3) Not sublet without landlord's written consent; (4) Comply with all building rules; (5) Give 30 days notice before vacating.</p>
-                <p>The landlord agrees to: (1) Maintain the property in habitable condition; (2) Release security deposit within 30 days of vacating, less deductions; (3) Provide quiet enjoyment of the premises.</p>
-                <p>All payments are processed via Paystack escrow and released to the landlord upon confirmed key handover. Nested Ark OS serves as the neutral ledger.</p>
-                <p className="text-zinc-600">By checking the box below, you agree to these terms and authorize Nested Ark OS to process your payment of {unit.currency || 'NGN'} {totalMoveIn.toLocaleString()} via Paystack.</p>
-              </div>
+            <div className="bg-zinc-900 border border-zinc-800 rounded-3xl p-6 space-y-3">
+              <p className="text-[9px] text-zinc-400 uppercase font-black tracking-widest mb-3">Summary</p>
+              {[
+                { label: 'Name',      value: form.fullName  },
+                { label: 'Email',     value: form.email     },
+                { label: 'Phone',     value: form.phone || '—' },
+                { label: 'Frequency', value: form.pattern   },
+                { label: 'Unit',      value: inviteData?.unit_name ?? '—' },
+              ].map(row => (
+                <div key={row.label} className="flex justify-between items-center py-1.5 border-b border-zinc-800/60 last:border-0">
+                  <span className="text-[10px] text-zinc-500 uppercase font-black">{row.label}</span>
+                  <span className="text-sm font-bold text-white">{row.value}</span>
+                </div>
+              ))}
             </div>
 
-            <label className="flex items-start gap-3 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={leaseAccepted}
-                onChange={e => setLeaseAccepted(e.target.checked)}
-                className="mt-1 w-5 h-5 rounded accent-teal-500"
-              />
-              <span className="text-sm text-zinc-300">
-                I have read and agree to the Tenancy Agreement and authorize payment of{' '}
-                <span className="text-teal-400 font-black">{unit.currency || 'NGN'} {totalMoveIn.toLocaleString()}</span> to complete my tenancy.
-              </span>
-            </label>
+            <div className="p-4 rounded-2xl bg-zinc-900 border border-zinc-800 text-xs text-zinc-500 leading-relaxed">
+              By submitting, you confirm that your details are accurate and agree to the Nested Ark
+              tenancy terms. Your Flex-Pay vault will be created and an activation email will be sent.
+            </div>
 
             <button
-              onClick={handlePayment}
-              disabled={!leaseAccepted || submitting}
-              className="w-full py-5 bg-teal-500 text-black font-black uppercase italic text-sm rounded-2xl hover:bg-teal-400 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-3"
+              onClick={handleSubmit}
+              disabled={submitting}
+              className="w-full py-5 bg-teal-500 text-black font-black uppercase italic text-sm rounded-2xl hover:bg-teal-400 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-3"
             >
-              {submitting ? (
-                <><Loader2 className="animate-spin" size={18} /> Initializing Secure Payment…</>
-              ) : (
-                <><CreditCard size={18} /> Pay & Confirm Tenancy</>
-              )}
+              {submitting
+                ? <><Loader2 className="animate-spin" size={20} /> Creating Tenancy…</>
+                : <><ShieldCheck size={18} /> Confirm &amp; Register</>
+              }
+            </button>
+
+            <button onClick={() => setStep(1)}
+              className="w-full py-2 text-zinc-600 text-xs font-bold uppercase hover:text-zinc-400 transition-colors">
+              ← Edit Details
             </button>
 
             <p className="text-center text-zinc-600 text-xs">
-              🔒 Secured by Paystack · Funds held in escrow until key handover is confirmed
+              🔒 Secured by Nested Ark · Paystack Escrow · SHA-256 Ledger
             </p>
           </div>
         )}
 
-        {/* Step 3: Payment Initialized */}
-        {step === 3 && (
-          <div className="text-center space-y-6 py-10">
-            <CheckCircle2 className="mx-auto text-teal-500" size={72} />
-            <div>
-              <h2 className="text-2xl font-black uppercase italic">Payment Initiated!</h2>
-              <p className="text-zinc-500 text-sm mt-2">Your payment is being processed securely via Paystack.</p>
-            </div>
-            <div className="bg-zinc-900 border border-zinc-800 rounded-3xl p-6 text-left space-y-2 text-sm">
-              <p className="text-zinc-400">✅ KYC details received</p>
-              <p className="text-zinc-400">✅ Lease agreement accepted</p>
-              <p className="text-zinc-400">⏳ Payment processing…</p>
-              <p className="text-zinc-600 text-xs mt-3">You will receive a confirmation email once payment is confirmed and your tenancy is activated.</p>
-            </div>
-          </div>
-        )}
       </div>
     </div>
+  );
+}
+
+export default function TenantOnboardPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-[#050505] flex items-center justify-center">
+        <Loader2 className="animate-spin text-teal-500" size={36} />
+      </div>
+    }>
+      <OnboardContent />
+    </Suspense>
   );
 }
