@@ -52,9 +52,27 @@ function OnboardContent() {
     if (!unitId) return;
     // GET /api/rental/invite-link/:unitId
     // Returns: { url, whatsapp_link, unit_name, project_title }
+    // unit_name may be empty string if the unit/project join found no match
     api.get(`/api/rental/invite-link/${unitId}`)
-      .then(r => setInviteData(r.data))
-      .catch(() => setInviteData({ url: `${window.location.origin}/onboard/${unitId}`, unit_name: 'Unit', whatsapp_link: '' }))
+      .then(r => {
+        const data = r.data;
+        // Normalise: backend catch branch omits unit_name/project_title
+        setInviteData({
+          url:           data.url           ?? `${window.location.origin}/onboard/${unitId}`,
+          whatsapp_link: data.whatsapp_link ?? '',
+          unit_name:     data.unit_name     || '',   // may be empty — show fallback in UI
+          project_title: data.project_title || '',
+        });
+      })
+      .catch(() => {
+        // Even if invite-link fails, still show the form
+        setInviteData({
+          url:           `${window.location.origin}/onboard/${unitId}`,
+          whatsapp_link: '',
+          unit_name:     '',
+          project_title: '',
+        });
+      })
       .finally(() => setLoading(false));
   }, [unitId]);
 
@@ -78,7 +96,16 @@ function OnboardContent() {
       });
       setDone(res.data);
     } catch (e: any) {
-      setError(e?.response?.data?.error ?? 'Failed to onboard tenant. Please try again.');
+      const status = e?.response?.status;
+      const backendMsg = e?.response?.data?.error ?? '';
+      // 404 = unit not found in DB (old/invalid unit ID)
+      // 400 = missing required fields
+      const msg = status === 404
+        ? 'Unit not found. This unit may have been created in an earlier session with incorrect data. Please add a new unit from the Rental Management page and use that unit\'s "Onboard Tenant" link.'
+        : status === 400
+        ? `Validation error: ${backendMsg || 'unitId, fullName and email are required.'}`
+        : backendMsg || `Error ${status ?? ''}: Onboarding failed. Please try again.`;
+      setError(msg);
     } finally { setSaving(false); }
   };
 
@@ -118,7 +145,9 @@ function OnboardContent() {
           <h1 className="text-2xl font-black uppercase tracking-tighter">Tenant Onboarded!</h1>
           <p className="text-zinc-500 text-sm">
             {form.fullName} has been registered to{' '}
-            <span className="text-teal-400 font-bold">{inviteData?.unit_name ?? 'the unit'}</span>.
+            <span className="text-teal-400 font-bold">
+              {inviteData?.unit_name || `Unit ${unitId.slice(0,8)}…`}
+            </span>.
           </p>
           {done.installment_amount && (
             <div className="p-4 rounded-2xl border border-teal-500/20 bg-teal-500/5 text-center">
@@ -192,9 +221,10 @@ function OnboardContent() {
             Landlord · Onboarding
           </p>
           <h1 className="text-3xl font-black uppercase tracking-tighter">Onboard Tenant</h1>
-          {inviteData?.unit_name && (
+          {inviteData && (
             <p className="text-zinc-500 text-sm mt-1 flex items-center gap-1.5">
-              <Building2 size={12} /> {inviteData.unit_name}
+              <Building2 size={12} />
+              {inviteData.unit_name || `Unit ${unitId.slice(0,8)}…`}
               {inviteData.project_title && ` · ${inviteData.project_title}`}
             </p>
           )}
@@ -204,9 +234,17 @@ function OnboardContent() {
         {inviteData && (
           <div className="p-4 rounded-2xl border border-teal-500/20 bg-teal-500/5 space-y-2">
             <p className="text-[9px] text-teal-500 uppercase font-black tracking-widest">Unit</p>
-            <p className="font-bold text-sm">{inviteData.unit_name}</p>
+            <p className="font-bold text-sm">
+              {inviteData.unit_name || `Unit ID: ${unitId.slice(0, 8)}…`}
+            </p>
             {inviteData.project_title && (
               <p className="text-[10px] text-zinc-400">{inviteData.project_title}</p>
+            )}
+            {!inviteData.unit_name && (
+              <p className="text-[10px] text-amber-400">
+                ⚠ Unit name not loaded — unit may be from an earlier session.
+                The form below will still work if the unit exists in the database.
+              </p>
             )}
             <div className="flex items-center gap-3 pt-2 border-t border-teal-500/10">
               <button onClick={openWhatsApp}
