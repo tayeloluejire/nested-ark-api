@@ -1,20 +1,27 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // Disable ESLint during production builds.
-  // ESLint runs in development via `npm run lint` — not needed as a build gate.
+  // Prevent ESLint from blocking production deploys
   eslint: {
     ignoreDuringBuilds: true,
   },
 
-  // Disable TypeScript type-check errors blocking production builds.
-  // Type errors are caught in the IDE and CI lint step, not the build step.
+  // Prevent TS build errors from blocking deploys
   typescript: {
     ignoreBuildErrors: true,
   },
 
-  // Rewrite /api/* to Render backend.
-  // All frontend API calls use relative /api/* paths.
-  // This eliminates CORS — the browser never sees a cross-origin request.
+  // Reduce stale route/data caching issues
+  experimental: {
+    staleTimes: {
+      dynamic: 0,
+      static: 0,
+    },
+  },
+
+  // Force consistent runtime behavior
+  reactStrictMode: true,
+
+  // Better handling for production API rewrites
   async rewrites() {
     return [
       {
@@ -24,10 +31,44 @@ const nextConfig = {
     ];
   },
 
+  // Disable powered-by header
+  poweredByHeader: false,
+
+  // Prevent some hydration inconsistencies
+  compress: true,
+
+  // Remote image handling
   images: {
     remotePatterns: [
-      { protocol: 'https', hostname: '**' },
+      {
+        protocol: 'https',
+        hostname: '**',
+      },
     ],
+  },
+
+  // Important for App Router stability
+  async headers() {
+    return [
+      {
+        source: '/api/:path*',
+        headers: [
+          {
+            key: 'Cache-Control',
+            value: 'no-store, no-cache, must-revalidate, proxy-revalidate',
+          },
+        ],
+      },
+      {
+        source: '/landlord/:path*',
+        headers: [
+          {
+            key: 'Cache-Control',
+            value: 'no-store',
+          },
+        ],
+      },
+    ];
   },
 };
 
