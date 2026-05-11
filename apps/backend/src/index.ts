@@ -942,6 +942,8 @@ const ensureTablesExist = async () => {
       ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS available_from    DATE;
       ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS updated_at        TIMESTAMP WITH TIME ZONE DEFAULT NOW();
       ALTER TABLE flex_pay_vaults     ADD COLUMN IF NOT EXISTS project_id UUID REFERENCES projects(id);
+      ALTER TABLE flex_pay_vaults     ADD COLUMN IF NOT EXISTS unit_id     UUID REFERENCES rental_units(id);
+      CREATE INDEX IF NOT EXISTS idx_fpv_unit ON flex_pay_vaults(unit_id) WHERE unit_id IS NOT NULL;
       ALTER TABLE rent_reminders      ADD COLUMN IF NOT EXISTS project_id UUID REFERENCES projects(id);
       ALTER TABLE legal_notices       ADD COLUMN IF NOT EXISTS project_id UUID REFERENCES projects(id);
       ALTER TABLE tenancies           ADD COLUMN IF NOT EXISTS project_id    UUID REFERENCES projects(id);
@@ -7093,8 +7095,10 @@ pool.query(`
   ALTER TABLE tenancies       ADD COLUMN IF NOT EXISTS payment_day    INTEGER DEFAULT 1;
   ALTER TABLE tenancies       ADD COLUMN IF NOT EXISTS project_id     UUID REFERENCES projects(id);
   ALTER TABLE flex_pay_vaults ADD COLUMN IF NOT EXISTS tenant_user_id UUID REFERENCES users(id);
+  ALTER TABLE flex_pay_vaults ADD COLUMN IF NOT EXISTS unit_id        UUID REFERENCES rental_units(id);
   CREATE INDEX IF NOT EXISTS idx_ten_user_id ON tenancies(tenant_user_id) WHERE tenant_user_id IS NOT NULL;
   CREATE INDEX IF NOT EXISTS idx_fpv_user_id ON flex_pay_vaults(tenant_user_id) WHERE tenant_user_id IS NOT NULL;
+  CREATE INDEX IF NOT EXISTS idx_fpv_unit    ON flex_pay_vaults(unit_id) WHERE unit_id IS NOT NULL;
 `).then(() => {
   console.log('[MIGRATION] tenant_user_id columns verified ✓');
 }).catch((err: any) => {
