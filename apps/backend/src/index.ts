@@ -5225,19 +5225,20 @@ app.post('/api/rental/units', authenticate, async (req: Request, res: Response):
       [project_id]
     );
 
-    // Safely add optional columns that may not exist yet via ALTER TABLE IF NOT EXISTS
-    await pool.query(`
-      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS payment_frequency VARCHAR(20) DEFAULT 'MONTHLY';
-      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS agency_fee         DECIMAL(15,2) DEFAULT 0;
-      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS legal_fee          DECIMAL(15,2) DEFAULT 0;
-      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS caution_fee        DECIMAL(15,2) DEFAULT 0;
-      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS bank_name          VARCHAR(100);
-      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS account_number     VARCHAR(20);
-      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS account_name       VARCHAR(100);
-      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS sort_code          VARCHAR(20);
-      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS size_sqm           DECIMAL(10,2);
-      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS floor_number       INTEGER;
-    `).catch(() => {}); // ignore if already exist
+    // Safely add optional columns one-by-one (pg driver requires single statements)
+    const migrations = [
+      `ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS payment_frequency VARCHAR(20) DEFAULT 'MONTHLY'`,
+      `ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS agency_fee         DECIMAL(15,2) DEFAULT 0`,
+      `ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS legal_fee          DECIMAL(15,2) DEFAULT 0`,
+      `ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS caution_fee        DECIMAL(15,2) DEFAULT 0`,
+      `ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS bank_name          VARCHAR(100)`,
+      `ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS account_number     VARCHAR(20)`,
+      `ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS account_name       VARCHAR(100)`,
+      `ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS sort_code          VARCHAR(20)`,
+      `ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS size_sqm           DECIMAL(10,2)`,
+      `ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS floor_number       INTEGER`,
+    ];
+    for (const sql of migrations) { await pool.query(sql).catch(() => {}); }
 
     const r = await pool.query(
       `INSERT INTO rental_units
@@ -5263,7 +5264,7 @@ app.post('/api/rental/units', authenticate, async (req: Request, res: Response):
         rent_amount,
         currency || 'NGN',
         description || null,
-        amenities   ? JSON.stringify(amenities) : '[]',
+        Array.isArray(amenities) ? amenities : typeof amenities === 'string' && amenities.trim() ? amenities.split(',').map((x: string) => x.trim()).filter(Boolean) : [],
         (payment_frequency || 'MONTHLY').toUpperCase(),
         security_deposit || 0,
         service_charge   || 0,
