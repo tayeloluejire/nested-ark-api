@@ -104,7 +104,9 @@ export default function OnboardTenantPage() {
       setUnitLoading(true);
       setUnitError('');
 
-      const res = await api.get(`/api/rental/units/${unitId}`);
+      // ✅ Use /single/:unitId — the dedicated per-unit lookup endpoint.
+      // /api/rental/units/:id is a project-list route (takes projectId), NOT a unit lookup.
+      const res = await api.get(`/api/rental/units/single/${unitId}`);
 
       // Backend may return:  null | undefined | {} | { unit: {...} } | {...}
       const foundUnit: Unit | null =
