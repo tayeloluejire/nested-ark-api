@@ -5309,6 +5309,121 @@ app.get('/api/rental/units/single/:unitId', authenticate, async (req: Request, r
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
 
+// ── POST /api/rental/onboard-tenant — landlord registers a tenant + creates Flex-Pay vault ──
+// Frontend payload: { unit_id, tenant_name, tenant_email, tenant_phone,
+//                     move_in_date, payment_frequency, deposit_amount }
+app.post('/api/rental/onboard-tenant', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const landlordId = (req as any).userId;
+  try {
+    const {
+      unit_id, tenant_name, tenant_email, tenant_phone,
+      move_in_date, payment_frequency, deposit_amount,
+    } = req.body;
+
+    if (!unit_id || !tenant_name || !tenant_email || !move_in_date)
+      return res.status(400).json({ error: 'unit_id, tenant_name, tenant_email, move_in_date are required' });
+
+    // 1 — Verify unit exists and belongs to this landlord
+    const uRes = await pool.query(
+      `SELECT ru.*, p.id AS project_id, p.sponsor_id, p.title AS project_title
+       FROM rental_units ru
+       JOIN projects p ON p.id = ru.project_id
+       WHERE ru.id = $1`,
+      [unit_id]
+    );
+    if (!uRes.rows.length) return res.status(404).json({ error: 'Unit not found' });
+    const unit = uRes.rows[0];
+    if (unit.sponsor_id !== landlordId)
+      return res.status(403).json({ error: 'You do not own this unit' });
+
+    // 2 — Derive lease_end (1 year from move_in by default) and payment_day
+    const leaseStart = new Date(move_in_date);
+    const leaseEnd   = new Date(leaseStart);
+    leaseEnd.setFullYear(leaseEnd.getFullYear() + 1);
+    const paymentDay = leaseStart.getDate();
+
+    // 3 — Normalise payment_frequency → target_amount for vault
+    const freq = (payment_frequency || 'monthly').toLowerCase();
+    const monthlyRent = Number(unit.rent_amount) || 0;
+    const freqMap: Record<string,number> = {
+      weekly: monthlyRent / 4, monthly: monthlyRent,
+      quarterly: monthlyRent * 3, biannual: monthlyRent * 6, annual: monthlyRent * 12,
+    };
+    const installmentAmount = freqMap[freq] ?? monthlyRent;
+    const targetAmount = monthlyRent * 12; // always one year of rent as vault target
+
+    // 4 — Next due date = move_in_date + one frequency period
+    const nextDue = new Date(leaseStart);
+    if (freq === 'weekly')     nextDue.setDate(nextDue.getDate() + 7);
+    else if (freq === 'monthly')    nextDue.setMonth(nextDue.getMonth() + 1);
+    else if (freq === 'quarterly')  nextDue.setMonth(nextDue.getMonth() + 3);
+    else if (freq === 'biannual')   nextDue.setMonth(nextDue.getMonth() + 6);
+    else if (freq === 'annual')     nextDue.setFullYear(nextDue.getFullYear() + 1);
+
+    // 5 — Insert tenancy row
+    const tenRes = await pool.query(
+      `INSERT INTO tenancies
+         (unit_id, project_id, tenant_name, tenant_email, tenant_phone,
+          lease_start, lease_end, rent_amount, currency, payment_day, status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'ACTIVE')
+       RETURNING *`,
+      [
+        unit_id, unit.project_id, tenant_name, tenant_email, tenant_phone || null,
+        leaseStart.toISOString().split('T')[0],
+        leaseEnd.toISOString().split('T')[0],
+        unit.rent_amount, unit.currency || 'NGN', paymentDay,
+      ]
+    );
+    const tenancy = tenRes.rows[0];
+
+    // 6 — Create Flex-Pay vault for this tenancy
+    const vaultRes = await pool.query(
+      `INSERT INTO flex_pay_vaults
+         (tenancy_id, unit_id, project_id, vault_balance, target_amount,
+          frequency, installment_amount, currency, next_due_date, cashout_mode, status)
+       VALUES ($1,$2,$3,0,$4,$5,$6,$7,$8,'LUMP_SUM','ACTIVE')
+       RETURNING *`,
+      [
+        tenancy.id, unit_id, unit.project_id,
+        targetAmount, freq.toUpperCase(), installmentAmount,
+        unit.currency || 'NGN',
+        nextDue.toISOString().split('T')[0],
+      ]
+    );
+    const vault = vaultRes.rows[0];
+
+    // 7 — Mark unit as OCCUPIED
+    await pool.query(`UPDATE rental_units SET status='OCCUPIED' WHERE id=$1`, [unit_id]);
+
+    // 8 — Log to system ledger
+    await pool.query(
+      `INSERT INTO system_ledger (event_type, actor_id, entity_id, entity_type, description, metadata)
+       VALUES ('TENANT_ONBOARDED',$1,$2,'TENANCY',$3,$4)`,
+      [
+        landlordId, tenancy.id,
+        `${tenant_name} onboarded into ${unit.unit_name} (${unit.project_title})`,
+        JSON.stringify({ tenancy_id: tenancy.id, vault_id: vault.id, unit_id, freq, installmentAmount }),
+      ]
+    ).catch(() => {}); // non-fatal
+
+    // 9 — Build invite link (tenant self-service portal)
+    const FRONTEND = process.env.FRONTEND_URL || process.env.NEXT_PUBLIC_APP_URL || 'https://nested-ark-os.vercel.app';
+    const invite_link = `${FRONTEND}/tenant/onboard?token=${tenancy.id}&unit=${unit_id}`;
+
+    return res.status(201).json({
+      success: true,
+      message: `${tenant_name} successfully onboarded into ${unit.unit_name}`,
+      tenancy,
+      vault,
+      invite_link,
+    });
+
+  } catch (e: any) {
+    console.error('[onboard-tenant]', e);
+    return res.status(500).json({ error: e.message });
+  }
+});
+
 // ── GET /api/rental/units/:projectId — list units for a project ──────────
 app.get('/api/rental/units/:projectId', authenticate, async (req: Request, res: Response): Promise<any> => {
   try {
