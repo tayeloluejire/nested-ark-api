@@ -5201,8 +5201,16 @@ app.get('/api/landlord/payout-history', authenticate, async (req: Request, res: 
 app.post('/api/rental/units', authenticate, async (req: Request, res: Response): Promise<any> => {
   const userId = (req as any).userId;
   try {
-    const { project_id, unit_name, unit_type, bedrooms, floor_area_sqm,
-            rent_amount, currency, description } = req.body;
+    const {
+      project_id, unit_name, unit_type, bedrooms, bathrooms,
+      floor_area_sqm, size_sqm, floor_number, floor_level,
+      rent_amount, currency, description, amenities,
+      payment_frequency,
+      security_deposit, service_charge, agency_fee, legal_fee, caution_fee,
+      bank_name, account_number, account_name, sort_code,
+      furnished, parking,
+    } = req.body;
+
     if (!project_id || !unit_name || !rent_amount)
       return res.status(400).json({ error: 'project_id, unit_name and rent_amount are required' });
 
@@ -5217,14 +5225,86 @@ app.post('/api/rental/units', authenticate, async (req: Request, res: Response):
       [project_id]
     );
 
+    // Safely add optional columns that may not exist yet via ALTER TABLE IF NOT EXISTS
+    await pool.query(`
+      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS payment_frequency VARCHAR(20) DEFAULT 'MONTHLY';
+      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS agency_fee         DECIMAL(15,2) DEFAULT 0;
+      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS legal_fee          DECIMAL(15,2) DEFAULT 0;
+      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS caution_fee        DECIMAL(15,2) DEFAULT 0;
+      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS bank_name          VARCHAR(100);
+      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS account_number     VARCHAR(20);
+      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS account_name       VARCHAR(100);
+      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS sort_code          VARCHAR(20);
+      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS size_sqm           DECIMAL(10,2);
+      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS floor_number       INTEGER;
+    `).catch(() => {}); // ignore if already exist
+
     const r = await pool.query(
       `INSERT INTO rental_units
-         (project_id,unit_name,unit_type,bedrooms,floor_area_sqm,rent_amount,currency,description)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
-      [project_id, unit_name, unit_type||'APARTMENT', bedrooms||0,
-       floor_area_sqm||null, rent_amount, currency||'NGN', description||null]
+         (project_id, unit_name, unit_type, bedrooms, bathrooms,
+          floor_area_sqm, size_sqm, floor_number, floor_level,
+          rent_amount, currency, description, amenities,
+          payment_frequency,
+          security_deposit, service_charge, agency_fee, legal_fee, caution_fee,
+          bank_name, account_number, account_name, sort_code,
+          furnished, parking, status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,'VACANT')
+       RETURNING *`,
+      [
+        project_id,
+        unit_name,
+        unit_type || 'APARTMENT',
+        bedrooms  || 0,
+        bathrooms || 1,
+        floor_area_sqm || size_sqm || null,
+        size_sqm   || floor_area_sqm || null,
+        floor_number   || null,
+        floor_level    || null,
+        rent_amount,
+        currency || 'NGN',
+        description || null,
+        amenities   ? JSON.stringify(amenities) : '[]',
+        (payment_frequency || 'MONTHLY').toUpperCase(),
+        security_deposit || 0,
+        service_charge   || 0,
+        agency_fee       || 0,
+        legal_fee        || 0,
+        caution_fee      || 0,
+        bank_name        || null,
+        account_number   || null,
+        account_name     || null,
+        sort_code        || null,
+        furnished  ? true : false,
+        parking    ? true : false,
+      ]
     );
     return res.status(201).json({ success: true, unit: r.rows[0] });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
+// ── GET /api/rental/units/single/:unitId — fetch ONE unit by its UUID ────
+// MUST be registered BEFORE /api/rental/units/:projectId so Express
+// doesn't try to use a unit UUID as a projectId.
+app.get('/api/rental/units/single/:unitId', authenticate, async (req: Request, res: Response): Promise<any> => {
+  try {
+    const { unitId } = req.params;
+    const r = await pool.query(
+      `SELECT ru.*,
+              p.id            AS project_id,
+              p.title         AS project_title,
+              p.project_number,
+              t.id            AS tenancy_id,
+              t.tenant_name,
+              t.tenant_email,
+              t.status        AS tenancy_status
+       FROM   rental_units ru
+       JOIN   projects      p  ON p.id  = ru.project_id
+       LEFT JOIN tenancies  t  ON t.unit_id = ru.id AND t.status = 'ACTIVE'
+       WHERE  ru.id = $1`,
+      [unitId]
+    );
+    if (!r.rows.length) return res.status(404).json({ error: 'Unit not found' });
+    return res.json({ success: true, unit: r.rows[0] });
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
 
