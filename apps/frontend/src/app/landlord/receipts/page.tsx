@@ -21,7 +21,8 @@ interface Project {
 
 export default function LandlordReceiptsPage() {
   const router = useRouter();
-  const { isLoading: authLoading } = useAuth();
+  // ✅ FIX: AuthContext exposes `loading`, NOT `isLoading`
+  const { loading: authLoading } = useAuth();
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading,  setLoading]  = useState(true);
 
@@ -70,7 +71,7 @@ export default function LandlordReceiptsPage() {
       <main className="flex-1 max-w-2xl mx-auto px-6 py-12 w-full space-y-8">
         <div className="border-l-2 border-amber-500 pl-5">
           <p className="text-[9px] text-amber-400 uppercase font-black tracking-[0.25em] mb-1">Payment Ledger</p>
-          <h1 className="text-2xl font-black uppercase tracking-tight">Receipts & Ledger</h1>
+          <h1 className="text-2xl font-black uppercase tracking-tight">Receipts &amp; Ledger</h1>
           <p className="text-zinc-500 text-sm mt-1">Select the property whose payment history you want to view</p>
         </div>
         <div className="space-y-3">
