@@ -19,7 +19,7 @@ const safeD = (v: any, d = 2): string => safeN(v).toFixed(d);
 
 
 export default function GovernmentPortal() {
-  const { user, isLoading: authLoading } = useAuth();
+  const { user, loading: authLoading } = useAuth();
   const router = useRouter();
   const [queue, setQueue]     = useState<any[]>([]);
   const [projects, setProjects] = useState<any[]>([]);
@@ -30,7 +30,7 @@ export default function GovernmentPortal() {
 
   useEffect(() => {
     if (!authLoading && !user) { router.replace('/login'); return; }
-    if (!authLoading && user && !canAccess(user.role, '/gov')) {
+    if (!authLoading && user && !canAccess(user.role, ['GOVERNMENT', 'ADMIN', 'VERIFIER'])) {
       router.replace(user.role === 'ADMIN' ? '/admin' : '/dashboard');
     }
   }, [user, authLoading, router]);

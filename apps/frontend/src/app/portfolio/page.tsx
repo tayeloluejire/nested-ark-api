@@ -229,7 +229,7 @@ function RoiCalc({ roiRate }: { roiRate: number }) {
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function PortfolioPage() {
-  const { user, isLoading: authLoading } = useAuth();
+  const { user, loading: authLoading } = useAuth();
   const router = useRouter();
   const { format } = useCurrency();
 
@@ -244,7 +244,7 @@ export default function PortfolioPage() {
 
   useEffect(() => {
     if (!authLoading && !user)                                   { router.replace('/login'); return; }
-    if (!authLoading && user && !canAccess(user.role, '/portfolio')) router.replace('/dashboard');
+    if (!authLoading && user && !canAccess(user.role, ['INVESTOR', 'ADMIN', 'DEVELOPER', 'PROJECT_SPONSOR'])) router.replace('/dashboard');
   }, [user, authLoading, router]);
 
   const load = useCallback(async (silent = false) => {
