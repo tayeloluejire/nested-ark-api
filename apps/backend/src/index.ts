@@ -942,8 +942,6 @@ const ensureTablesExist = async () => {
       ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS available_from    DATE;
       ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS updated_at        TIMESTAMP WITH TIME ZONE DEFAULT NOW();
       ALTER TABLE flex_pay_vaults     ADD COLUMN IF NOT EXISTS project_id UUID REFERENCES projects(id);
-      ALTER TABLE flex_pay_vaults     ADD COLUMN IF NOT EXISTS unit_id     UUID REFERENCES rental_units(id);
-      CREATE INDEX IF NOT EXISTS idx_fpv_unit ON flex_pay_vaults(unit_id) WHERE unit_id IS NOT NULL;
       ALTER TABLE rent_reminders      ADD COLUMN IF NOT EXISTS project_id UUID REFERENCES projects(id);
       ALTER TABLE legal_notices       ADD COLUMN IF NOT EXISTS project_id UUID REFERENCES projects(id);
       ALTER TABLE tenancies           ADD COLUMN IF NOT EXISTS project_id    UUID REFERENCES projects(id);
@@ -982,6 +980,49 @@ const ensureTablesExist = async () => {
 
       -- Notice auto-increment counter
       CREATE SEQUENCE IF NOT EXISTS notice_number_seq START 1;
+
+      -- ── CANONICAL flex_pay_vaults schema guard ─────────────────────────
+      -- Ensures ALL columns used by INSERT/SELECT are present regardless of
+      -- when the DB was first created. Safe to re-run on every restart.
+      ALTER TABLE flex_pay_vaults ADD COLUMN IF NOT EXISTS vault_balance      DECIMAL(15,2) DEFAULT 0;
+      ALTER TABLE flex_pay_vaults ADD COLUMN IF NOT EXISTS target_amount      DECIMAL(15,2) DEFAULT 0;
+      ALTER TABLE flex_pay_vaults ADD COLUMN IF NOT EXISTS frequency          VARCHAR(20) DEFAULT 'MONTHLY';
+      ALTER TABLE flex_pay_vaults ADD COLUMN IF NOT EXISTS installment_amount DECIMAL(15,2) DEFAULT 0;
+      ALTER TABLE flex_pay_vaults ADD COLUMN IF NOT EXISTS currency           VARCHAR(10) DEFAULT 'NGN';
+      ALTER TABLE flex_pay_vaults ADD COLUMN IF NOT EXISTS next_due_date      DATE;
+      ALTER TABLE flex_pay_vaults ADD COLUMN IF NOT EXISTS cashout_mode       VARCHAR(20) DEFAULT 'LUMP_SUM';
+      ALTER TABLE flex_pay_vaults ADD COLUMN IF NOT EXISTS drawdown_day       INTEGER DEFAULT 1;
+      ALTER TABLE flex_pay_vaults ADD COLUMN IF NOT EXISTS funded_periods     INTEGER DEFAULT 0;
+      ALTER TABLE flex_pay_vaults ADD COLUMN IF NOT EXISTS status             VARCHAR(20) DEFAULT 'ACTIVE';
+      ALTER TABLE flex_pay_vaults ADD COLUMN IF NOT EXISTS unit_id            UUID REFERENCES rental_units(id);
+      ALTER TABLE flex_pay_vaults ADD COLUMN IF NOT EXISTS tenant_user_id     UUID REFERENCES users(id);
+      ALTER TABLE flex_pay_vaults ADD COLUMN IF NOT EXISTS project_id         UUID REFERENCES projects(id);
+      ALTER TABLE flex_pay_vaults ADD COLUMN IF NOT EXISTS updated_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+      CREATE INDEX IF NOT EXISTS idx_fpv_unit       ON flex_pay_vaults(unit_id)        WHERE unit_id IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_fpv_user       ON flex_pay_vaults(tenant_user_id) WHERE tenant_user_id IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_fpv_proj       ON flex_pay_vaults(project_id)     WHERE project_id IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_fpv_status     ON flex_pay_vaults(status);
+
+      -- ── CANONICAL rental_units schema guard ────────────────────────────
+      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS payment_frequency VARCHAR(20) DEFAULT 'MONTHLY';
+      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS agency_fee        DECIMAL(15,2) DEFAULT 0;
+      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS legal_fee         DECIMAL(15,2) DEFAULT 0;
+      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS caution_fee       DECIMAL(15,2) DEFAULT 0;
+      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS bank_name         VARCHAR(100);
+      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS account_number    VARCHAR(20);
+      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS account_name      VARCHAR(100);
+      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS sort_code         VARCHAR(20);
+      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS size_sqm          DECIMAL(10,2);
+      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS floor_number      INTEGER;
+      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS description       TEXT;
+      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS notes             TEXT;
+      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS status            VARCHAR(20) DEFAULT 'VACANT';
+
+      -- ── CANONICAL tenancies schema guard ───────────────────────────────
+      ALTER TABLE tenancies ADD COLUMN IF NOT EXISTS payment_frequency VARCHAR(20) DEFAULT 'MONTHLY';
+      ALTER TABLE tenancies ADD COLUMN IF NOT EXISTS lease_end         DATE;
+      ALTER TABLE tenancies ADD COLUMN IF NOT EXISTS currency          VARCHAR(10) DEFAULT 'NGN';
+      ALTER TABLE tenancies ADD COLUMN IF NOT EXISTS notes             TEXT;
 
     `);
 
@@ -7095,10 +7136,8 @@ pool.query(`
   ALTER TABLE tenancies       ADD COLUMN IF NOT EXISTS payment_day    INTEGER DEFAULT 1;
   ALTER TABLE tenancies       ADD COLUMN IF NOT EXISTS project_id     UUID REFERENCES projects(id);
   ALTER TABLE flex_pay_vaults ADD COLUMN IF NOT EXISTS tenant_user_id UUID REFERENCES users(id);
-  ALTER TABLE flex_pay_vaults ADD COLUMN IF NOT EXISTS unit_id        UUID REFERENCES rental_units(id);
   CREATE INDEX IF NOT EXISTS idx_ten_user_id ON tenancies(tenant_user_id) WHERE tenant_user_id IS NOT NULL;
   CREATE INDEX IF NOT EXISTS idx_fpv_user_id ON flex_pay_vaults(tenant_user_id) WHERE tenant_user_id IS NOT NULL;
-  CREATE INDEX IF NOT EXISTS idx_fpv_unit    ON flex_pay_vaults(unit_id) WHERE unit_id IS NOT NULL;
 `).then(() => {
   console.log('[MIGRATION] tenant_user_id columns verified ✓');
 }).catch((err: any) => {
