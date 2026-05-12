@@ -5309,40 +5309,129 @@ app.get('/api/rental/units/single/:unitId', authenticate, async (req: Request, r
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
 
-// ── POST /api/rental/onboard-tenant — landlord registers a tenant + creates Flex-Pay vault ──
-// Frontend payload: { unit_id, tenant_name, tenant_email, tenant_phone,
-//                     move_in_date, payment_frequency, deposit_amount }
-// ── GET /api/rental/tenants — landlord's full tenant roster ─────────────
+// ── GET /api/rental/tenants — landlord's full tenant roster (fast, no timeout) ─────────
 app.get('/api/rental/tenants', authenticate, async (req: Request, res: Response): Promise<any> => {
   const landlordId = (req as any).userId;
   try {
     const r = await pool.query(
       `SELECT
          t.id, t.tenant_name, t.tenant_email, t.tenant_phone,
-         t.unit_id, t.status, t.lease_start AS move_in_date, t.lease_end,
-         t.rent_amount, t.currency, t.payment_frequency, t.payment_day,
-         t.tenant_score, t.updated_at,
-         ru.unit_name, ru.unit_type, ru.rent_amount AS unit_rent_amount,
-         ru.currency AS unit_currency,
+         t.unit_id, t.status, t.lease_start AS move_in_date,
+         t.rent_amount, t.currency,
+         COALESCE(t.payment_frequency, 'monthly') AS payment_frequency,
+         t.tenant_user_id,
+         ru.unit_name,
          p.title AS project_title, p.project_number,
          fpv.next_due_date AS next_payment_date,
-         fpv.vault_balance, fpv.status AS vault_status,
-         COALESCE(
-           (SELECT SUM(rp.amount) FROM rent_payments rp WHERE rp.tenancy_id = t.id AND rp.status='PAID'),
-           0
-         ) AS total_paid
+         fpv.vault_balance
        FROM tenancies t
        JOIN rental_units ru ON ru.id = t.unit_id
-       JOIN projects p      ON p.id  = t.project_id
+       JOIN projects p      ON p.id  = ru.project_id
        LEFT JOIN flex_pay_vaults fpv ON fpv.tenancy_id = t.id
        WHERE p.sponsor_id = $1
-       ORDER BY t.status, t.tenant_name`,
+       ORDER BY t.status, t.tenant_name
+       LIMIT 200`,
       [landlordId]
     );
     return res.json(r.rows);
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
 
+// ── GET /api/rental/invite/:token — PUBLIC: validate token, return unit/tenancy preview ──
+// No auth required — tenant clicks this before they have an account
+app.get('/api/rental/invite/:token', async (req: Request, res: Response): Promise<any> => {
+  try {
+    const { token } = req.params;
+    const r = await pool.query(
+      `SELECT
+         t.id AS tenancy_id, t.tenant_name, t.tenant_email, t.status,
+         t.rent_amount, t.currency, t.payment_frequency, t.tenant_user_id,
+         ru.id AS unit_id, ru.unit_name, ru.unit_type, ru.bedrooms, ru.size_sqm,
+         ru.security_deposit, ru.agency_fee,
+         p.title AS project_title, p.project_number, p.location, p.country
+       FROM tenancies t
+       JOIN rental_units ru ON ru.id = t.unit_id
+       JOIN projects p      ON p.id  = ru.project_id
+       WHERE t.id = $1`,
+      [token]
+    );
+    if (!r.rows.length) return res.status(404).json({ error: 'Invalid or expired invite link' });
+    const tenancy = r.rows[0];
+    return res.json({
+      valid: true,
+      already_registered: !!tenancy.tenant_user_id,
+      tenancy_id: tenancy.tenancy_id,
+      tenant_name: tenancy.tenant_name,
+      tenant_email: tenancy.tenant_email,
+      unit_id: tenancy.unit_id,
+      unit_name: tenancy.unit_name,
+      unit_type: tenancy.unit_type,
+      bedrooms: tenancy.bedrooms,
+      rent_amount: tenancy.rent_amount,
+      currency: tenancy.currency,
+      payment_frequency: tenancy.payment_frequency,
+      security_deposit: tenancy.security_deposit,
+      project_title: tenancy.project_title,
+      project_number: tenancy.project_number,
+      location: tenancy.location,
+      country: tenancy.country,
+    });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
+// ── POST /api/rental/consume-invite — links authenticated tenant user to their tenancy ──
+// Called after tenant registers/logs in. Attaches their user ID to the tenancy row.
+app.post('/api/rental/consume-invite', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId = (req as any).userId;
+  try {
+    const { tenancy_id } = req.body;
+    if (!tenancy_id) return res.status(400).json({ error: 'tenancy_id required' });
+
+    // Verify tenancy exists and email matches
+    const userRes = await pool.query('SELECT email, role FROM users WHERE id=$1', [userId]);
+    if (!userRes.rows.length) return res.status(404).json({ error: 'User not found' });
+    const user = userRes.rows[0];
+
+    const tenRes = await pool.query(
+      `SELECT * FROM tenancies WHERE id=$1`, [tenancy_id]
+    );
+    if (!tenRes.rows.length) return res.status(404).json({ error: 'Tenancy not found' });
+    const tenancy = tenRes.rows[0];
+
+    // Allow if email matches OR if tenant_user_id is already this user
+    if (tenancy.tenant_email.toLowerCase() !== user.email.toLowerCase() && tenancy.tenant_user_id !== userId) {
+      return res.status(403).json({ error: 'This invite was not sent to your email address' });
+    }
+
+    // Link user → tenancy
+    await pool.query(
+      `UPDATE tenancies SET tenant_user_id=$1, status='ACTIVE', updated_at=NOW() WHERE id=$2`,
+      [userId, tenancy_id]
+    );
+
+    // Ensure user has TENANT role
+    await pool.query(`UPDATE users SET role='TENANT' WHERE id=$1 AND role NOT IN ('ADMIN','GOVERNMENT','VERIFIER')`, [userId]);
+
+    // Link vault too
+    await pool.query(
+      `UPDATE flex_pay_vaults SET tenant_user_id=$1 WHERE tenancy_id=$2 AND tenant_user_id IS NULL`,
+      [userId, tenancy_id]
+    ).catch(() => {});
+
+    // Log
+    await pool.query(
+      `INSERT INTO system_ledger (event_type, actor_id, entity_id, entity_type, description, metadata)
+       VALUES ('INVITE_CONSUMED',$1,$2,'TENANCY',$3,$4)`,
+      [userId, tenancy_id, `Tenant ${user.email} activated tenancy`, JSON.stringify({ tenancy_id, userId })]
+    ).catch(() => {});
+
+    return res.json({ success: true, message: 'Tenancy activated. Welcome to Nested Ark!' });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
+// ── POST /api/rental/onboard-tenant — landlord registers a tenant + creates Flex-Pay vault ──
+// Frontend payload: { unit_id, tenant_name, tenant_email, tenant_phone,
+//                     move_in_date, payment_frequency, deposit_amount }
 app.post('/api/rental/onboard-tenant', authenticate, async (req: Request, res: Response): Promise<any> => {
   const landlordId = (req as any).userId;
   try {
@@ -5437,9 +5526,9 @@ app.post('/api/rental/onboard-tenant', authenticate, async (req: Request, res: R
       ]
     ).catch(() => {}); // non-fatal
 
-    // 9 — Build invite link (tenant self-service portal)
-    const FRONTEND = process.env.FRONTEND_URL || process.env.NEXT_PUBLIC_APP_URL || 'https://nested-ark-os.vercel.app';
-    const invite_link = `${FRONTEND}/tenant/onboard?token=${tenancy.id}&unit=${unit_id}`;
+    // 9 — Build invite link → PUBLIC page, no auth required
+    const FRONTEND = process.env.FRONTEND_URL || 'https://nested-ark-hpciy33m5-nested-ark.vercel.app';
+    const invite_link = `${FRONTEND}/tenant/invite?token=${tenancy.id}&unit=${unit_id}`;
 
     return res.status(201).json({
       success: true,
