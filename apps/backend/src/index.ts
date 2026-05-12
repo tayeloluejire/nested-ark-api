@@ -981,6 +981,20 @@ const ensureTablesExist = async () => {
       -- Notice auto-increment counter
       CREATE SEQUENCE IF NOT EXISTS notice_number_seq START 1;
 
+      -- ── Unique constraint so onboard-tenant is idempotent ──────────────────
+      -- Prevents Joseph Dimpa ×3 / Okon Mavelous ×2 duplicates.
+      -- DROP + re-add pattern is safe with IF NOT EXISTS equivalent:
+      DO $$ BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conname = 'tenancies_unit_email_unique'
+        ) THEN
+          ALTER TABLE tenancies
+          ADD CONSTRAINT tenancies_unit_email_unique
+          UNIQUE (unit_id, tenant_email);
+        END IF;
+      END $$;
+
     `);
 
     await client.query('COMMIT');
@@ -1053,7 +1067,7 @@ app.post("/api/auth/register", async (req: Request, res: Response): Promise<any>
         [uuidv4(), userId, verificationToken, expiresAt]
       );
 
-      const verifyUrl = `${process.env.FRONTEND_URL || "https://nested-ark-hpciy33m5-nested-ark.vercel.app"}/verify-email?token=${verificationToken}`;
+      const verifyUrl = `${process.env.FRONTEND_URL || "https://nested-ark-ic5n6890k-nested-ark.vercel.app"}/verify-email?token=${verificationToken}`;
 
       const nodemailer = require("nodemailer");
       const transporter = nodemailer.createTransport({
@@ -1206,7 +1220,7 @@ app.post("/api/auth/forgot-password", async (req: Request, res: Response): Promi
     );
 
     // Build the reset link — raw token goes in URL, hash stays in DB
-    const frontendUrl = process.env.FRONTEND_URL || "https://nested-ark-hpciy33m5-nested-ark.vercel.app";
+    const frontendUrl = process.env.FRONTEND_URL || "https://nested-ark-ic5n6890k-nested-ark.vercel.app";
     const resetLink   = `${frontendUrl}/reset-password/${rawToken}`;
 
     const nodemailer = require("nodemailer");
@@ -3940,7 +3954,7 @@ app.post("/api/payments/initialize", authenticate, async (req: Request, res: Res
       reference,
       currency: 'NGN',
       bearer:   'account', // Platform (main account) covers the Paystack transaction fee
-      callback_url: `${process.env.FRONTEND_URL || 'https://nested-ark-hpciy33m5-nested-ark.vercel.app'}/payment-success?ref=${reference}`,
+      callback_url: `${process.env.FRONTEND_URL || 'https://nested-ark-ic5n6890k-nested-ark.vercel.app'}/payment-success?ref=${reference}`,
       metadata: {
         product:       'nestedark',
         project_id:    projectId,
@@ -5480,12 +5494,22 @@ app.post('/api/rental/onboard-tenant', authenticate, async (req: Request, res: R
     else if (freq === 'biannual')   nextDue.setMonth(nextDue.getMonth() + 6);
     else if (freq === 'annual')     nextDue.setFullYear(nextDue.getFullYear() + 1);
 
-    // 5 — Insert tenancy row
+    // 5 — Upsert tenancy row (idempotent — same unit+email = update, not duplicate)
     const tenRes = await pool.query(
       `INSERT INTO tenancies
          (unit_id, project_id, tenant_name, tenant_email, tenant_phone,
           lease_start, lease_end, rent_amount, currency, payment_day, status)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'ACTIVE')
+       ON CONFLICT (unit_id, tenant_email)
+       DO UPDATE SET
+         tenant_name  = EXCLUDED.tenant_name,
+         tenant_phone = EXCLUDED.tenant_phone,
+         lease_start  = EXCLUDED.lease_start,
+         lease_end    = EXCLUDED.lease_end,
+         rent_amount  = EXCLUDED.rent_amount,
+         payment_day  = EXCLUDED.payment_day,
+         status       = 'ACTIVE',
+         updated_at   = NOW()
        RETURNING *`,
       [
         unit_id, unit.project_id, tenant_name, tenant_email, tenant_phone || null,
@@ -5527,7 +5551,7 @@ app.post('/api/rental/onboard-tenant', authenticate, async (req: Request, res: R
     ).catch(() => {}); // non-fatal
 
     // 9 — Build invite link → PUBLIC page, no auth required
-    const FRONTEND = process.env.FRONTEND_URL || 'https://nested-ark-hpciy33m5-nested-ark.vercel.app';
+    const FRONTEND = process.env.FRONTEND_URL || 'https://nested-ark-ic5n6890k-nested-ark.vercel.app';
     const invite_link = `${FRONTEND}/tenant/invite?token=${tenancy.id}&unit=${unit_id}`;
 
     return res.status(201).json({
@@ -5723,7 +5747,7 @@ app.post('/api/rental/payments/initialize', async (req: Request, res: Response):
         amount: amountKobo,
         reference,
         currency: t.currency || 'NGN',
-        callback_url: `${process.env.FRONTEND_URL || 'https://nested-ark-hpciy33m5-nested-ark.vercel.app'}/tenant/pay/success?reference=${reference}`,
+        callback_url: `${process.env.FRONTEND_URL || 'https://nested-ark-ic5n6890k-nested-ark.vercel.app'}/tenant/pay/success?reference=${reference}`,
         metadata: {
           product:         'nestedark',
           payment_type:    'RENT',
@@ -6913,44 +6937,51 @@ app.get('/api/flex-pay/receipt/:contributionId', authenticate, async (req: Reque
   }
 });
 
-// ── 3. GET /api/tenant/my-tenancy — resolve active tenancy from auth user ─────
+// ── 3. GET /api/tenant/my-tenancy — resolve active tenancy + full fee/bank details ──
 app.get('/api/tenant/my-tenancy', authenticate, async (req: Request, res: Response): Promise<any> => {
   const userId = (req as any).userId;
+  const FULL_SELECT = `
+    SELECT
+      t.id AS tenancy_id, t.unit_id, t.project_id, t.tenant_name, t.tenant_email,
+      t.guarantor_json, t.digital_signature_url, t.tenant_score, t.status,
+      t.former_landlord_contact, t.reason_for_quit, t.litigation_history,
+      t.lease_start, t.lease_end, t.rent_amount AS tenancy_rent,
+      COALESCE(t.payment_frequency, ru.payment_frequency, 'MONTHLY') AS payment_frequency,
+      -- Unit details
+      ru.unit_name, ru.unit_type, ru.bedrooms, ru.bathrooms, ru.size_sqm,
+      ru.rent_amount, ru.currency,
+      ru.security_deposit, ru.agency_fee, ru.legal_fee, ru.caution_fee, ru.service_charge,
+      ru.bank_name, ru.account_number, ru.account_name, ru.sort_code,
+      -- Project details
+      COALESCE(p.title,          'N/A') AS project_title,
+      COALESCE(p.project_number, 'N/A') AS project_number,
+      COALESCE(p.location,       '')    AS location,
+      COALESCE(p.country,        '')    AS country
+    FROM tenancies t
+    JOIN      rental_units ru ON ru.id = t.unit_id
+    LEFT JOIN projects     p  ON p.id  = t.project_id
+  `;
   try {
-    // First try tenant_user_id link
-    // LEFT JOIN projects so tenancies where project_id is NULL (legacy or not yet backfilled) still return
+    // Primary: match by tenant_user_id
     let tenancy = await pool.query(
-      `SELECT t.id AS tenancy_id, t.unit_id, t.project_id, t.tenant_name, t.tenant_email,
-              t.guarantor_json, t.digital_signature_url, t.tenant_score,
-              t.former_landlord_contact, t.reason_for_quit, t.litigation_history,
-              ru.unit_name,
-              COALESCE(p.title, 'N/A')          AS project_title,
-              COALESCE(p.project_number, 'N/A') AS project_number
-       FROM tenancies t
-       JOIN      rental_units ru ON ru.id = t.unit_id
-       LEFT JOIN projects     p  ON p.id  = t.project_id
-       WHERE t.tenant_user_id = $1 AND t.status = 'ACTIVE'
-       ORDER BY t.created_at DESC LIMIT 1`,
+      `${FULL_SELECT} WHERE t.tenant_user_id = $1 AND t.status = 'ACTIVE' ORDER BY t.created_at DESC LIMIT 1`,
       [userId]
     );
-    // Fallback: match by email
+    // Fallback: match by email (before consume-invite has run)
     if (!tenancy.rows.length) {
       const userRes = await pool.query('SELECT email FROM users WHERE id=$1', [userId]);
       if (userRes.rows.length) {
         tenancy = await pool.query(
-          `SELECT t.id AS tenancy_id, t.unit_id, t.project_id, t.tenant_name, t.tenant_email,
-                  t.guarantor_json, t.digital_signature_url, t.tenant_score,
-                  t.former_landlord_contact, t.reason_for_quit, t.litigation_history,
-                  ru.unit_name,
-                  COALESCE(p.title, 'N/A')          AS project_title,
-                  COALESCE(p.project_number, 'N/A') AS project_number
-           FROM tenancies t
-           JOIN      rental_units ru ON ru.id = t.unit_id
-           LEFT JOIN projects     p  ON p.id  = t.project_id
-           WHERE t.tenant_email = $1 AND t.status = 'ACTIVE'
-           ORDER BY t.created_at DESC LIMIT 1`,
+          `${FULL_SELECT} WHERE t.tenant_email = $1 AND t.status = 'ACTIVE' ORDER BY t.created_at DESC LIMIT 1`,
           [userRes.rows[0].email]
         );
+        // Auto-link if found by email
+        if (tenancy.rows.length) {
+          await pool.query(
+            `UPDATE tenancies SET tenant_user_id=$1 WHERE id=$2 AND tenant_user_id IS NULL`,
+            [userId, tenancy.rows[0].tenancy_id]
+          ).catch(() => {});
+        }
       }
     }
     if (!tenancy.rows.length) return res.status(404).json({ error: 'No active tenancy found for this account' });
@@ -7095,7 +7126,7 @@ app.post('/api/flex-pay/contribute', authenticate, async (req: Request, res: Res
         const contributionId = contribRes.rows[0]?.id ?? vault_id;
         const receiptNumber  = `ARK-RCT-${new Date().getFullYear()}-${contributionId.slice(0,8).toUpperCase()}`;
         const paidAtStr      = new Date().toLocaleDateString('en-GB', { day:'2-digit', month:'long', year:'numeric', hour12:false });
-        const frontendUrl    = process.env.FRONTEND_URL || 'https://nested-ark-hpciy33m5-nested-ark.vercel.app';
+        const frontendUrl    = process.env.FRONTEND_URL || 'https://nested-ark-ic5n6890k-nested-ark.vercel.app';
 
         const receiptHtml = buildReceiptHTML({
           receiptNumber,
@@ -7569,14 +7600,14 @@ app.get("/api/rental/invite-link/:unitId", async (req: Request, res: Response): 
       [unitId]
     );
     const unit = unitRes.rows[0];
-    const frontendUrl = process.env.FRONTEND_URL || 'https://nested-ark-hpciy33m5-nested-ark.vercel.app';
+    const frontendUrl = process.env.FRONTEND_URL || 'https://nested-ark-ic5n6890k-nested-ark.vercel.app';
     const onboardUrl  = `${frontendUrl}/onboard/${unitId}`;
     const unitLabel   = unit ? `${unit.unit_name} at ${unit.project_title}` : 'a property managed by Nested Ark';
     const rentLabel   = unit ? ` | Rent: ${unit.currency || 'NGN'} ${Number(unit.rent_amount).toLocaleString()}` : '';
     const message     = `*Nested Ark — Tenant Onboarding* 🏠\n\nYou have been invited to set up your digital tenancy for *${unitLabel}*${rentLabel}.\n\nClick the link below to verify your profile and choose your payment schedule (Weekly / Monthly / Quarterly).\n\nLink: ${onboardUrl}\n\n_Secured by Nested Ark Infrastructure OS_`;
     return res.json({ url: onboardUrl, whatsapp_link: `https://wa.me/?text=${encodeURIComponent(message)}`, unit_name: unit?.unit_name ?? '', project_title: unit?.project_title ?? '' });
   } catch {
-    const frontendUrl = process.env.FRONTEND_URL || 'https://nested-ark-hpciy33m5-nested-ark.vercel.app';
+    const frontendUrl = process.env.FRONTEND_URL || 'https://nested-ark-ic5n6890k-nested-ark.vercel.app';
     const onboardUrl  = `${frontendUrl}/onboard/${unitId}`;
     const message     = `*Nested Ark Infrastructure Invite* 🏠\n\nYou have been invited to onboard as a tenant. Click to set up your profile.\n\nLink: ${onboardUrl}`;
     return res.json({ url: onboardUrl, whatsapp_link: `https://wa.me/?text=${encodeURIComponent(message)}` });
@@ -7686,7 +7717,7 @@ app.post('/api/tenant/onboard', async (req: Request, res: Response): Promise<any
     await client.query('COMMIT');
 
     // ── Dual-channel welcome (non-blocking) ────────────────────────────────
-    const frontendUrl = process.env.FRONTEND_URL || 'https://nested-ark-hpciy33m5-nested-ark.vercel.app';
+    const frontendUrl = process.env.FRONTEND_URL || 'https://nested-ark-ic5n6890k-nested-ark.vercel.app';
     setImmediate(async () => {
       try {
         const emailHtml = arkEmail(
