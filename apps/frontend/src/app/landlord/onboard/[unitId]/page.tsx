@@ -253,49 +253,93 @@ export default function OnboardTenantPage() {
   );
 
   // ── SUCCESS UI ────────────────────────────────────────────────────────────
-  if (success) return (
-    <div className="min-h-screen bg-[#050505] text-white flex flex-col">
-      <Navbar />
-      <main className="flex-1 flex items-center justify-center px-6 py-20">
-        <div className="max-w-md w-full space-y-6 text-center">
-          <div className="w-16 h-16 rounded-2xl bg-teal-500/10 border border-teal-500/30 flex items-center justify-center mx-auto">
-            <CheckCircle2 size={28} className="text-teal-400" />
-          </div>
+  if (success) {
+    const whatsappUrl = inviteLink
+      ? `https://wa.me/${form.tenant_phone.replace(/\D/g, '')}?text=${encodeURIComponent(
+          `Hello ${form.tenant_name},\n\nYou have been invited to onboard as a tenant at ${unit?.unit_name || 'your new unit'} via Nested Ark OS.\n\nPlease click the link below to complete your KYC, sign your tenancy agreement, and set up your Flex-Pay vault:\n\n${inviteLink}\n\nThis is a secure, one-time link. Contact your landlord if you have any questions.`
+        )}`
+      : '';
+    const emailUrl = inviteLink
+      ? `mailto:${form.tenant_email}?subject=${encodeURIComponent('Your Nested Ark Tenancy Invite')}&body=${encodeURIComponent(
+          `Dear ${form.tenant_name},\n\nYou have been invited to onboard as a tenant at ${unit?.unit_name || 'your unit'} via Nested Ark OS.\n\nPlease use the secure link below to complete your onboarding:\n\n${inviteLink}\n\nThis link contains your unique tenant token. Please do not share it with others.\n\nBest regards,\nNested Ark OS`
+        )}`
+      : '';
+    const smsUrl = inviteLink
+      ? `sms:${form.tenant_phone}?body=${encodeURIComponent(
+          `Hi ${form.tenant_name}, your Nested Ark tenancy invite for ${unit?.unit_name || 'your unit'}: ${inviteLink}`
+        )}`
+      : '';
 
-          <div>
-            <h1 className="text-xl font-black uppercase tracking-tight mb-2">Tenant Onboarded</h1>
-            <p className="text-zinc-500 text-sm">
-              {form.tenant_name} has been invited to {unit.unit_name}.
-              An onboarding link has been generated.
-            </p>
-          </div>
-
-          {inviteLink && (
-            <div className="p-4 rounded-xl border border-teal-500/20 bg-teal-500/5">
-              <p className="text-[10px] text-zinc-500 uppercase font-black mb-2">Invite Link</p>
-              <p className="font-mono text-xs text-teal-400 break-all">{inviteLink}</p>
-              <button
-                onClick={() => navigator.clipboard.writeText(inviteLink)}
-                className="mt-3 text-[10px] font-black uppercase text-zinc-400 hover:text-white transition-colors"
-              >
-                Copy Link
-              </button>
+    return (
+      <div className="min-h-screen bg-[#050505] text-white flex flex-col">
+        <Navbar />
+        <main className="flex-1 flex items-center justify-center px-6 py-20">
+          <div className="max-w-md w-full space-y-6 text-center">
+            <div className="w-16 h-16 rounded-2xl bg-teal-500/10 border border-teal-500/30 flex items-center justify-center mx-auto">
+              <CheckCircle2 size={28} className="text-teal-400" />
             </div>
-          )}
 
-          <div className="flex gap-3">
+            <div>
+              <h1 className="text-xl font-black uppercase tracking-tight mb-2">Tenant Onboarded</h1>
+              <p className="text-zinc-500 text-sm">
+                {form.tenant_name} has been invited to {unit?.unit_name}.
+                An onboarding link has been generated.
+              </p>
+            </div>
+
+            {inviteLink && (
+              <div className="p-4 rounded-xl border border-teal-500/20 bg-teal-500/5 text-left">
+                <p className="text-[10px] text-zinc-500 uppercase font-black mb-2">Invite Link</p>
+                <p className="font-mono text-xs text-teal-400 break-all mb-3">{inviteLink}</p>
+                <button
+                  onClick={() => { navigator.clipboard.writeText(inviteLink); }}
+                  className="w-full py-2 text-[10px] font-black uppercase border border-teal-500/30 text-teal-400 rounded-lg hover:bg-teal-500/10 transition-colors"
+                >
+                  📋 Copy Link
+                </button>
+              </div>
+            )}
+
+            {/* Share Buttons */}
+            <div className="space-y-2">
+              <p className="text-[10px] text-zinc-500 uppercase font-black tracking-widest">Send Invite Via</p>
+              <div className="grid grid-cols-3 gap-2">
+                {whatsappUrl && (
+                  <a href={whatsappUrl} target="_blank" rel="noopener noreferrer"
+                    className="flex flex-col items-center gap-1.5 p-3 rounded-xl border border-green-500/30 bg-green-500/10 text-green-400 hover:bg-green-500/20 transition-all">
+                    <svg viewBox="0 0 24 24" className="w-5 h-5 fill-current"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347z"/><path d="M12 0C5.373 0 0 5.373 0 12c0 2.116.553 4.103 1.523 5.824L0 24l6.336-1.498A11.955 11.955 0 0 0 12 24c6.627 0 12-5.373 12-12S18.627 0 12 0zm0 21.818a9.818 9.818 0 0 1-5.013-1.376l-.36-.214-3.732.882.934-3.611-.235-.372A9.818 9.818 0 0 1 2.182 12C2.182 6.58 6.58 2.182 12 2.182c5.42 0 9.818 4.398 9.818 9.818 0 5.42-4.398 9.818-9.818 9.818z"/></svg>
+                    <span className="text-[9px] font-black uppercase">WhatsApp</span>
+                  </a>
+                )}
+                {emailUrl && (
+                  <a href={emailUrl}
+                    className="flex flex-col items-center gap-1.5 p-3 rounded-xl border border-blue-500/30 bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 transition-all">
+                    <Mail size={20} />
+                    <span className="text-[9px] font-black uppercase">Email</span>
+                  </a>
+                )}
+                {smsUrl && (
+                  <a href={smsUrl}
+                    className="flex flex-col items-center gap-1.5 p-3 rounded-xl border border-purple-500/30 bg-purple-500/10 text-purple-400 hover:bg-purple-500/20 transition-all">
+                    <Phone size={20} />
+                    <span className="text-[9px] font-black uppercase">SMS</span>
+                  </a>
+                )}
+              </div>
+            </div>
+
             <Link
               href="/landlord/tenants"
-              className="flex-1 flex items-center justify-center gap-2 py-3 bg-teal-500 text-black font-black text-xs uppercase tracking-widest rounded-xl hover:bg-teal-400 transition-all"
+              className="flex items-center justify-center gap-2 py-3 bg-teal-500 text-black font-black text-xs uppercase tracking-widest rounded-xl hover:bg-teal-400 transition-all"
             >
               View All Tenants <ChevronRight size={14} />
             </Link>
           </div>
-        </div>
-      </main>
-      <Footer />
-    </div>
-  );
+        </main>
+        <Footer />
+      </div>
+    );
+  }
 
   // ── MAIN ONBOARDING FORM ──────────────────────────────────────────────────
   return (
