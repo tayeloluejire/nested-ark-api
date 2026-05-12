@@ -1,214 +1,230 @@
 'use client';
 export const dynamic = 'force-dynamic';
 /**
- * /register/page.tsx
- * Self-registration. Captures both DB role (sent to backend)
- * and accountType (stored in localStorage — not sent to backend).
+ * src/app/register/page.tsx
  *
- * Role→accountType mapping:
- *   DEVELOPER + "I own rental properties" → accountType=LANDLORD → /landlord/tenants
- *   DEVELOPER + "I build infrastructure"  → accountType=INFRASTRUCTURE → /projects/my
- *   DEVELOPER + "I invest from diaspora"  → accountType=DIASPORA → /projects/my
- *   INVESTOR                              → accountType=INVESTOR → /portfolio
- *   CONTRACTOR                            → accountType=CONTRACTOR → /dashboard
- *   SUPPLIER                              → accountType=SUPPLIER → /dashboard
- *   BANK                                  → accountType=BANK → /dashboard
+ * Handles two modes:
+ * 1. TENANT INVITE mode: ?token=UUID&unit=UUID&email=...&role=TENANT
+ *    - Pre-fills email, locks role to TENANT
+ *    - After register → calls POST /api/rental/consume-invite → /tenant/dashboard
  *
- * NOT self-registerable: TENANT (landlord onboards), GOVERNMENT, ADMIN, VERIFIER.
+ * 2. NORMAL mode: user selects their role
+ *    - After register → role-based redirect
  */
-import { useState, Suspense } from 'react';
+import { useState, useEffect, Suspense } from 'react';
+import { useSearchParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useAuth } from '@/lib/AuthContext';
-import type { DbRole, AccountType } from '@/lib/AuthContext';
-import { Loader2, AlertCircle, Eye, EyeOff, User, Mail, Phone, Lock, ChevronRight } from 'lucide-react';
+import api from '@/lib/api';
+import { Loader2, AlertCircle, ShieldCheck, Building2, Home } from 'lucide-react';
 
-interface RoleOption {
-  dbRole:      DbRole;
-  accountType: AccountType;
-  label:       string;
-  sublabel:    string;
-  desc:        string;
-  emoji:       string;
-}
-
-const ROLE_OPTIONS: RoleOption[] = [
-  {
-    dbRole:'DEVELOPER', accountType:'LANDLORD',
-    label:'Property Landlord', sublabel:'Rental Management',
-    desc:'Own residential or commercial rental units. Onboard tenants, manage Flex-Pay vaults, issue legal notices.',
-    emoji:'🏠',
-  },
-  {
-    dbRole:'DEVELOPER', accountType:'INFRASTRUCTURE',
-    label:'Infrastructure Developer', sublabel:'Project Submission',
-    desc:'Submit roads, bridges, energy, housing projects. Manage milestones, contractors, and investor bids.',
-    emoji:'🏗️',
-  },
-  {
-    dbRole:'DEVELOPER', accountType:'DIASPORA',
-    label:'Diaspora Developer', sublabel:'Remote Investment',
-    desc:'Invest in and build infrastructure from abroad. Same powers as infrastructure developer — diaspora-flagged.',
-    emoji:'🌍',
-  },
-  {
-    dbRole:'INVESTOR', accountType:'INVESTOR',
-    label:'Investor', sublabel:'Portfolio & ROI',
-    desc:'Browse vetted projects, commit capital, track returns, and receive rental income distributions.',
-    emoji:'📈',
-  },
-  {
-    dbRole:'CONTRACTOR', accountType:'CONTRACTOR',
-    label:'Contractor', sublabel:'Milestone Delivery',
-    desc:'Bid on project milestones. Receive escrow-backed payments on verified completion.',
-    emoji:'🔧',
-  },
-  {
-    dbRole:'SUPPLIER', accountType:'SUPPLIER',
-    label:'Supply Partner', sublabel:'Materials & Logistics',
-    desc:'Supply materials and services to infrastructure projects listed on the platform.',
-    emoji:'📦',
-  },
-  {
-    dbRole:'BANK', accountType:'BANK',
-    label:'Bank / Financier', sublabel:'Project Finance',
-    desc:'Co-fund large infrastructure projects. Access verified project documentation and financial models.',
-    emoji:'🏦',
-  },
-];
+const ROLES = [
+  { id: 'LANDLORD',        label: '🏠 Property Landlord',       sub: 'Rental Management',       desc: 'Own residential or commercial rental units. Onboard tenants, manage Flex-Pay vaults, issue legal notices.', dbRole: 'DEVELOPER', accountType: 'LANDLORD' },
+  { id: 'INFRASTRUCTURE',  label: '🏗️ Infrastructure Developer', sub: 'Project Submission',       desc: 'Submit roads, bridges, energy, housing projects. Manage milestones, contractors, and investor bids.',       dbRole: 'DEVELOPER', accountType: 'INFRASTRUCTURE' },
+  { id: 'DIASPORA',        label: '🌍 Diaspora Developer',       sub: 'Remote Investment',        desc: 'Invest in and build infrastructure from abroad. Same powers as infrastructure developer — diaspora-flagged.',  dbRole: 'DEVELOPER', accountType: 'DIASPORA' },
+  { id: 'INVESTOR',        label: '📈 Investor',                 sub: 'Portfolio & ROI',          desc: 'Browse vetted projects, commit capital, track returns, and receive rental income distributions.',             dbRole: 'INVESTOR',  accountType: 'INVESTOR' },
+  { id: 'CONTRACTOR',      label: '🔧 Contractor',               sub: 'Milestone Delivery',       desc: 'Bid on project milestones. Receive escrow-backed payments on verified completion.',                          dbRole: 'CONTRACTOR', accountType: 'CONTRACTOR' },
+  { id: 'SUPPLIER',        label: '📦 Supply Partner',           sub: 'Materials & Logistics',    desc: 'Supply materials and services to infrastructure projects listed on the platform.',                            dbRole: 'SUPPLIER',  accountType: 'SUPPLIER' },
+  { id: 'BANK',            label: '🏦 Bank / Financier',         sub: 'Project Finance',          desc: 'Co-fund large infrastructure projects. Access verified project documentation and financial models.',          dbRole: 'BANK',      accountType: 'BANK' },
+] as const;
 
 function RegisterContent() {
-  const { register } = useAuth();
-  const [selected, setSelected] = useState<RoleOption>(ROLE_OPTIONS[0]);
-  const [form, setForm] = useState({ full_name:'', email:'', phone:'', password:'' });
-  const [showPw,  setShowPw]  = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [error,   setError]   = useState('');
-  const set = (k:string, v:string) => setForm(f=>({...f,[k]:v}));
+  const searchParams = useSearchParams();
+  const router       = useRouter();
+  const { register, loading: authLoading } = useAuth();
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!form.full_name||!form.email||!form.password){setError('Name, email and password are required.');return;}
-    if (form.password.length<8){setError('Password must be at least 8 characters.');return;}
-    setLoading(true);setError('');
-    try {
-      await register({
-        ...form,
-        role:        selected.dbRole,
-        accountType: selected.accountType,
-      });
-    } catch(ex:any){
-      setError(ex?.response?.data?.error??'Registration failed. Please try again.');
-    } finally { setLoading(false); }
+  // Invite mode params
+  const inviteToken = searchParams.get('token') ?? '';
+  const inviteUnit  = searchParams.get('unit')  ?? '';
+  const inviteEmail = searchParams.get('email') ?? '';
+  const forceRole   = searchParams.get('role')  ?? '';
+  const isTenantInvite = forceRole === 'TENANT' && !!inviteToken;
+
+  const [selectedRole, setSelectedRole] = useState<typeof ROLES[number] | null>(null);
+  const [form, setForm] = useState({ full_name: '', email: inviteEmail, phone: '', password: '' });
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
+
+  // Pre-select TENANT role and lock if invite
+  useEffect(() => {
+    if (isTenantInvite) {
+      setForm(f => ({ ...f, email: inviteEmail }));
+    }
+  }, [isTenantInvite, inviteEmail]);
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setForm(f => ({ ...f, [e.target.name]: e.target.value }));
   };
 
-  return (
-    <div className="min-h-screen bg-[#050505] text-white flex items-center justify-center px-6 py-12">
-      <div className="w-full max-w-lg space-y-8">
+  const handleSubmit = async () => {
+    if (!form.full_name.trim() || !form.email.trim() || !form.password) {
+      setError('Full name, email, and password are required.'); return;
+    }
+    if (!isTenantInvite && !selectedRole) {
+      setError('Please select your account type.'); return;
+    }
 
+    setSubmitting(true); setError('');
+    try {
+      if (isTenantInvite) {
+        // Register with TENANT role
+        await register({
+          full_name: form.full_name.trim(),
+          email: form.email.trim(),
+          phone: form.phone.trim() || undefined,
+          password: form.password,
+          role: 'TENANT',
+          accountType: 'TENANT',
+        });
+        // Consume the invite to link tenancy
+        await api.post('/api/rental/consume-invite', { tenancy_id: inviteToken });
+        router.push('/tenant/dashboard');
+      } else {
+        const role = selectedRole!;
+        await register({
+          full_name: form.full_name.trim(),
+          email: form.email.trim(),
+          phone: form.phone.trim() || undefined,
+          password: form.password,
+          role: role.dbRole as any,
+          accountType: role.accountType as any,
+        });
+        // AuthContext handles roleHomePath redirect
+      }
+    } catch (e: any) {
+      setError(e?.response?.data?.error ?? e?.message ?? 'Registration failed. Please try again.');
+      setSubmitting(false);
+    }
+  };
+
+  if (authLoading) return (
+    <div className="min-h-screen bg-[#050505] flex items-center justify-center">
+      <Loader2 className="animate-spin text-teal-500" size={32} />
+    </div>
+  );
+
+  return (
+    <div className="min-h-screen bg-[#050505] text-white flex flex-col">
+      {/* Top bar */}
+      <div className="border-b border-zinc-900 bg-black/80 px-6 py-3 flex items-center gap-3">
+        <div className="w-6 h-6 bg-teal-500 rounded-md flex items-center justify-center">
+          <span className="text-black font-black text-[9px]">NA</span>
+        </div>
+        <span className="font-black uppercase text-xs tracking-widest">Nested Ark</span>
+        <Link href="/login" className="ml-auto text-[10px] text-zinc-500 hover:text-white transition-colors font-bold uppercase tracking-widest">Sign In</Link>
+      </div>
+
+      <main className="flex-1 max-w-xl mx-auto px-6 py-12 w-full space-y-8">
+
+        {/* Header */}
         <div className="text-center space-y-2">
-          <p className="text-[9px] text-teal-500 font-mono font-black tracking-[0.3em] uppercase">Nested Ark</p>
-          <h1 className="text-3xl font-black uppercase tracking-tighter">Create Account</h1>
-          <p className="text-zinc-500 text-sm">
-            Tenant?{' '}
-            <span className="text-zinc-400 font-bold">Your landlord will send you an invite link.</span>
-          </p>
+          <div className="w-14 h-14 rounded-2xl bg-teal-500/10 border border-teal-500/30 flex items-center justify-center mx-auto">
+            {isTenantInvite ? <Home size={24} className="text-teal-400" /> : <ShieldCheck size={24} className="text-teal-400" />}
+          </div>
+          <h1 className="text-2xl font-black uppercase tracking-tight">Create Account</h1>
+          {isTenantInvite
+            ? <p className="text-zinc-500 text-sm">Complete your tenant registration to activate your tenancy.</p>
+            : <p className="text-zinc-500 text-sm">Tenant? Your landlord will send you an invite link.</p>
+          }
         </div>
 
-        {error && (
-          <div className="p-3 rounded-xl border border-red-500/20 bg-red-500/5 text-red-400 text-xs font-bold flex items-center gap-2">
-            <AlertCircle size={13}/> {error}
-          </div>
-        )}
-
-        <form onSubmit={handleSubmit} className="space-y-5">
-
-          {/* Role + accountType picker */}
-          <div className="space-y-2">
-            <label className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest block">I am a…</label>
+        {/* Role picker — only for non-tenant-invite */}
+        {!isTenantInvite && (
+          <div>
+            <p className="text-[10px] text-zinc-500 uppercase font-black tracking-widest mb-4">I am a…</p>
             <div className="space-y-2">
-              {ROLE_OPTIONS.map(r => (
-                <button key={`${r.dbRole}-${r.accountType}`} type="button"
-                  onClick={() => setSelected(r)}
-                  className={`w-full flex items-start gap-3 p-3 rounded-xl border text-left transition-all ${selected.accountType===r.accountType&&selected.dbRole===r.dbRole?'border-teal-500/40 bg-teal-500/10':'border-zinc-800 bg-zinc-900/20 hover:border-zinc-700'}`}>
-                  <span className="text-xl flex-shrink-0 mt-0.5">{r.emoji}</span>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center justify-between gap-2">
-                      <p className={`text-xs font-black uppercase tracking-tight ${selected.accountType===r.accountType&&selected.dbRole===r.dbRole?'text-teal-400':'text-zinc-300'}`}>
-                        {r.label}
-                      </p>
-                      <span className="text-[7px] text-zinc-600 border border-zinc-800 px-1.5 py-0.5 rounded font-mono flex-shrink-0">
-                        {r.sublabel}
-                      </span>
+              {ROLES.map(role => (
+                <button key={role.id} onClick={() => setSelectedRole(role)}
+                  className={`w-full p-4 rounded-xl border text-left transition-all ${
+                    selectedRole?.id === role.id
+                      ? 'border-teal-500/60 bg-teal-500/10'
+                      : 'border-zinc-800 bg-zinc-900/20 hover:border-zinc-700'
+                  }`}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="font-black text-sm">{role.label}</p>
+                      <p className="text-[9px] text-teal-500 uppercase font-bold tracking-widest mt-0.5">{role.sub}</p>
+                      <p className="text-zinc-500 text-[10px] mt-1 leading-relaxed">{role.desc}</p>
                     </div>
-                    <p className="text-[9px] text-zinc-500 mt-0.5 leading-relaxed">{r.desc}</p>
+                    {selectedRole?.id === role.id && (
+                      <div className="w-4 h-4 rounded-full bg-teal-500 flex items-center justify-center flex-shrink-0 mt-0.5">
+                        <div className="w-2 h-2 rounded-full bg-black" />
+                      </div>
+                    )}
                   </div>
-                  {selected.accountType===r.accountType&&selected.dbRole===r.dbRole && (
-                    <div className="w-3 h-3 rounded-full bg-teal-500 flex-shrink-0 mt-1"/>
-                  )}
+                  <p className="text-[8px] text-zinc-700 font-mono mt-2">DB role: {role.dbRole} · Account type: {role.accountType}</p>
                 </button>
               ))}
             </div>
-            {/* Show what will be stored */}
-            <p className="text-[8px] text-zinc-700 font-mono px-1">
-              DB role: <span className="text-zinc-500">{selected.dbRole}</span>
-              {' '}· Account type: <span className="text-zinc-500">{selected.accountType}</span>
-            </p>
           </div>
+        )}
 
-          {/* Fields */}
+        {/* Tenant badge if invite mode */}
+        {isTenantInvite && (
+          <div className="p-4 rounded-xl border border-teal-500/20 bg-teal-500/5 flex items-center gap-3">
+            <Home size={18} className="text-teal-400 flex-shrink-0" />
+            <div>
+              <p className="text-xs font-black text-teal-400 uppercase tracking-widest">Tenant Account</p>
+              <p className="text-zinc-500 text-[10px] mt-0.5">Your account will be linked to your tenancy after registration.</p>
+            </div>
+          </div>
+        )}
+
+        {/* Form */}
+        <div className="space-y-4">
           {[
-            {k:'full_name', label:'Full Name *',    type:'text',  Icon:User,  placeholder:'Your full name',         required:true},
-            {k:'email',     label:'Email *',         type:'email', Icon:Mail,  placeholder:'you@email.com',          required:true},
-            {k:'phone',     label:'Phone',           type:'tel',   Icon:Phone, placeholder:'+234 800 000 0000',      required:false},
-          ].map(f=>(
-            <div key={f.k} className="space-y-1.5">
-              <label className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest block">{f.label}</label>
-              <div className="relative">
-                <f.Icon size={14} className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-600"/>
-                <input type={f.type} value={(form as any)[f.k]} onChange={e=>set(f.k,e.target.value)}
-                  placeholder={f.placeholder} required={f.required}
-                  className="w-full bg-zinc-900 border border-zinc-800 rounded-xl pl-10 pr-4 py-3 text-sm text-white placeholder:text-zinc-600 focus:border-teal-500 outline-none"/>
-              </div>
+            { name: 'full_name', label: 'Full Name *', placeholder: 'e.g. Amaka Okonkwo', type: 'text' },
+            { name: 'email',     label: 'Email *',      placeholder: 'you@email.com',       type: 'email', locked: isTenantInvite && !!inviteEmail },
+            { name: 'phone',     label: 'Phone',        placeholder: '+234 801 234 5678',   type: 'tel' },
+            { name: 'password',  label: 'Password *',   placeholder: '••••••••',            type: 'password' },
+          ].map(f => (
+            <div key={f.name}>
+              <label className="block text-[10px] text-zinc-400 uppercase font-black tracking-widest mb-2">{f.label}</label>
+              <input
+                name={f.name} type={f.type}
+                value={form[f.name as keyof typeof form]}
+                onChange={handleChange}
+                placeholder={f.placeholder}
+                readOnly={f.locked}
+                className={`w-full bg-zinc-900 border border-zinc-800 px-4 py-3.5 rounded-xl text-sm outline-none focus:border-teal-500 transition-colors ${f.locked ? 'opacity-60 cursor-not-allowed' : ''}`}
+              />
             </div>
           ))}
+        </div>
 
-          <div className="space-y-1.5">
-            <label className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest block">Password *</label>
-            <div className="relative">
-              <Lock size={14} className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-600"/>
-              <input type={showPw?'text':'password'} autoComplete="new-password" value={form.password} onChange={e=>set('password',e.target.value)} required
-                placeholder="Minimum 8 characters"
-                className="w-full bg-zinc-900 border border-zinc-800 rounded-xl pl-10 pr-12 py-3 text-sm text-white placeholder:text-zinc-600 focus:border-teal-500 outline-none"/>
-              <button type="button" onClick={()=>setShowPw(!showPw)} className="absolute right-4 top-1/2 -translate-y-1/2 text-zinc-600 hover:text-white">
-                {showPw?<EyeOff size={14}/>:<Eye size={14}/>}
-              </button>
-            </div>
+        {error && (
+          <div className="p-4 rounded-xl border border-red-500/20 bg-red-500/5 text-red-400 text-sm font-bold flex items-center gap-2">
+            <AlertCircle size={14} className="flex-shrink-0" /> {error}
           </div>
+        )}
 
-          <button type="submit" disabled={loading}
-            className="w-full py-4 bg-teal-500 text-black rounded-2xl font-black text-sm uppercase tracking-widest hover:bg-teal-400 transition-all disabled:opacity-60 flex items-center justify-center gap-2">
-            {loading?<Loader2 size={16} className="animate-spin"/>:<ChevronRight size={16}/>}
-            {loading?'Creating account…':'Create Account'}
-          </button>
-        </form>
+        <button onClick={handleSubmit} disabled={submitting || (!isTenantInvite && !selectedRole)}
+          className="w-full py-4 bg-teal-500 text-black font-black uppercase tracking-widest rounded-xl hover:bg-teal-400 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2">
+          {submitting ? <><Loader2 size={16} className="animate-spin" /> Creating Account…</> : 'Create Account'}
+        </button>
 
-        <p className="text-center text-xs text-zinc-600">
+        <p className="text-center text-zinc-600 text-xs">
           Already have an account?{' '}
-          <Link href="/login" className="text-teal-500 hover:text-white font-bold transition-colors">Sign In</Link>
+          <Link href="/login" className="text-teal-500 hover:underline font-bold">Sign In</Link>
         </p>
-        <p className="text-center text-[9px] text-zinc-700">
-          Government · Admin · Verifier accounts are assigned by system admin.{' '}
-          Contact <span className="text-zinc-500">nestedark@gmail.com</span>
+
+        <p className="text-center text-zinc-700 text-[9px]">
+          Government · Admin · Verifier accounts are assigned by system admin. Contact nestedark@gmail.com
         </p>
-      </div>
+
+      </main>
     </div>
   );
 }
 
-export default function RegisterPage(){
-  return(
-    <Suspense fallback={<div className="h-screen bg-[#050505] flex items-center justify-center"><Loader2 className="animate-spin text-teal-500" size={28}/></div>}>
-      <RegisterContent/>
+export default function RegisterPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-[#050505] flex items-center justify-center">
+        <Loader2 className="animate-spin text-teal-500" size={32} />
+      </div>
+    }>
+      <RegisterContent />
     </Suspense>
   );
 }
