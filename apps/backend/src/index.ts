@@ -981,49 +981,6 @@ const ensureTablesExist = async () => {
       -- Notice auto-increment counter
       CREATE SEQUENCE IF NOT EXISTS notice_number_seq START 1;
 
-      -- ── CANONICAL flex_pay_vaults schema guard ─────────────────────────
-      -- Ensures ALL columns used by INSERT/SELECT are present regardless of
-      -- when the DB was first created. Safe to re-run on every restart.
-      ALTER TABLE flex_pay_vaults ADD COLUMN IF NOT EXISTS vault_balance      DECIMAL(15,2) DEFAULT 0;
-      ALTER TABLE flex_pay_vaults ADD COLUMN IF NOT EXISTS target_amount      DECIMAL(15,2) DEFAULT 0;
-      ALTER TABLE flex_pay_vaults ADD COLUMN IF NOT EXISTS frequency          VARCHAR(20) DEFAULT 'MONTHLY';
-      ALTER TABLE flex_pay_vaults ADD COLUMN IF NOT EXISTS installment_amount DECIMAL(15,2) DEFAULT 0;
-      ALTER TABLE flex_pay_vaults ADD COLUMN IF NOT EXISTS currency           VARCHAR(10) DEFAULT 'NGN';
-      ALTER TABLE flex_pay_vaults ADD COLUMN IF NOT EXISTS next_due_date      DATE;
-      ALTER TABLE flex_pay_vaults ADD COLUMN IF NOT EXISTS cashout_mode       VARCHAR(20) DEFAULT 'LUMP_SUM';
-      ALTER TABLE flex_pay_vaults ADD COLUMN IF NOT EXISTS drawdown_day       INTEGER DEFAULT 1;
-      ALTER TABLE flex_pay_vaults ADD COLUMN IF NOT EXISTS funded_periods     INTEGER DEFAULT 0;
-      ALTER TABLE flex_pay_vaults ADD COLUMN IF NOT EXISTS status             VARCHAR(20) DEFAULT 'ACTIVE';
-      ALTER TABLE flex_pay_vaults ADD COLUMN IF NOT EXISTS unit_id            UUID REFERENCES rental_units(id);
-      ALTER TABLE flex_pay_vaults ADD COLUMN IF NOT EXISTS tenant_user_id     UUID REFERENCES users(id);
-      ALTER TABLE flex_pay_vaults ADD COLUMN IF NOT EXISTS project_id         UUID REFERENCES projects(id);
-      ALTER TABLE flex_pay_vaults ADD COLUMN IF NOT EXISTS updated_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
-      CREATE INDEX IF NOT EXISTS idx_fpv_unit       ON flex_pay_vaults(unit_id)        WHERE unit_id IS NOT NULL;
-      CREATE INDEX IF NOT EXISTS idx_fpv_user       ON flex_pay_vaults(tenant_user_id) WHERE tenant_user_id IS NOT NULL;
-      CREATE INDEX IF NOT EXISTS idx_fpv_proj       ON flex_pay_vaults(project_id)     WHERE project_id IS NOT NULL;
-      CREATE INDEX IF NOT EXISTS idx_fpv_status     ON flex_pay_vaults(status);
-
-      -- ── CANONICAL rental_units schema guard ────────────────────────────
-      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS payment_frequency VARCHAR(20) DEFAULT 'MONTHLY';
-      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS agency_fee        DECIMAL(15,2) DEFAULT 0;
-      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS legal_fee         DECIMAL(15,2) DEFAULT 0;
-      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS caution_fee       DECIMAL(15,2) DEFAULT 0;
-      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS bank_name         VARCHAR(100);
-      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS account_number    VARCHAR(20);
-      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS account_name      VARCHAR(100);
-      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS sort_code         VARCHAR(20);
-      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS size_sqm          DECIMAL(10,2);
-      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS floor_number      INTEGER;
-      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS description       TEXT;
-      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS notes             TEXT;
-      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS status            VARCHAR(20) DEFAULT 'VACANT';
-
-      -- ── CANONICAL tenancies schema guard ───────────────────────────────
-      ALTER TABLE tenancies ADD COLUMN IF NOT EXISTS payment_frequency VARCHAR(20) DEFAULT 'MONTHLY';
-      ALTER TABLE tenancies ADD COLUMN IF NOT EXISTS lease_end         DATE;
-      ALTER TABLE tenancies ADD COLUMN IF NOT EXISTS currency          VARCHAR(10) DEFAULT 'NGN';
-      ALTER TABLE tenancies ADD COLUMN IF NOT EXISTS notes             TEXT;
-
     `);
 
     await client.query('COMMIT');
@@ -1096,7 +1053,7 @@ app.post("/api/auth/register", async (req: Request, res: Response): Promise<any>
         [uuidv4(), userId, verificationToken, expiresAt]
       );
 
-      const verifyUrl = `${process.env.FRONTEND_URL || "https://nested-ark-api.vercel.app"}/verify-email?token=${verificationToken}`;
+      const verifyUrl = `${process.env.FRONTEND_URL || "https://nested-ark-hpciy33m5-nested-ark.vercel.app"}/verify-email?token=${verificationToken}`;
 
       const nodemailer = require("nodemailer");
       const transporter = nodemailer.createTransport({
@@ -1249,7 +1206,7 @@ app.post("/api/auth/forgot-password", async (req: Request, res: Response): Promi
     );
 
     // Build the reset link — raw token goes in URL, hash stays in DB
-    const frontendUrl = process.env.FRONTEND_URL || "https://nested-ark-api.vercel.app";
+    const frontendUrl = process.env.FRONTEND_URL || "https://nested-ark-hpciy33m5-nested-ark.vercel.app";
     const resetLink   = `${frontendUrl}/reset-password/${rawToken}`;
 
     const nodemailer = require("nodemailer");
@@ -3983,7 +3940,7 @@ app.post("/api/payments/initialize", authenticate, async (req: Request, res: Res
       reference,
       currency: 'NGN',
       bearer:   'account', // Platform (main account) covers the Paystack transaction fee
-      callback_url: `${process.env.FRONTEND_URL || 'https://nested-ark-api.vercel.app'}/payment-success?ref=${reference}`,
+      callback_url: `${process.env.FRONTEND_URL || 'https://nested-ark-hpciy33m5-nested-ark.vercel.app'}/payment-success?ref=${reference}`,
       metadata: {
         product:       'nestedark',
         project_id:    projectId,
@@ -5355,6 +5312,37 @@ app.get('/api/rental/units/single/:unitId', authenticate, async (req: Request, r
 // ── POST /api/rental/onboard-tenant — landlord registers a tenant + creates Flex-Pay vault ──
 // Frontend payload: { unit_id, tenant_name, tenant_email, tenant_phone,
 //                     move_in_date, payment_frequency, deposit_amount }
+// ── GET /api/rental/tenants — landlord's full tenant roster ─────────────
+app.get('/api/rental/tenants', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const landlordId = (req as any).userId;
+  try {
+    const r = await pool.query(
+      `SELECT
+         t.id, t.tenant_name, t.tenant_email, t.tenant_phone,
+         t.unit_id, t.status, t.lease_start AS move_in_date, t.lease_end,
+         t.rent_amount, t.currency, t.payment_frequency, t.payment_day,
+         t.tenant_score, t.updated_at,
+         ru.unit_name, ru.unit_type, ru.rent_amount AS unit_rent_amount,
+         ru.currency AS unit_currency,
+         p.title AS project_title, p.project_number,
+         fpv.next_due_date AS next_payment_date,
+         fpv.vault_balance, fpv.status AS vault_status,
+         COALESCE(
+           (SELECT SUM(rp.amount) FROM rent_payments rp WHERE rp.tenancy_id = t.id AND rp.status='PAID'),
+           0
+         ) AS total_paid
+       FROM tenancies t
+       JOIN rental_units ru ON ru.id = t.unit_id
+       JOIN projects p      ON p.id  = t.project_id
+       LEFT JOIN flex_pay_vaults fpv ON fpv.tenancy_id = t.id
+       WHERE p.sponsor_id = $1
+       ORDER BY t.status, t.tenant_name`,
+      [landlordId]
+    );
+    return res.json(r.rows);
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
 app.post('/api/rental/onboard-tenant', authenticate, async (req: Request, res: Response): Promise<any> => {
   const landlordId = (req as any).userId;
   try {
@@ -5646,7 +5634,7 @@ app.post('/api/rental/payments/initialize', async (req: Request, res: Response):
         amount: amountKobo,
         reference,
         currency: t.currency || 'NGN',
-        callback_url: `${process.env.FRONTEND_URL || 'https://nested-ark-api.vercel.app'}/tenant/pay/success?reference=${reference}`,
+        callback_url: `${process.env.FRONTEND_URL || 'https://nested-ark-hpciy33m5-nested-ark.vercel.app'}/tenant/pay/success?reference=${reference}`,
         metadata: {
           product:         'nestedark',
           payment_type:    'RENT',
@@ -7018,7 +7006,7 @@ app.post('/api/flex-pay/contribute', authenticate, async (req: Request, res: Res
         const contributionId = contribRes.rows[0]?.id ?? vault_id;
         const receiptNumber  = `ARK-RCT-${new Date().getFullYear()}-${contributionId.slice(0,8).toUpperCase()}`;
         const paidAtStr      = new Date().toLocaleDateString('en-GB', { day:'2-digit', month:'long', year:'numeric', hour12:false });
-        const frontendUrl    = process.env.FRONTEND_URL || 'https://nested-ark-api.vercel.app';
+        const frontendUrl    = process.env.FRONTEND_URL || 'https://nested-ark-hpciy33m5-nested-ark.vercel.app';
 
         const receiptHtml = buildReceiptHTML({
           receiptNumber,
@@ -7492,14 +7480,14 @@ app.get("/api/rental/invite-link/:unitId", async (req: Request, res: Response): 
       [unitId]
     );
     const unit = unitRes.rows[0];
-    const frontendUrl = process.env.FRONTEND_URL || 'https://nested-ark-api.vercel.app';
+    const frontendUrl = process.env.FRONTEND_URL || 'https://nested-ark-hpciy33m5-nested-ark.vercel.app';
     const onboardUrl  = `${frontendUrl}/onboard/${unitId}`;
     const unitLabel   = unit ? `${unit.unit_name} at ${unit.project_title}` : 'a property managed by Nested Ark';
     const rentLabel   = unit ? ` | Rent: ${unit.currency || 'NGN'} ${Number(unit.rent_amount).toLocaleString()}` : '';
     const message     = `*Nested Ark — Tenant Onboarding* 🏠\n\nYou have been invited to set up your digital tenancy for *${unitLabel}*${rentLabel}.\n\nClick the link below to verify your profile and choose your payment schedule (Weekly / Monthly / Quarterly).\n\nLink: ${onboardUrl}\n\n_Secured by Nested Ark Infrastructure OS_`;
     return res.json({ url: onboardUrl, whatsapp_link: `https://wa.me/?text=${encodeURIComponent(message)}`, unit_name: unit?.unit_name ?? '', project_title: unit?.project_title ?? '' });
   } catch {
-    const frontendUrl = process.env.FRONTEND_URL || 'https://nested-ark-api.vercel.app';
+    const frontendUrl = process.env.FRONTEND_URL || 'https://nested-ark-hpciy33m5-nested-ark.vercel.app';
     const onboardUrl  = `${frontendUrl}/onboard/${unitId}`;
     const message     = `*Nested Ark Infrastructure Invite* 🏠\n\nYou have been invited to onboard as a tenant. Click to set up your profile.\n\nLink: ${onboardUrl}`;
     return res.json({ url: onboardUrl, whatsapp_link: `https://wa.me/?text=${encodeURIComponent(message)}` });
@@ -7609,7 +7597,7 @@ app.post('/api/tenant/onboard', async (req: Request, res: Response): Promise<any
     await client.query('COMMIT');
 
     // ── Dual-channel welcome (non-blocking) ────────────────────────────────
-    const frontendUrl = process.env.FRONTEND_URL || 'https://nested-ark-api.vercel.app';
+    const frontendUrl = process.env.FRONTEND_URL || 'https://nested-ark-hpciy33m5-nested-ark.vercel.app';
     setImmediate(async () => {
       try {
         const emailHtml = arkEmail(
