@@ -116,7 +116,7 @@ export interface RegisterData {
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ROLE ACCESS HELPER (FIX ADDED)
+// ROLE ACCESS HELPER
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const canAccess = (
@@ -150,13 +150,20 @@ function deleteCookie(name: string) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ACCOUNT TYPE DERIVATION
+// ACCOUNT TYPE DERIVATION (FIX 1 APPLIED)
 // ─────────────────────────────────────────────────────────────────────────────
 
 function deriveAccountType(
   role: DbRole,
   storedType?: string | null
 ): AccountType {
+  // HARD LOCK FOR TENANTS
+  // Prevents accidental landlord/developer hydration
+  if (role === 'TENANT') {
+    return 'TENANT';
+  }
+
+  // Respect previously selected compatible type
   if (storedType) {
     const compatible: Record<string, DbRole[]> = {
       LANDLORD: ['DEVELOPER', 'PROJECT_SPONSOR'],
@@ -177,9 +184,6 @@ function deriveAccountType(
   }
 
   switch (role) {
-    case 'TENANT':
-      return 'TENANT';
-
     case 'INVESTOR':
       return 'INVESTOR';
 
@@ -193,8 +197,6 @@ function deriveAccountType(
       return 'BANK';
 
     case 'GOVERNMENT':
-      return 'GOVERNMENT';
-
     case 'VERIFIER':
       return 'GOVERNMENT';
 
@@ -203,6 +205,18 @@ function deriveAccountType(
 
     case 'DEVELOPER':
     case 'PROJECT_SPONSOR':
+      // IMPORTANT:
+      // Preserve LANDLORD if already chosen
+      if (storedType === 'LANDLORD') {
+        return 'LANDLORD';
+      }
+
+      if (storedType === 'DIASPORA') {
+        return 'DIASPORA';
+      }
+
+      return 'INFRASTRUCTURE';
+
     default:
       return 'INFRASTRUCTURE';
   }
@@ -396,6 +410,7 @@ export function AuthProvider({
       ...backendData
     } = data;
 
+    // Persist intended account type BEFORE auth hydration
     if (accountType) {
       localStorage.setItem(
         'ark_account_type',
@@ -412,16 +427,30 @@ export function AuthProvider({
       res.data.tokens?.access_token ??
       res.data.token;
 
+    // HARD ENFORCE TENANT ACCOUNT TYPE (FIX 2 APPLIED)
+    const enforcedAccountType =
+      backendData.role === 'TENANT'
+        ? 'TENANT'
+        : (accountType ?? null);
+
     const u = buildUser(
       res.data.user,
-      accountType ?? null
+      enforcedAccountType
     );
 
     persist(jwt, u);
 
-    router.push(
-      roleHomePath(u.role, u.accountType)
-    );
+    // IMPORTANT:
+    // Prevent redirect race condition.
+    // Tenant invite flow handles redirect itself.
+    if (backendData.role !== 'TENANT') {
+      router.push(
+        roleHomePath(
+          u.role,
+          u.accountType
+        )
+      );
+    }
   };
 
   // ───────────────────────────────────────────────────────────────────────────
