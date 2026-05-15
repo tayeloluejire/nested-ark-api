@@ -981,15 +981,6 @@ const ensureTablesExist = async () => {
       -- Notice auto-increment counter
       CREATE SEQUENCE IF NOT EXISTS notice_number_seq START 1;
 
-      -- ── legal_notices column guards (idempotent, safe on every restart) ──
-      ALTER TABLE legal_notices ADD COLUMN IF NOT EXISTS issued_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
-      ALTER TABLE legal_notices ADD COLUMN IF NOT EXISTS served_at         TIMESTAMP;
-      ALTER TABLE legal_notices ADD COLUMN IF NOT EXISTS response_deadline DATE;
-      ALTER TABLE legal_notices ADD COLUMN IF NOT EXISTS amount_overdue    DECIMAL(15,2);
-      ALTER TABLE legal_notices ADD COLUMN IF NOT EXISTS days_overdue      INTEGER;
-      ALTER TABLE legal_notices ADD COLUMN IF NOT EXISTS ledger_hash       VARCHAR(128);
-      ALTER TABLE legal_notices ADD COLUMN IF NOT EXISTS pdf_url           TEXT;
-
       -- ── Unique constraint so onboard-tenant is idempotent ──────────────────
       -- Prevents Joseph Dimpa ×3 / Okon Mavelous ×2 duplicates.
       -- DROP + re-add pattern is safe with IF NOT EXISTS equivalent:
@@ -3637,11 +3628,8 @@ app.post("/api/payments/webhook",
     }
 
     // ── RENTAL payment: route before the investment handler ────────────────
-    const paymentType    = event.data?.metadata?.payment_type;
-    const txReference    = event.data?.reference || '';
-    const isVaultPayment = paymentType === 'RENT' || txReference.startsWith('ARK-VAULT-');
-
-    if (event.event === 'charge.success' && isVaultPayment) {
+    const paymentType = event.data?.metadata?.payment_type;
+    if (event.event === 'charge.success' && paymentType === 'RENT') {
       const { reference, amount } = event.data;
       const amountNgn = amount / 100;
       const meta      = event.data?.metadata ?? {};
@@ -4039,20 +4027,14 @@ app.get("/api/payments/verify/:reference", authenticate, async (req: Request, re
       );
     }
 
-    const psStatus  = verifyData.data?.status;
-    const amountNgn = verifyData.data?.amount ? verifyData.data.amount / 100 : 0;
-
     return res.json({
-      success:        true,
+      success: true,
       reference,
-      status:         psStatus || dbTx.rows[0]?.status || 'UNKNOWN',
-      payment_status: psStatus === 'success' ? 'COMPLETED' : 'PENDING',
-      amount:         verifyData.data?.amount ?? 0,   // kobo — success page divides by 100
-      amount_ngn:     amountNgn,
-      currency:       verifyData.data?.currency || 'NGN',
-      paid_at:        verifyData.data?.paid_at || dbTx.rows[0]?.paid_at,
-      channel:        verifyData.data?.channel,
-      project_id:     dbTx.rows[0]?.project_id,
+      status: verifyData.data?.status || dbTx.rows[0]?.status || 'UNKNOWN',
+      amount_ngn: verifyData.data?.amount ? verifyData.data.amount / 100 : dbTx.rows[0]?.amount_ngn,
+      paid_at: verifyData.data?.paid_at || dbTx.rows[0]?.paid_at,
+      channel: verifyData.data?.channel,
+      project_id: dbTx.rows[0]?.project_id,
     });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
@@ -5173,43 +5155,94 @@ app.post('/api/landlord/payout', authenticate, async (req: Request, res: Respons
     if (!PAYSTACK_SECRET)
       return res.status(503).json({ error: 'Payment gateway not configured' });
 
-    const reference = `PAYOUT-${uuidv4().split('-')[0].toUpperCase()}-${Date.now()}`;
-    const amountKobo = Math.round(parseFloat(amount_ngn) * 100);
+    const reference    = `PAYOUT-${uuidv4().split('-')[0].toUpperCase()}-${Date.now()}`;
+    const grossNgn     = parseFloat(amount_ngn);
 
-    const transferRes = await fetch(`${PAYSTACK_BASE}/transfer`, {
+    // ── 2% Platform Fee Deduction ─────────────────────────────────────────
+    // Platform takes 2% of every landlord payout as the rental management fee.
+    // Landlord receives 98%. Fee stays in Paystack balance as platform revenue.
+    const PLATFORM_FEE_PCT = 0.02;
+    const platformFeeNgn   = Math.round(grossNgn * PLATFORM_FEE_PCT * 100) / 100;
+    const netToLandlordNgn = Math.round((grossNgn - platformFeeNgn) * 100) / 100;
+    const amountKobo       = Math.round(netToLandlordNgn * 100);  // kobo for Paystack
+
+    // ── SHA-256 immutable hash ────────────────────────────────────────────
+    const h = require('crypto').createHash('sha256')
+      .update(`payout-${reference}-${userId}-${grossNgn}-fee-${platformFeeNgn}-${Date.now()}`)
+      .digest('hex');
+
+    // ── Record platform revenue BEFORE transfer (non-blocking ledger) ─────
+    await pool.query(
+      `INSERT INTO platform_revenue
+         (project_id, amount_ngn, amount_usd, source, pct_applied, gross_amount, ledger_hash)
+       VALUES ($1,$2,$3,'RENTAL_FEE',0.02,$4,$5)`,
+      [
+        project_id ?? null,
+        platformFeeNgn,
+        platformFeeNgn / 1500,
+        grossNgn,
+        h,
+      ]
+    ).catch(() => {}); // non-fatal if platform_revenue table not yet created
+
+    // ── Paystack Transfer: net amount to landlord ─────────────────────────
+    const transferRes = await fetch(\`\${PAYSTACK_BASE}/transfer\`, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${PAYSTACK_SECRET}`, 'Content-Type': 'application/json' },
+      headers: { Authorization: \`Bearer \${PAYSTACK_SECRET}\`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        source: 'balance',
-        amount: amountKobo,
+        source:    'balance',
+        amount:    amountKobo,           // 98% of gross, in kobo
         recipient: a.paystack_recipient_code,
-        reason: reason || `Rental income payout — Nested Ark`,
+        reason:    reason || \`Nested Ark Rental Payout — 2% platform fee deducted\`,
         reference,
-        currency: a.currency || 'NGN',
+        currency:  a.currency || 'NGN',
+        metadata: {
+          gross_amount_ngn:   grossNgn,
+          platform_fee_ngn:   platformFeeNgn,
+          net_to_landlord_ngn: netToLandlordNgn,
+          fee_pct:            '2%',
+          project_id:         project_id ?? null,
+          bank_account_id,
+        },
       }),
     });
     const tData = await transferRes.json() as any;
     if (!tData.status) return res.status(500).json({ error: tData.message || 'Transfer failed' });
 
-    // Log to system ledger
-    const h = require('crypto').createHash('sha256')
-      .update(`payout-${reference}-${userId}-${amount_ngn}-${Date.now()}`)
-      .digest('hex');
+    // ── Immutable system ledger entry ─────────────────────────────────────
     await pool.query(
-      `INSERT INTO system_ledger (transaction_type, payload, immutable_hash)
-       VALUES ('LANDLORD_PAYOUT', $1, $2)`,
-      [JSON.stringify({ reference, amount_ngn, user_id: userId, project_id, bank_account_id, transfer_code: tData.data?.transfer_code }), h]
+      \`INSERT INTO system_ledger (transaction_type, payload, immutable_hash)
+       VALUES ('LANDLORD_PAYOUT', $1, $2)\`,
+      [
+        JSON.stringify({
+          reference,
+          gross_amount_ngn:    grossNgn,
+          platform_fee_ngn:    platformFeeNgn,
+          net_to_landlord_ngn: netToLandlordNgn,
+          fee_pct:             '2%',
+          user_id:             userId,
+          project_id:          project_id ?? null,
+          bank_account_id,
+          transfer_code:       tData.data?.transfer_code,
+          ledger_hash:         h,
+        }),
+        h,
+      ]
     );
 
     return res.json({
-      success: true,
+      success:             true,
       reference,
-      transfer_code: tData.data?.transfer_code,
-      status: tData.data?.status,
-      amount_ngn,
-      account_name: a.account_name,
-      bank_name:    a.bank_name,
-      message: `₦${parseFloat(amount_ngn).toLocaleString()} transfer initiated to ${a.account_name} at ${a.bank_name}`,
+      transfer_code:       tData.data?.transfer_code,
+      status:              tData.data?.status,
+      gross_amount_ngn:    grossNgn,
+      platform_fee_ngn:    platformFeeNgn,
+      net_to_landlord_ngn: netToLandlordNgn,
+      fee_pct:             '2%',
+      account_name:        a.account_name,
+      bank_name:           a.bank_name,
+      ledger_hash:         h,
+      message: \`₦\${netToLandlordNgn.toLocaleString()} transferred to \${a.account_name} at \${a.bank_name}. Platform fee: ₦\${platformFeeNgn.toLocaleString()} (2%).\`,
     });
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
@@ -6450,7 +6483,76 @@ app.post('/api/flex-pay/cashout', authenticate, async (req: Request, res: Respon
     await client.query(`UPDATE flex_pay_vaults SET status='COMPLETED', vault_balance=0, updated_at=NOW() WHERE id=$1`, [vault_id]);
     await client.query(`INSERT INTO system_ledger (transaction_type, payload, immutable_hash) VALUES ($1,$2,$3)`, ['FLEX_CASHOUT', JSON.stringify({ vault_id, mode, gross: v.vault_balance, platform_fee: platformFee, net_payout: netPayout }), h]);
     await client.query('COMMIT');
-    return res.json({ success: true, mode, gross_amount_ngn: parseFloat(v.vault_balance), platform_fee_ngn: platformFee, net_payout_ngn: netPayout, message: mode === 'LUMP_SUM' ? `Lump sum cashout of ₦${netPayout.toLocaleString()} initiated.` : `Drawdown mode activated. ₦${Math.round(netPayout/12).toLocaleString()}/month will be disbursed on day ${v.drawdown_day}.`, ledger_hash: h });
+
+    // ── After commit: trigger Paystack Transfer for LUMP_SUM mode ────────
+    let transferCode: string | null = null;
+    let transferStatus: string      = 'pending';
+
+    if (mode === 'LUMP_SUM' && PAYSTACK_SECRET) {
+      // Look up landlord's verified bank account for this project
+      const bankRes = await pool.query(
+        `SELECT lba.* FROM landlord_bank_accounts lba
+         JOIN projects p ON p.sponsor_id = lba.user_id
+         WHERE p.id = $1 AND lba.paystack_recipient_code IS NOT NULL
+         ORDER BY lba.created_at DESC LIMIT 1`,
+        [v.project_id]
+      );
+
+      if (bankRes.rows.length && bankRes.rows[0].paystack_recipient_code) {
+        const acct          = bankRes.rows[0];
+        const payoutRef     = `CASHOUT-${vault_id.slice(0,8).toUpperCase()}-${Date.now()}`;
+        const netKobo       = Math.round(netPayout * 100);
+        const cashoutHash   = crypto.createHash('sha256')
+          .update(`cashout-transfer-${vault_id}-${netPayout}-${payoutRef}`).digest('hex');
+
+        const tRes = await fetch(`${PAYSTACK_BASE}/transfer`, {
+          method:  'POST',
+          headers: { Authorization: `Bearer ${PAYSTACK_SECRET}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            source:    'balance',
+            amount:    netKobo,
+            recipient: acct.paystack_recipient_code,
+            reason:    `Nested Ark Rental Cashout — vault ${vault_id.slice(0,8)}`,
+            reference: payoutRef,
+            currency:  v.currency || 'NGN',
+            metadata: {
+              vault_id,
+              gross_amount_ngn:    parseFloat(v.vault_balance),
+              platform_fee_ngn:    platformFee,
+              net_to_landlord_ngn: netPayout,
+              fee_pct:             '2%',
+              cashout_hash:        cashoutHash,
+            },
+          }),
+        }).then(r => r.json()).catch(() => ({ status: false })) as any;
+
+        if (tRes.status) {
+          transferCode   = tRes.data?.transfer_code;
+          transferStatus = tRes.data?.status || 'pending';
+          // Log transfer to system ledger
+          await pool.query(
+            `INSERT INTO system_ledger (transaction_type, payload, immutable_hash)
+             VALUES ('CASHOUT_TRANSFER', $1, $2)`,
+            [JSON.stringify({ vault_id, payoutRef, gross: v.vault_balance, platform_fee: platformFee, net: netPayout, transfer_code: transferCode, account: acct.account_name, bank: acct.bank_name }), cashoutHash]
+          ).catch(() => {});
+        }
+      }
+    }
+
+    return res.json({
+      success:             true,
+      mode,
+      gross_amount_ngn:    parseFloat(v.vault_balance),
+      platform_fee_ngn:    platformFee,
+      platform_fee_pct:    '2%',
+      net_payout_ngn:      netPayout,
+      transfer_code:       transferCode,
+      transfer_status:     transferStatus,
+      ledger_hash:         h,
+      message: mode === 'LUMP_SUM'
+        ? `₦${netPayout.toLocaleString()} transferred to landlord. Platform fee: ₦${platformFee.toLocaleString()} (2%).`
+        : `Drawdown mode activated. ₦${Math.round(netPayout/12).toLocaleString()}/month will be disbursed on day ${v.drawdown_day}.`,
+    });
   } catch (e: any) { await client.query('ROLLBACK'); return res.status(500).json({ error: e.message }); }
 });
 
@@ -7491,23 +7593,9 @@ app.post('/api/tenant/pay-installment', authenticate, async (req: Request, res: 
     if (!vaultRes.rows.length) return res.status(404).json({ error: 'Vault not found' });
     const v = vaultRes.rows[0];
 
-    // ── Custom amount: use what tenant typed, fallback to installment_amount ─
-    const requestedAmount = req.body.amount ? Number(req.body.amount) : null;
-    const defaultAmount   = parseFloat(v.installment_amount) || 0;
-    const payAmount       = (requestedAmount && requestedAmount >= 100)
-                            ? requestedAmount : defaultAmount;
-
-    if (payAmount < 100) {
-      return res.status(400).json({ error: 'Minimum payment is NGN 100' });
-    }
-
-    const amountKobo = Math.round(payAmount * 100);   // Paystack expects kobo
+    const amountKobo = Math.round(parseFloat(v.installment_amount) * 100);
     const email      = v.user_email || v.tenant_email;
     const ref        = `ARK-VAULT-${resolvedVaultId.slice(0, 8)}-${Date.now()}`;
-
-    // ── Callback URL — always stable production domain ────────────────────
-    const FRONTEND = process.env.FRONTEND_URL || 'https://nested-ark-api.vercel.app';
-    const callbackUrl = `${FRONTEND}/tenant/pay/success?reference=${ref}`;
 
     // Initialise Paystack transaction
     const psRes = await fetch('https://api.paystack.co/transaction/initialize', {
@@ -7518,18 +7606,15 @@ app.post('/api/tenant/pay-installment', authenticate, async (req: Request, res: 
       },
       body: JSON.stringify({
         email,
-        amount:       amountKobo,
-        reference:    ref,
-        currency:     'NGN',
-        callback_url: callbackUrl,
+        amount:    amountKobo,
+        reference: ref,
+        currency:  'NGN',
         metadata:  {
           vault_id:    resolvedVaultId,
           tenant_name: v.tenant_name,
-          pay_amount:  payAmount,
           custom_fields: [
             { display_name: 'Vault ID',     variable_name: 'vault_id',     value: resolvedVaultId },
             { display_name: 'Tenant',       variable_name: 'tenant_name',  value: v.tenant_name   },
-            { display_name: 'Amount (NGN)', variable_name: 'amount_ngn',   value: String(payAmount) },
           ],
         },
         ...(PAYSTACK_SUBACCOUNT_CODE ? { subaccount: PAYSTACK_SUBACCOUNT_CODE, bearer: 'subaccount' } : {}),
@@ -7544,7 +7629,7 @@ app.post('/api/tenant/pay-installment', authenticate, async (req: Request, res: 
       authorization_url: psData.data.authorization_url,
       reference:         ref,
       vault_id:          resolvedVaultId,
-      amount_ngn:        payAmount,
+      amount_ngn:        parseFloat(v.installment_amount),
     });
   } catch (e: any) {
     return res.status(500).json({ error: e.message });
