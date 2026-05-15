@@ -981,6 +981,15 @@ const ensureTablesExist = async () => {
       -- Notice auto-increment counter
       CREATE SEQUENCE IF NOT EXISTS notice_number_seq START 1;
 
+      -- ── legal_notices column guards (idempotent, safe on every restart) ──
+      ALTER TABLE legal_notices ADD COLUMN IF NOT EXISTS issued_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+      ALTER TABLE legal_notices ADD COLUMN IF NOT EXISTS served_at         TIMESTAMP;
+      ALTER TABLE legal_notices ADD COLUMN IF NOT EXISTS response_deadline DATE;
+      ALTER TABLE legal_notices ADD COLUMN IF NOT EXISTS amount_overdue    DECIMAL(15,2);
+      ALTER TABLE legal_notices ADD COLUMN IF NOT EXISTS days_overdue      INTEGER;
+      ALTER TABLE legal_notices ADD COLUMN IF NOT EXISTS ledger_hash       VARCHAR(128);
+      ALTER TABLE legal_notices ADD COLUMN IF NOT EXISTS pdf_url           TEXT;
+
       -- ── Unique constraint so onboard-tenant is idempotent ──────────────────
       -- Prevents Joseph Dimpa ×3 / Okon Mavelous ×2 duplicates.
       -- DROP + re-add pattern is safe with IF NOT EXISTS equivalent:
@@ -3628,8 +3637,11 @@ app.post("/api/payments/webhook",
     }
 
     // ── RENTAL payment: route before the investment handler ────────────────
-    const paymentType = event.data?.metadata?.payment_type;
-    if (event.event === 'charge.success' && paymentType === 'RENT') {
+    const paymentType    = event.data?.metadata?.payment_type;
+    const txReference    = event.data?.reference || '';
+    const isVaultPayment = paymentType === 'RENT' || txReference.startsWith('ARK-VAULT-');
+
+    if (event.event === 'charge.success' && isVaultPayment) {
       const { reference, amount } = event.data;
       const amountNgn = amount / 100;
       const meta      = event.data?.metadata ?? {};
@@ -4027,14 +4039,20 @@ app.get("/api/payments/verify/:reference", authenticate, async (req: Request, re
       );
     }
 
+    const psStatus  = verifyData.data?.status;
+    const amountNgn = verifyData.data?.amount ? verifyData.data.amount / 100 : 0;
+
     return res.json({
-      success: true,
+      success:        true,
       reference,
-      status: verifyData.data?.status || dbTx.rows[0]?.status || 'UNKNOWN',
-      amount_ngn: verifyData.data?.amount ? verifyData.data.amount / 100 : dbTx.rows[0]?.amount_ngn,
-      paid_at: verifyData.data?.paid_at || dbTx.rows[0]?.paid_at,
-      channel: verifyData.data?.channel,
-      project_id: dbTx.rows[0]?.project_id,
+      status:         psStatus || dbTx.rows[0]?.status || 'UNKNOWN',
+      payment_status: psStatus === 'success' ? 'COMPLETED' : 'PENDING',
+      amount:         verifyData.data?.amount ?? 0,   // kobo — success page divides by 100
+      amount_ngn:     amountNgn,
+      currency:       verifyData.data?.currency || 'NGN',
+      paid_at:        verifyData.data?.paid_at || dbTx.rows[0]?.paid_at,
+      channel:        verifyData.data?.channel,
+      project_id:     dbTx.rows[0]?.project_id,
     });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
@@ -7473,9 +7491,23 @@ app.post('/api/tenant/pay-installment', authenticate, async (req: Request, res: 
     if (!vaultRes.rows.length) return res.status(404).json({ error: 'Vault not found' });
     const v = vaultRes.rows[0];
 
-    const amountKobo = Math.round(parseFloat(v.installment_amount) * 100);
+    // ── Custom amount: use what tenant typed, fallback to installment_amount ─
+    const requestedAmount = req.body.amount ? Number(req.body.amount) : null;
+    const defaultAmount   = parseFloat(v.installment_amount) || 0;
+    const payAmount       = (requestedAmount && requestedAmount >= 100)
+                            ? requestedAmount : defaultAmount;
+
+    if (payAmount < 100) {
+      return res.status(400).json({ error: 'Minimum payment is NGN 100' });
+    }
+
+    const amountKobo = Math.round(payAmount * 100);   // Paystack expects kobo
     const email      = v.user_email || v.tenant_email;
     const ref        = `ARK-VAULT-${resolvedVaultId.slice(0, 8)}-${Date.now()}`;
+
+    // ── Callback URL — always stable production domain ────────────────────
+    const FRONTEND = process.env.FRONTEND_URL || 'https://nested-ark-api.vercel.app';
+    const callbackUrl = `${FRONTEND}/tenant/pay/success?reference=${ref}`;
 
     // Initialise Paystack transaction
     const psRes = await fetch('https://api.paystack.co/transaction/initialize', {
@@ -7486,15 +7518,18 @@ app.post('/api/tenant/pay-installment', authenticate, async (req: Request, res: 
       },
       body: JSON.stringify({
         email,
-        amount:    amountKobo,
-        reference: ref,
-        currency:  'NGN',
+        amount:       amountKobo,
+        reference:    ref,
+        currency:     'NGN',
+        callback_url: callbackUrl,
         metadata:  {
           vault_id:    resolvedVaultId,
           tenant_name: v.tenant_name,
+          pay_amount:  payAmount,
           custom_fields: [
             { display_name: 'Vault ID',     variable_name: 'vault_id',     value: resolvedVaultId },
             { display_name: 'Tenant',       variable_name: 'tenant_name',  value: v.tenant_name   },
+            { display_name: 'Amount (NGN)', variable_name: 'amount_ngn',   value: String(payAmount) },
           ],
         },
         ...(PAYSTACK_SUBACCOUNT_CODE ? { subaccount: PAYSTACK_SUBACCOUNT_CODE, bearer: 'subaccount' } : {}),
@@ -7509,7 +7544,7 @@ app.post('/api/tenant/pay-installment', authenticate, async (req: Request, res: 
       authorization_url: psData.data.authorization_url,
       reference:         ref,
       vault_id:          resolvedVaultId,
-      amount_ngn:        parseFloat(v.installment_amount),
+      amount_ngn:        payAmount,
     });
   } catch (e: any) {
     return res.status(500).json({ error: e.message });
