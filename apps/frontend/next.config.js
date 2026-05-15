@@ -10,6 +10,9 @@ const nextConfig = {
     ignoreBuildErrors: true,
   },
 
+  // Fix 404 on dynamic path refresh by forcing consistent directory resolution structures
+  trailingSlash: true,
+
   // Reduce stale route/data caching issues
   experimental: {
     staleTimes: {
@@ -21,23 +24,13 @@ const nextConfig = {
   // Force consistent runtime behavior
   reactStrictMode: true,
 
-  // Better handling for production API rewrites
-  async rewrites() {
-    return [
-      {
-        source: '/api/:path*',
-        destination: `${process.env.NEXT_PUBLIC_API_URL}/api/:path*`,
-      },
-    ];
-  },
-
-  // Disable powered-by header
+  // Disable powered-by header for infrastructure obfuscation
   poweredByHeader: false,
 
-  // Prevent some hydration inconsistencies
+  // Compress payloads efficiently
   compress: true,
 
-  // Remote image handling
+  // Remote image handling across verified infrastructure patterns
   images: {
     remotePatterns: [
       {
@@ -47,7 +40,17 @@ const nextConfig = {
     ],
   },
 
-  // Important for App Router stability
+  // Clean handling for production API rewrites and directory fallbacks
+  async rewrites() {
+    return [
+      {
+        source: '/api/:path*',
+        destination: `${process.env.NEXT_PUBLIC_API_URL}/api/:path*`,
+      },
+    ];
+  },
+
+  // Critical for App Router view stability and cache breaking
   async headers() {
     return [
       {
@@ -65,6 +68,15 @@ const nextConfig = {
           {
             key: 'Cache-Control',
             value: 'no-store',
+          },
+        ],
+      },
+      {
+        source: '/tenant/:path*',
+        headers: [
+          {
+            key: 'Cache-Control',
+            value: 'no-store, no-cache, must-revalidate',
           },
         ],
       },
