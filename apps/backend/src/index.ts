@@ -5186,14 +5186,14 @@ app.post('/api/landlord/payout', authenticate, async (req: Request, res: Respons
     ).catch(() => {}); // non-fatal if platform_revenue table not yet created
 
     // ── Paystack Transfer: net amount to landlord ─────────────────────────
-    const transferRes = await fetch(\`\${PAYSTACK_BASE}/transfer\`, {
+    const transferRes = await fetch(`${PAYSTACK_BASE}/transfer`, {
       method: 'POST',
-      headers: { Authorization: \`Bearer \${PAYSTACK_SECRET}\`, 'Content-Type': 'application/json' },
+      headers: { Authorization: `Bearer ${PAYSTACK_SECRET}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         source:    'balance',
         amount:    amountKobo,           // 98% of gross, in kobo
         recipient: a.paystack_recipient_code,
-        reason:    reason || \`Nested Ark Rental Payout — 2% platform fee deducted\`,
+        reason:    reason || `Nested Ark Rental Payout — 2% platform fee deducted`,
         reference,
         currency:  a.currency || 'NGN',
         metadata: {
@@ -5211,8 +5211,8 @@ app.post('/api/landlord/payout', authenticate, async (req: Request, res: Respons
 
     // ── Immutable system ledger entry ─────────────────────────────────────
     await pool.query(
-      \`INSERT INTO system_ledger (transaction_type, payload, immutable_hash)
-       VALUES ('LANDLORD_PAYOUT', $1, $2)\`,
+      `INSERT INTO system_ledger (transaction_type, payload, immutable_hash)
+       VALUES ('LANDLORD_PAYOUT', $1, $2)`,
       [
         JSON.stringify({
           reference,
@@ -5242,7 +5242,7 @@ app.post('/api/landlord/payout', authenticate, async (req: Request, res: Respons
       account_name:        a.account_name,
       bank_name:           a.bank_name,
       ledger_hash:         h,
-      message: \`₦\${netToLandlordNgn.toLocaleString()} transferred to \${a.account_name} at \${a.bank_name}. Platform fee: ₦\${platformFeeNgn.toLocaleString()} (2%).\`,
+      message: `₦${netToLandlordNgn.toLocaleString()} transferred to ${a.account_name} at ${a.bank_name}. Platform fee: ₦${platformFeeNgn.toLocaleString()} (2%).`,
     });
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
