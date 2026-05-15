@@ -5242,7 +5242,7 @@ app.post('/api/landlord/payout', authenticate, async (req: Request, res: Respons
       account_name:        a.account_name,
       bank_name:           a.bank_name,
       ledger_hash:         h,
-      message: `₦${netToLandlordNgn.toLocaleString()} transferred to ${a.account_name} at ${a.bank_name}. Platform fee: ₦${platformFeeNgn.toLocaleString()} (2%).`,
+      message: `₦\${netToLandlordNgn.toLocaleString()} transferred to \${a.account_name} at \${a.bank_name}. Platform fee: ₦\${platformFeeNgn.toLocaleString()} (2%).`,
     });
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
