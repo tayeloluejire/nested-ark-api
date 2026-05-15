@@ -941,6 +941,14 @@ const ensureTablesExist = async () => {
       ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS photo_urls        JSONB DEFAULT '[]';
       ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS available_from    DATE;
       ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS updated_at        TIMESTAMP WITH TIME ZONE DEFAULT NOW();
+
+      -- ── Marketplace / vacancy advertising columns ─────────────────────
+      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS is_advertised          BOOLEAN DEFAULT FALSE;
+      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS advertised_at          TIMESTAMP;
+      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS marketing_description  TEXT;
+      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS cover_image            TEXT;
+      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS photo_urls_arr         TEXT[] DEFAULT '{}';
+      ALTER TABLE platform_revenue ADD COLUMN IF NOT EXISTS fee_type VARCHAR(50) DEFAULT 'RENTAL_FEE';
       ALTER TABLE flex_pay_vaults     ADD COLUMN IF NOT EXISTS project_id UUID REFERENCES projects(id);
       ALTER TABLE rent_reminders      ADD COLUMN IF NOT EXISTS project_id UUID REFERENCES projects(id);
       ALTER TABLE legal_notices       ADD COLUMN IF NOT EXISTS project_id UUID REFERENCES projects(id);
@@ -3627,9 +3635,43 @@ app.post("/api/payments/webhook",
       return res.sendStatus(200); // ACK to Paystack, not our transaction
     }
 
-    // ── RENTAL payment: route before the investment handler ────────────────
+    // ── Route all charge.success events ─────────────────────────────────────
     const paymentType = event.data?.metadata?.payment_type;
-    if (event.event === 'charge.success' && paymentType === 'RENT') {
+    const txReference = event.data?.reference || '';
+
+    // ── MARKETING_AD_FEE: activate marketplace listing ────────────────────
+    if (event.event === 'charge.success' && paymentType === 'MARKETING_AD_FEE') {
+      const meta   = event.data?.metadata ?? {};
+      const unitId = meta.unit_id;
+      if (unitId) {
+        const adHash = crypto.createHash('sha256')
+          .update(`ad-fee-${txReference}-${unitId}-${Date.now()}`).digest('hex');
+        await pool.query(
+          `UPDATE rental_units SET is_advertised=TRUE, advertised_at=NOW() WHERE id=$1`,
+          [unitId]
+        ).catch(() => {});
+        await pool.query(
+          `INSERT INTO platform_revenue
+             (project_id, amount_ngn, amount_usd, source, pct_applied, gross_amount, fee_type, ledger_hash)
+           SELECT ru.project_id, $1, $2, 'LISTING_FEE', 0, $1, 'MARKETING_AD_FEE', $3
+           FROM rental_units ru WHERE ru.id=$4`,
+          [event.data.amount/100, event.data.amount/100/1500, adHash, unitId]
+        ).catch(() => {});
+        await pool.query(
+          `INSERT INTO system_ledger (transaction_type, payload, immutable_hash)
+           VALUES ('MARKETPLACE_AD_FEE', $1, $2)`,
+          [JSON.stringify({ unit_id: unitId, reference: txReference, amount_ngn: event.data.amount/100 }), adHash]
+        ).catch(() => {});
+        console.log(`[WEBHOOK] Marketplace listing ACTIVATED: unit=${unitId}`);
+      }
+    }
+
+    // ── RENTAL/VAULT payment ───────────────────────────────────────────────
+    const isVaultPayment = paymentType === 'RENT'
+                        || paymentType === 'RENT_INSTALLMENT'
+                        || txReference.startsWith('ARK-VAULT-');
+
+    if (event.event === 'charge.success' && isVaultPayment) {
       const { reference, amount } = event.data;
       const amountNgn = amount / 100;
       const meta      = event.data?.metadata ?? {};
@@ -5729,6 +5771,154 @@ app.patch('/api/rental/units/:id/status', authenticate, async (req: Request, res
 });
 
 // ── POST /api/rental/tenancies — create a lease ──────────────────────────
+// ── DELETE /api/rental/units/:id — remove vacant unit safely ──────────────
+app.delete('/api/rental/units/:id', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId = (req as any).userId;
+  const { id }  = req.params;
+  try {
+    // Verify ownership via project
+    const ownCheck = await pool.query(
+      `SELECT ru.id, ru.status FROM rental_units ru
+       JOIN projects p ON p.id = ru.project_id
+       WHERE ru.id = $1 AND (p.sponsor_id = $2 OR (SELECT role FROM users WHERE id=$2)='ADMIN')`,
+      [id, userId]
+    );
+    if (!ownCheck.rows.length) return res.status(403).json({ error: 'Unit not found or access denied' });
+    if (ownCheck.rows[0].status === 'OCCUPIED') {
+      return res.status(400).json({ error: 'Cannot delete a unit with an active tenant lease' });
+    }
+    await pool.query('DELETE FROM rental_units WHERE id=$1', [id]);
+    return res.json({ success: true, message: 'Unit removed from infrastructure log' });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
+// ── POST /api/rental/marketplace/advertise — landlord pays to list vacant unit ──
+app.post('/api/rental/marketplace/advertise', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId   = (req as any).userId;
+  const { unit_id } = req.body;
+  if (!unit_id) return res.status(400).json({ error: 'unit_id required' });
+
+  const LISTING_FEE_NGN = 5000;   // Flat ₦5,000 marketplace listing fee
+
+  try {
+    // Verify ownership
+    const unitRes = await pool.query(
+      `SELECT ru.*, p.sponsor_id FROM rental_units ru
+       JOIN projects p ON p.id = ru.project_id
+       WHERE ru.id = $1`,
+      [unit_id]
+    );
+    if (!unitRes.rows.length) return res.status(404).json({ error: 'Unit not found' });
+    if (unitRes.rows[0].sponsor_id !== userId) return res.status(403).json({ error: 'Not your unit' });
+    if (unitRes.rows[0].status === 'OCCUPIED') return res.status(400).json({ error: 'Cannot advertise an occupied unit' });
+
+    // Landlord email
+    const userRes = await pool.query('SELECT email FROM users WHERE id=$1', [userId]);
+    const email   = userRes.rows[0]?.email;
+
+    const ref = `ARK-ADVERT-${unit_id.slice(0,8).toUpperCase()}-${Date.now()}`;
+    const FRONTEND = process.env.FRONTEND_URL || 'https://nested-ark-api.vercel.app';
+
+    const psRes = await fetch('https://api.paystack.co/transaction/initialize', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${PAYSTACK_SECRET}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email,
+        amount:       LISTING_FEE_NGN * 100,
+        reference:    ref,
+        currency:     'NGN',
+        callback_url: `${FRONTEND}/landlord/rental-management`,
+        metadata: {
+          unit_id,
+          payment_type:  'MARKETING_AD_FEE',
+          listing_fee:   LISTING_FEE_NGN,
+          landlord_id:   userId,
+        },
+      }),
+    });
+    const psData = await psRes.json() as any;
+    if (!psData.status) return res.status(502).json({ error: psData.message || 'Paystack error' });
+
+    return res.json({
+      success:           true,
+      authorization_url: psData.data.authorization_url,
+      reference:         ref,
+      listing_fee_ngn:   LISTING_FEE_NGN,
+      message:           `Pay ₦${LISTING_FEE_NGN.toLocaleString()} to list this unit on the Nested Ark marketplace`,
+    });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
+// ── GET /api/marketplace/discover — PUBLIC, no auth required ──────────────
+app.get('/api/marketplace/discover', async (req: Request, res: Response): Promise<any> => {
+  const { search, minPrice, maxPrice, bedrooms, location, page = '1', limit = '20' } = req.query;
+  const offset = (parseInt(page as string) - 1) * parseInt(limit as string);
+
+  try {
+    let where = `WHERE ru.is_advertised = TRUE AND ru.status != 'OCCUPIED'`;
+    const params: any[] = [];
+    let i = 1;
+
+    if (search) {
+      where += ` AND (p.title ILIKE $${i} OR ru.unit_name ILIKE $${i} OR p.location ILIKE $${i})`;
+      params.push(`%${search}%`); i++;
+    }
+    if (minPrice) { where += ` AND ru.rent_amount >= $${i}`; params.push(Number(minPrice)); i++; }
+    if (maxPrice) { where += ` AND ru.rent_amount <= $${i}`; params.push(Number(maxPrice)); i++; }
+    if (bedrooms) { where += ` AND ru.bedrooms = $${i}`; params.push(Number(bedrooms)); i++; }
+    if (location) { where += ` AND p.location ILIKE $${i}`; params.push(`%${location}%`); i++; }
+
+    const result = await pool.query(
+      `SELECT
+         ru.id, ru.unit_name, ru.unit_type, ru.bedrooms, ru.bathrooms,
+         ru.rent_amount, ru.currency, ru.payment_frequency,
+         ru.security_deposit, ru.agency_fee, ru.caution_fee, ru.service_charge,
+         ru.amenities, ru.furnished, ru.parking, ru.size_sqm, ru.floor_number,
+         ru.marketing_description, ru.cover_image, ru.photo_urls_arr, ru.advertised_at,
+         ru.bank_name, ru.account_name, ru.status,
+         p.id AS project_id, p.title AS project_title, p.location, p.country,
+         p.project_number, p.city
+       FROM rental_units ru
+       JOIN projects p ON p.id = ru.project_id
+       ${where}
+       ORDER BY ru.advertised_at DESC NULLS LAST
+       LIMIT $${i} OFFSET $${i+1}`,
+      [...params, parseInt(limit as string), offset]
+    );
+
+    const countRes = await pool.query(
+      `SELECT COUNT(*) FROM rental_units ru JOIN projects p ON p.id = ru.project_id ${where}`,
+      params
+    );
+
+    return res.json({
+      success:  true,
+      listings: result.rows,
+      total:    parseInt(countRes.rows[0].count),
+      page:     parseInt(page as string),
+      limit:    parseInt(limit as string),
+    });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
+// ── GET /api/marketplace/unit/:unitId — PUBLIC unit detail page ────────────
+app.get('/api/marketplace/unit/:unitId', async (req: Request, res: Response): Promise<any> => {
+  const { unitId } = req.params;
+  try {
+    const result = await pool.query(
+      `SELECT
+         ru.*, p.title AS project_title, p.location, p.country,
+         p.project_number, p.city, p.description AS project_description
+       FROM rental_units ru
+       JOIN projects p ON p.id = ru.project_id
+       WHERE ru.id = $1`,
+      [unitId]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: 'Listing not found' });
+    return res.json({ success: true, unit: result.rows[0] });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
 app.post('/api/rental/tenancies', authenticate, async (req: Request, res: Response): Promise<any> => {
   const userId = (req as any).userId;
   try {

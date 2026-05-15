@@ -43,7 +43,8 @@ const PUBLIC_PREFIXES = [
   '/nested_ark',
   '/reset-password/',
   '/verify-email/',
-  '/tenant/invite',   // ✅ PUBLIC — tenant invite preview, NO auth required
+  '/tenant/invite',    // ✅ PUBLIC — tenant invite preview, NO auth required
+  '/marketplace',      // ✅ PUBLIC — property marketplace discovery
 ];
 
 function isPublic(pathname: string): boolean {
