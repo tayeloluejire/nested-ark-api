@@ -841,7 +841,7 @@ const ensureTablesExist = async () => {
         vault_id         UUID NOT NULL REFERENCES flex_pay_vaults(id) ON DELETE CASCADE,
         tenancy_id       UUID NOT NULL REFERENCES tenancies(id),
         amount_ngn       DECIMAL(15,2) NOT NULL,
-        paystack_ref     VARCHAR(150),
+        paystack_ref     VARCHAR(150) UNIQUE,
         status           VARCHAR(20) DEFAULT 'PENDING',
         period_label     VARCHAR(30),
         paid_at          TIMESTAMP,
@@ -992,7 +992,8 @@ const ensureTablesExist = async () => {
       -- ── legal_notices status column (backfill for DBs created before this column) ──
       ALTER TABLE legal_notices ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'ISSUED';
 
-      -- ── flex_contributions unique index on paystack_ref (enables ON CONFLICT DO NOTHING) ──
+      -- ── flex_contributions: backfill UNIQUE index on paystack_ref for existing DBs ──
+      -- (new tables get the UNIQUE in the CREATE TABLE above; this covers existing prod DBs)
       CREATE UNIQUE INDEX IF NOT EXISTS idx_fc_paystack_ref
         ON flex_contributions(paystack_ref)
         WHERE paystack_ref IS NOT NULL;
@@ -7382,22 +7383,53 @@ app.post('/api/messaging/send', authenticate, async (req: Request, res: Response
 
 // ── 6. POST /api/flex-pay/contribute — dual-channel receipt version ──────────
 app.post('/api/flex-pay/contribute', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId = (req as any).userId;
   const { vault_id, amount_ngn, paystack_ref } = req.body;
   if (!vault_id || !amount_ngn) return res.status(400).json({ error: 'vault_id and amount_ngn required' });
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const vault = await client.query(`SELECT * FROM flex_pay_vaults WHERE id = $1 FOR UPDATE`, [vault_id]);
-    if (!vault.rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Vault not found' }); }
+    // Lock vault AND verify ownership — tenant must own this vault
+    const vault = await client.query(
+      `SELECT fpv.* FROM flex_pay_vaults fpv
+       JOIN tenancies t ON t.id = fpv.tenancy_id
+       WHERE fpv.id = $1
+         AND (fpv.tenant_user_id = $2 OR t.tenant_user_id = $2)
+       FOR UPDATE`,
+      [vault_id, userId]
+    );
+    if (!vault.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ error: 'Vault not found or access denied' });
+    }
     const v      = vault.rows[0];
     const amount = parseFloat(amount_ngn);
+    if (isNaN(amount) || amount <= 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Invalid amount' });
+    }
+
+    // Reject if paystack_ref already processed (replay attack guard)
+    if (paystack_ref) {
+      const dup = await client.query(
+        `SELECT id FROM flex_contributions WHERE paystack_ref = $1 LIMIT 1`,
+        [paystack_ref]
+      );
+      if (dup.rows.length) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: 'Reference already processed', already_recorded: true });
+      }
+    }
+
     const newBalance = parseFloat(v.vault_balance) + amount;
     const periodLabel = new Date().toISOString().slice(0,7);
     const h = crypto.createHash('sha256').update(`flex-contrib-${vault_id}-${amount}-${Date.now()}`).digest('hex');
 
+    // ON CONFLICT DO NOTHING ensures DB-level idempotency even under concurrent requests
     await client.query(
       `INSERT INTO flex_contributions (vault_id, tenancy_id, amount_ngn, paystack_ref, status, period_label, paid_at, ledger_hash)
-       VALUES ($1,$2,$3,$4,'SUCCESS',$5,NOW(),$6)`,
+       VALUES ($1,$2,$3,$4,'SUCCESS',$5,NOW(),$6)
+       ON CONFLICT (paystack_ref) DO NOTHING`,
       [vault_id, v.tenancy_id, amount, paystack_ref || null, periodLabel, h]
     );
 
@@ -7691,13 +7723,19 @@ app.get('/api/tenant/my-contributions', authenticate, async (req: Request, res: 
 
 // ── GET /api/tenant/verify-payment ──────────────────────────────────────────
 // Called by the success page to confirm a vault installment was recorded.
-// Looks up the flex_contribution by paystack_ref and returns updated vault state.
+// Scoped to authenticated user — cannot be used to probe another tenant's data.
 app.get('/api/tenant/verify-payment', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId    = (req as any).userId;
   const { reference } = req.query as { reference: string };
   if (!reference) return res.status(400).json({ error: 'reference required' });
 
+  // Sanitise — reference must match ARK-VAULT-... or similar known patterns; reject anything else
+  if (!/^[A-Za-z0-9\-_]{6,100}$/.test(reference)) {
+    return res.status(400).json({ error: 'Invalid reference format' });
+  }
+
   try {
-    // Try to find the contribution — may need a brief moment if webhook is still processing
+    // JOIN through to tenancies to verify this reference belongs to the calling user
     const r = await pool.query(
       `SELECT fc.id, fc.amount_ngn, fc.paystack_ref, fc.period_label, fc.ledger_hash,
               fc.status, fc.paid_at,
@@ -7706,15 +7744,16 @@ app.get('/api/tenant/verify-payment', authenticate, async (req: Request, res: Re
        FROM flex_contributions fc
        JOIN flex_pay_vaults fpv ON fpv.id = fc.vault_id
        JOIN tenancies t         ON t.id   = fpv.tenancy_id
-       WHERE fc.paystack_ref = $1`,
-      [reference]
+       WHERE fc.paystack_ref = $1
+         AND (fpv.tenant_user_id = $2 OR t.tenant_user_id = $2)`,
+      [reference, userId]
     );
 
     if (r.rows.length) {
-      const row        = r.rows[0];
-      const balance    = Math.max(0, Number(row.vault_balance) || 0);
-      const target     = Math.max(1, Number(row.target_amount) || 1);
-      const fundedPct  = Math.min(Math.round((balance / target) * 100), 100);
+      const row       = r.rows[0];
+      const balance   = Math.max(0, Number(row.vault_balance)  || 0);
+      const target    = Math.max(1, Number(row.target_amount)  || 1);
+      const fundedPct = Math.min(Math.round((balance / target) * 100), 100);
       return res.json({
         verified:      true,
         amount_ngn:    Math.max(0, Number(row.amount_ngn) || 0),
@@ -7730,11 +7769,10 @@ app.get('/api/tenant/verify-payment', authenticate, async (req: Request, res: Re
       });
     }
 
-    // Contribution not yet recorded — webhook may still be processing.
-    // Return a soft "pending" response so the client can poll or show vault page.
+    // Not yet recorded — webhook may still be processing
     return res.status(202).json({
       verified:  false,
-      error:     'Payment received but not yet recorded. Please check your vault in a moment.',
+      error:     'Payment received but vault update is still processing. Please check your vault in a moment.',
       reference,
     });
   } catch (e: any) {
