@@ -989,6 +989,9 @@ const ensureTablesExist = async () => {
       -- Notice auto-increment counter
       CREATE SEQUENCE IF NOT EXISTS notice_number_seq START 1;
 
+      -- ── legal_notices status column (backfill for DBs created before this column) ──
+      ALTER TABLE legal_notices ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'ISSUED';
+
       -- ── Unique constraint so onboard-tenant is idempotent ──────────────────
       -- Prevents Joseph Dimpa ×3 / Okon Mavelous ×2 duplicates.
       -- DROP + re-add pattern is safe with IF NOT EXISTS equivalent:
@@ -7730,7 +7733,7 @@ app.get('/api/tenant/my-notices', authenticate, async (req: Request, res: Respon
 // Resolves vault from authenticated user — no vault_id required from client.
 app.post('/api/tenant/pay-installment', authenticate, async (req: Request, res: Response): Promise<any> => {
   const userId  = (req as any).userId;
-  const { vault_id } = req.body; // optional — will auto-resolve if omitted
+  const { vault_id, amount } = req.body; // amount optional — falls back to vault installment_amount
 
   try {
     let resolvedVaultId = vault_id;
@@ -7783,7 +7786,21 @@ app.post('/api/tenant/pay-installment', authenticate, async (req: Request, res: 
     if (!vaultRes.rows.length) return res.status(404).json({ error: 'Vault not found' });
     const v = vaultRes.rows[0];
 
-    const amountKobo = Math.round(parseFloat(v.installment_amount) * 100);
+    // Use request body amount if provided and valid; otherwise fall back to vault installment_amount
+    const baseAmountNaira = (amount && !isNaN(Number(amount)) && Number(amount) > 0)
+      ? Number(amount)
+      : parseFloat(v.installment_amount);
+
+    // Apply Paystack processing fee: 1.5% + ₦100 (passed through to transaction)
+    const paystackFee   = Math.round((baseAmountNaira * 0.015 + 100) * 100) / 100;
+    const totalNaira    = baseAmountNaira + paystackFee;
+    const amountKobo    = Math.round(totalNaira * 100);
+
+    // Safety cap: Paystack single-transaction max is ₦9,999,999.99
+    if (amountKobo > 999999999) {
+      return res.status(400).json({ error: 'Amount exceeds single-transaction limit. Please split into smaller installments.' });
+    }
+
     const email      = v.user_email || v.tenant_email;
     const ref        = `ARK-VAULT-${resolvedVaultId.slice(0, 8)}-${Date.now()}`;
 
@@ -7802,6 +7819,8 @@ app.post('/api/tenant/pay-installment', authenticate, async (req: Request, res: 
         metadata:  {
           vault_id:    resolvedVaultId,
           tenant_name: v.tenant_name,
+          base_naira_amount:    baseAmountNaira,
+          processing_fee_ngn:   paystackFee,
           custom_fields: [
             { display_name: 'Vault ID',     variable_name: 'vault_id',     value: resolvedVaultId },
             { display_name: 'Tenant',       variable_name: 'tenant_name',  value: v.tenant_name   },
@@ -7819,7 +7838,9 @@ app.post('/api/tenant/pay-installment', authenticate, async (req: Request, res: 
       authorization_url: psData.data.authorization_url,
       reference:         ref,
       vault_id:          resolvedVaultId,
-      amount_ngn:        parseFloat(v.installment_amount),
+      amount_ngn:        baseAmountNaira,
+      processing_fee_ngn: paystackFee,
+      total_charged_ngn:  totalNaira,
     });
   } catch (e: any) {
     return res.status(500).json({ error: e.message });
