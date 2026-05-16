@@ -44,20 +44,54 @@ function SuccessContent() {
       return;
     }
 
-    // Give webhook 2s to process, then verify
-    const timer = setTimeout(() => {
-      api.get(`/api/tenant/verify-payment?reference=${encodeURIComponent(reference)}`)
-        .then(r => {
-          setResult(r.data);
-          setStatus('success');
-        })
-        .catch(e => {
+    let attempts  = 0;
+    const MAX     = 10;          // max polls
+    const DELAY   = 3000;        // 3s between each
+    let cancelled = false;
+
+    const verify = async () => {
+      if (cancelled) return;
+      attempts++;
+      try {
+        const r = await api.get(`/api/tenant/verify-payment?reference=${encodeURIComponent(reference)}`);
+        const d = r.data;
+
+        // Webhook may not have fired yet — retry if numbers are still zero
+        if (d && d.verified && d.amount_ngn > 0) {
+          if (!cancelled) { setResult(d); setStatus('success'); }
+          return;
+        }
+
+        // Still pending — retry if budget allows
+        if (attempts < MAX && !cancelled) {
+          setTimeout(verify, DELAY);
+        } else if (!cancelled) {
+          // Exhausted retries — show what we have (may still be zeros if webhook never fired)
+          if (d && d.verified) {
+            setResult(d); setStatus('success');
+          } else {
+            setErrMsg('Payment received but vault update is still processing. Please check your vault in a moment.');
+            setStatus('error');
+          }
+        }
+      } catch (e: any) {
+        if (cancelled) return;
+        if (attempts < MAX) {
+          setTimeout(verify, DELAY);
+        } else {
           setErrMsg(e?.response?.data?.error ?? 'Could not verify payment. Please check your vault.');
           setStatus('error');
-        });
-    }, 2000);
+        }
+      }
+    };
 
-    return () => clearTimeout(timer);
+    // First attempt after 3s — give webhook time to land
+    const initial = setTimeout(verify, 3000);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(initial);
+    };
   }, [reference]);
 
   const fundedPct = result
@@ -73,7 +107,8 @@ function SuccessContent() {
         {status === 'loading' && (
           <div className="flex flex-col items-center justify-center py-24 gap-4">
             <Loader2 className="animate-spin text-teal-500" size={36} />
-            <p className="text-zinc-400 font-bold text-sm uppercase tracking-widest">Confirming your payment…</p>
+            <p className="text-zinc-400 font-bold text-sm uppercase tracking-widest">Confirming payment…</p>
+            <p className="text-zinc-600 text-[10px] text-center max-w-xs">Waiting for Paystack webhook confirmation. This usually takes 3–10 seconds.</p>
           </div>
         )}
 
