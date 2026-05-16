@@ -992,6 +992,11 @@ const ensureTablesExist = async () => {
       -- ── legal_notices status column (backfill for DBs created before this column) ──
       ALTER TABLE legal_notices ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'ISSUED';
 
+      -- ── flex_contributions unique index on paystack_ref (enables ON CONFLICT DO NOTHING) ──
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_fc_paystack_ref
+        ON flex_contributions(paystack_ref)
+        WHERE paystack_ref IS NOT NULL;
+
       -- ── Unique constraint so onboard-tenant is idempotent ──────────────────
       -- Prevents Joseph Dimpa ×3 / Okon Mavelous ×2 duplicates.
       -- DROP + re-add pattern is safe with IF NOT EXISTS equivalent:
@@ -7684,6 +7689,59 @@ app.get('/api/tenant/my-contributions', authenticate, async (req: Request, res: 
   }
 });
 
+// ── GET /api/tenant/verify-payment ──────────────────────────────────────────
+// Called by the success page to confirm a vault installment was recorded.
+// Looks up the flex_contribution by paystack_ref and returns updated vault state.
+app.get('/api/tenant/verify-payment', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const { reference } = req.query as { reference: string };
+  if (!reference) return res.status(400).json({ error: 'reference required' });
+
+  try {
+    // Try to find the contribution — may need a brief moment if webhook is still processing
+    const r = await pool.query(
+      `SELECT fc.id, fc.amount_ngn, fc.paystack_ref, fc.period_label, fc.ledger_hash,
+              fc.status, fc.paid_at,
+              fpv.vault_balance, fpv.target_amount, fpv.status AS vault_status,
+              t.tenant_name
+       FROM flex_contributions fc
+       JOIN flex_pay_vaults fpv ON fpv.id = fc.vault_id
+       JOIN tenancies t         ON t.id   = fpv.tenancy_id
+       WHERE fc.paystack_ref = $1`,
+      [reference]
+    );
+
+    if (r.rows.length) {
+      const row        = r.rows[0];
+      const balance    = Math.max(0, Number(row.vault_balance) || 0);
+      const target     = Math.max(1, Number(row.target_amount) || 1);
+      const fundedPct  = Math.min(Math.round((balance / target) * 100), 100);
+      return res.json({
+        verified:      true,
+        amount_ngn:    Math.max(0, Number(row.amount_ngn) || 0),
+        reference:     row.paystack_ref,
+        vault_balance: balance,
+        target_amount: Math.max(0, Number(row.target_amount) || 0),
+        funded_pct:    fundedPct,
+        vault_status:  row.vault_status,
+        tenant_name:   row.tenant_name,
+        period_label:  row.period_label || new Date().toISOString().slice(0, 7),
+        ledger_hash:   row.ledger_hash || '',
+        paid_at:       row.paid_at,
+      });
+    }
+
+    // Contribution not yet recorded — webhook may still be processing.
+    // Return a soft "pending" response so the client can poll or show vault page.
+    return res.status(202).json({
+      verified:  false,
+      error:     'Payment received but not yet recorded. Please check your vault in a moment.',
+      reference,
+    });
+  } catch (e: any) {
+    return res.status(500).json({ error: e.message });
+  }
+});
+
 // ── GET /api/tenant/my-notices ──────────────────────────────────────────────
 // Alias: returns legal notices for the authenticated tenant.
 app.get('/api/tenant/my-notices', authenticate, async (req: Request, res: Response): Promise<any> => {
@@ -7775,7 +7833,7 @@ app.post('/api/tenant/pay-installment', authenticate, async (req: Request, res: 
 
     // Fetch vault + user email for Paystack
     const vaultRes = await pool.query(
-      `SELECT fpv.*, t.tenant_email, t.tenant_name, u.email AS user_email
+      `SELECT fpv.*, t.tenant_email, t.tenant_name, t.id AS tenancy_id, u.email AS user_email
        FROM flex_pay_vaults fpv
        JOIN tenancies t ON t.id = fpv.tenancy_id
        LEFT JOIN users u ON u.id = $2
@@ -7791,18 +7849,19 @@ app.post('/api/tenant/pay-installment', authenticate, async (req: Request, res: 
       ? Number(amount)
       : parseFloat(v.installment_amount);
 
-    // Apply Paystack processing fee: 1.5% + ₦100 (passed through to transaction)
+    // Paystack processing fee: 1.5% + ₦100 (passed through to payer)
     const paystackFee   = Math.round((baseAmountNaira * 0.015 + 100) * 100) / 100;
     const totalNaira    = baseAmountNaira + paystackFee;
     const amountKobo    = Math.round(totalNaira * 100);
 
-    // Safety cap: Paystack single-transaction max is ₦9,999,999.99
+    // Safety cap: Paystack single-transaction max ₦9,999,999.99
     if (amountKobo > 999999999) {
       return res.status(400).json({ error: 'Amount exceeds single-transaction limit. Please split into smaller installments.' });
     }
 
     const email      = v.user_email || v.tenant_email;
     const ref        = `ARK-VAULT-${resolvedVaultId.slice(0, 8)}-${Date.now()}`;
+    const FRONTEND   = process.env.FRONTEND_URL || 'https://nested-ark-api.vercel.app';
 
     // Initialise Paystack transaction
     const psRes = await fetch('https://api.paystack.co/transaction/initialize', {
@@ -7813,20 +7872,22 @@ app.post('/api/tenant/pay-installment', authenticate, async (req: Request, res: 
       },
       body: JSON.stringify({
         email,
-        amount:    amountKobo,
-        reference: ref,
-        currency:  'NGN',
+        amount:       amountKobo,
+        reference:    ref,
+        currency:     'NGN',
+        callback_url: `${FRONTEND}/tenant/pay/success?reference=${ref}`,
         metadata:  {
-          vault_id:    resolvedVaultId,
-          tenant_name: v.tenant_name,
-          base_naira_amount:    baseAmountNaira,
-          processing_fee_ngn:   paystackFee,
+          payment_type:       'RENT_INSTALLMENT',
+          vault_id:           resolvedVaultId,
+          tenancy_id:         v.tenancy_id,
+          tenant_name:        v.tenant_name,
+          base_naira_amount:  baseAmountNaira,
+          processing_fee_ngn: paystackFee,
           custom_fields: [
-            { display_name: 'Vault ID',     variable_name: 'vault_id',     value: resolvedVaultId },
-            { display_name: 'Tenant',       variable_name: 'tenant_name',  value: v.tenant_name   },
+            { display_name: 'Vault ID',  variable_name: 'vault_id',    value: resolvedVaultId },
+            { display_name: 'Tenant',    variable_name: 'tenant_name', value: v.tenant_name   },
           ],
         },
-        ...(PAYSTACK_SUBACCOUNT_CODE ? { subaccount: PAYSTACK_SUBACCOUNT_CODE, bearer: 'subaccount' } : {}),
       }),
     });
 
@@ -7834,11 +7895,11 @@ app.post('/api/tenant/pay-installment', authenticate, async (req: Request, res: 
     if (!psData.status) return res.status(502).json({ error: psData.message || 'Paystack error' });
 
     return res.json({
-      success:           true,
-      authorization_url: psData.data.authorization_url,
-      reference:         ref,
-      vault_id:          resolvedVaultId,
-      amount_ngn:        baseAmountNaira,
+      success:            true,
+      authorization_url:  psData.data.authorization_url,
+      reference:          ref,
+      vault_id:           resolvedVaultId,
+      amount_ngn:         baseAmountNaira,
       processing_fee_ngn: paystackFee,
       total_charged_ngn:  totalNaira,
     });
