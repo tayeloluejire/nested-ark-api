@@ -11,7 +11,7 @@ export default function LandlordInventoryControl() {
     try {
       const token = localStorage.getItem('token');
       const res = await axios.post(
-        `${process.env.NEXT_PUBLIC_API_URL}/api/landlord/marketplace/advertise-intent', 
+        `${process.env.NEXT_PUBLIC_API_URL}/api/landlord/marketplace/advertise-intent`,
         { unit_id: unitId },
         { headers: { Authorization: `Bearer ${token}` } }
       );
