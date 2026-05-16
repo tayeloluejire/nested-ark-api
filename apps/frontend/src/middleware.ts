@@ -1,38 +1,36 @@
 // src/middleware.ts
 // Next.js Edge Middleware — role-based route protection.
-//
-// Reads two cookies written by AuthContext on login:
-//   ark_role         = DB role (DEVELOPER, TENANT, INVESTOR, etc.)
-//   ark_account_type = Business context (LANDLORD, INFRASTRUCTURE, TENANT, etc.)
-//
-// Route rules:
-//   /tenant            -> TENANT only
-//   /landlord          -> DEVELOPER role + accountType=LANDLORD
-//   /admin             -> ADMIN only
-//   /gov               -> GOVERNMENT, VERIFIER, or ADMIN
-//   /rental-management -> DEVELOPER or ADMIN
-//   /portfolio         -> INVESTOR, DEVELOPER, or ADMIN
-//   everything else    -> any logged-in user (role cookie present)
+// Fixes: infinite /login ↔ /login/ redirect loop caused by trailing slash
+// mismatch and _rsc prefetch requests hitting the auth gate.
 
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
+// ── Exact paths that bypass ALL auth checks ───────────────────────────────
 const PUBLIC_PATHS = new Set([
   '/',
   '/login',
+  '/login/',
   '/register',
+  '/register/',
   '/about',
   '/map',
   '/projects',
   '/search',
   '/ledger',
   '/forgot-password',
+  '/forgot-password/',
   '/reset-password',
+  '/reset-password/',
   '/verify-email',
+  '/verify-email/',
   '/payment-success',
   '/payment-callback',
+  '/marketplace',
+  '/marketplace/',
 ]);
 
+// ── Path prefixes that bypass ALL auth checks ─────────────────────────────
 const PUBLIC_PREFIXES = [
   '/projects/',
   '/onboard/',
@@ -43,8 +41,8 @@ const PUBLIC_PREFIXES = [
   '/nested_ark',
   '/reset-password/',
   '/verify-email/',
-  '/tenant/invite',    // ✅ PUBLIC — tenant invite preview, NO auth required
-  '/marketplace',      // ✅ PUBLIC — property marketplace discovery
+  '/tenant/invite',    // public — tenant invite preview
+  '/marketplace',      // public — property discovery
 ];
 
 function isPublic(pathname: string): boolean {
@@ -52,75 +50,99 @@ function isPublic(pathname: string): boolean {
   return PUBLIC_PREFIXES.some(p => pathname.startsWith(p));
 }
 
-function redirectTo(req: NextRequest, path: string) {
-  return NextResponse.redirect(new URL(path, req.url));
-}
-
 export function middleware(req: NextRequest) {
-  const { pathname } = req.nextUrl;
+  const { pathname, searchParams } = req.nextUrl;
 
+  // ── 1. Static assets / Next.js internals — always pass ────────────────
+  if (
+    pathname.startsWith('/_next') ||
+    pathname.includes('/static/') ||
+    pathname.endsWith('.ico') ||
+    pathname.endsWith('.png') ||
+    pathname.endsWith('.svg') ||
+    pathname.endsWith('.jpg') ||
+    pathname.endsWith('.webp') ||
+    pathname.endsWith('.json')
+  ) {
+    return NextResponse.next();
+  }
+
+  // ── 2. Exact public paths (including trailing-slash variants) ──────────
   if (isPublic(pathname)) return NextResponse.next();
 
+  // ── 3. _rsc prefetch safety valve ─────────────────────────────────────
+  // Next.js App Router sends _rsc=... for client-side navigation prefetches.
+  // If the target is already an auth page, pass it through — never redirect.
+  if (searchParams.has('_rsc')) {
+    const isAuthPage = pathname === '/login' || pathname === '/login/'
+                    || pathname === '/register' || pathname === '/register/';
+    if (isAuthPage) return NextResponse.next();
+  }
+
+  // ── 4. Read auth cookies ───────────────────────────────────────────────
   const role        = req.cookies.get('ark_role')?.value ?? '';
   const accountType = req.cookies.get('ark_account_type')?.value ?? '';
 
-  // TENANT routes — TENANT role only
+  // Helper — redirect to /login with reason param (uses clone to avoid mutation)
+  const toLogin = (reason: string) => {
+    const url = req.nextUrl.clone();
+    url.pathname = '/login';
+    url.search   = `?reason=${reason}`;
+    return NextResponse.redirect(url);
+  };
+
+  // ── 5. TENANT routes ───────────────────────────────────────────────────
   if (pathname.startsWith('/tenant')) {
-    if (role !== 'TENANT') {
-      return redirectTo(req, '/login?reason=tenant_only');
-    }
+    if (role !== 'TENANT') return toLogin('tenant_only');
     return NextResponse.next();
   }
 
-  // LANDLORD routes — DEVELOPER role + accountType=LANDLORD
+  // ── 6. LANDLORD routes ─────────────────────────────────────────────────
   if (pathname.startsWith('/landlord')) {
-    // Any DEVELOPER can access landlord routes.
-    // The navbar shows these links only when accountType=LANDLORD.
-    // Backend protects data via sponsor_id — middleware just checks role.
-    if (role !== 'DEVELOPER' && role !== 'PROJECT_SPONSOR' && role !== 'ADMIN') {
-      return redirectTo(req, '/login?reason=landlord_only');
-    }
+    const ok = ['DEVELOPER', 'PROJECT_SPONSOR', 'ADMIN'].includes(role);
+    if (!ok) return toLogin('landlord_only');
     return NextResponse.next();
   }
 
-  // ADMIN routes — ADMIN role only
+  // ── 7. ADMIN routes ────────────────────────────────────────────────────
   if (pathname.startsWith('/admin')) {
-    if (role !== 'ADMIN') {
-      return redirectTo(req, '/login?reason=admin_only');
-    }
+    if (role !== 'ADMIN') return toLogin('admin_only');
     return NextResponse.next();
   }
 
-  // GOVERNMENT portal — GOVERNMENT, VERIFIER, or ADMIN
+  // ── 8. GOVERNMENT portal ───────────────────────────────────────────────
   if (pathname.startsWith('/gov')) {
-    const govRoles = ['GOVERNMENT', 'VERIFIER', 'ADMIN'];
-    if (!govRoles.includes(role)) {
-      return redirectTo(req, '/login?reason=gov_only');
-    }
+    if (!['GOVERNMENT', 'VERIFIER', 'ADMIN'].includes(role)) return toLogin('gov_only');
     return NextResponse.next();
   }
 
-  // Rental management — DEVELOPER, ADMIN, GOVERNMENT
+  // ── 9. Rental management ───────────────────────────────────────────────
   if (pathname.includes('/rental-management')) {
-    const rmRoles = ['DEVELOPER', 'PROJECT_SPONSOR', 'ADMIN', 'GOVERNMENT'];
-    if (!rmRoles.includes(role)) {
-      return redirectTo(req, '/login?reason=access_denied');
+    if (!['DEVELOPER', 'PROJECT_SPONSOR', 'ADMIN', 'GOVERNMENT'].includes(role)) {
+      return toLogin('access_denied');
     }
     return NextResponse.next();
   }
 
-  // Portfolio and investments — INVESTOR, DEVELOPER, ADMIN
+  // ── 10. Portfolio / investments ────────────────────────────────────────
   if (pathname.startsWith('/portfolio') || pathname.startsWith('/investments')) {
-    const invRoles = ['INVESTOR', 'DEVELOPER', 'PROJECT_SPONSOR', 'ADMIN'];
-    if (!invRoles.includes(role)) {
-      return redirectTo(req, '/login?reason=investor_only');
+    if (!['INVESTOR', 'DEVELOPER', 'PROJECT_SPONSOR', 'ADMIN'].includes(role)) {
+      return toLogin('investor_only');
     }
     return NextResponse.next();
   }
 
-  // Catch-all — require any valid role cookie
+  // ── 11. Catch-all: require any valid role cookie ───────────────────────
   if (!role) {
-    return redirectTo(req, '/login');
+    // Already on an auth page? Never redirect again — breaks the loop.
+    if (pathname === '/login' || pathname === '/login/'
+     || pathname === '/register' || pathname === '/register/') {
+      return NextResponse.next();
+    }
+    const url = req.nextUrl.clone();
+    url.pathname = '/login';
+    url.search   = '';
+    return NextResponse.redirect(url);
   }
 
   return NextResponse.next();
@@ -128,6 +150,13 @@ export function middleware(req: NextRequest) {
 
 export const config = {
   matcher: [
-    '/((?!_next/static|_next/image|favicon.ico|nested_ark|.*\\.png|.*\\.svg|.*\\.jpg|.*\\.ico|.*\\.webp).*)',
+    /*
+     * Match all paths EXCEPT:
+     *   - _next/static  (Next.js static chunks)
+     *   - _next/image   (Next.js image optimisation)
+     *   - favicon.ico
+     *   - Any file with an extension (png, svg, jpg, etc.)
+     */
+    '/((?!_next/static|_next/image|favicon.ico|.*\\.[a-zA-Z0-9]+$).*)',
   ],
 };
