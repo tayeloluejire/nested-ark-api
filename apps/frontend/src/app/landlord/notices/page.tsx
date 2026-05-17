@@ -1,419 +1,422 @@
 'use client';
 export const dynamic = 'force-dynamic';
 /**
- * /landlord/notices/page.tsx
- * DEVELOPER + accountType=LANDLORD only (middleware enforces).
+ * apps/frontend/src/app/landlord/notices/page.tsx
  *
- * Lists all legal notices across all landlord properties.
- * Issue new notice: POST /api/notices/generate
- *   Body: { tenancy_id, notice_type, amount_overdue, days_overdue, notes }
- *   Returns: PDF download stream OR JSON with notice_id, notice_number, ledger_hash
+ * Tenant dropdown  → GET /api/landlord/tenancies/active  (cross-project, no projectId needed)
+ * Notice history   → GET /api/landlord/notices           (cross-project, landlord-scoped)
+ * Issue notice     → POST /api/notices/generate
  *
- * List notices: GET /api/notices/:projectId
- *   Returns: { notices: [{id, notice_number, notice_type, tenant_name, unit_name,
- *              amount_overdue, days_overdue, issued_at, served_at,
- *              response_deadline, status, ledger_hash}] }
- *
- * Download: GET /api/notices/download/:noticeId
- *   Returns: PDF or HTML
- *
- * Landlord tenancies: GET /api/rental/landlord/tenants
- *   Returns tenancy list with tenancy_id, days_overdue, etc.
+ * If ?tenant=<tenancy_id> is in the URL query string the dropdown is pre-selected.
  */
-import { useState, useEffect, Suspense } from 'react';
+import { useState, useEffect } from 'react';
+import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import Navbar from '@/components/Navbar';
 import Footer from '@/components/Footer';
 import api from '@/lib/api';
+import { useAuth } from '@/lib/AuthContext';
 import {
-  Gavel, Loader2, AlertCircle, RefreshCw, Download,
-  CheckCircle2, Clock, X, ShieldCheck, Bell, FileText,
-  ArrowLeft, Users,
+  ShieldAlert, FileText, Loader2, AlertCircle, X,
+  CheckCircle, ChevronDown, Hash, Building2, ArrowLeft,
 } from 'lucide-react';
 
-const safeN = (v:any) => { const n=Number(v); return(v==null||isNaN(n))?0:n; };
-const safeF = (v:any) => safeN(v).toLocaleString();
-const fmtDate = (s:any) => s ? new Date(s).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}) : '—';
+const safeN = (v: any) => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
 
-const NOTICE_TYPES = [
-  { key:'NOTICE_TO_PAY',    label:'Notice to Pay',    days:7,  color:'border-amber-500/40 bg-amber-500/5',   badge:'bg-amber-500/10 text-amber-400 border-amber-500/20',  icon:Bell  },
-  { key:'NOTICE_TO_QUIT',   label:'Notice to Quit',   days:30, color:'border-red-500/40 bg-red-500/5',       badge:'bg-red-500/10 text-red-400 border-red-500/20',         icon:Clock },
-  { key:'FINAL_WARNING',    label:'Final Warning',    days:2,  color:'border-orange-500/40 bg-orange-500/5', badge:'bg-orange-500/10 text-orange-400 border-orange-500/20', icon:AlertCircle },
-  { key:'EVICTION_WARNING', label:'Eviction Warning', days:30, color:'border-rose-600/40 bg-rose-600/5',     badge:'bg-rose-600/10 text-rose-400 border-rose-600/20',       icon:Gavel },
-] as const;
-
-const STATUS_STYLE: Record<string,string> = {
-  SERVED:  'border-red-500/30 text-red-400 bg-red-500/10',
-  PENDING: 'border-amber-500/30 text-amber-400 bg-amber-500/10',
-  RESOLVED:'border-teal-500/30 text-teal-400 bg-teal-500/10',
+type Tenancy = {
+  tenancy_id:    string;
+  tenant_name:   string;
+  tenant_email:  string;
+  unit_name:     string;
+  project_title: string;
+  project_number:string;
+  rent_amount:   string;
+  currency:      string;
+  vault_balance: string;
+  next_due_date: string | null;
 };
 
-// ── Issue Notice Modal ────────────────────────────────────────────────────────
-function IssueNoticeModal({
-  tenancies, onClose, onIssued,
-}: { tenancies:any[]; onClose:()=>void; onIssued:()=>void }) {
-  const [tenancyId,  setTenancyId]  = useState(tenancies[0]?.id ?? '');
+type Notice = {
+  id:                string;
+  notice_number:     string;
+  notice_type:       string;
+  tenant_name:       string;
+  unit_name:         string;
+  issued_at:         string;
+  status:            string;
+  response_deadline: string;
+  ledger_hash:       string;
+};
+
+const NOTICE_TYPES = [
+  { value: 'NOTICE_TO_PAY',    label: 'Notice to Pay',    deadline: '7-day deadline',  color: 'amber'  },
+  { value: 'NOTICE_TO_QUIT',   label: 'Notice to Quit',   deadline: '30-day deadline', color: 'orange' },
+  { value: 'FINAL_WARNING',    label: 'Final Warning',    deadline: '2-day deadline',  color: 'red'    },
+  { value: 'EVICTION_WARNING', label: 'Eviction Warning', deadline: '30-day deadline', color: 'red'    },
+];
+
+const colorMap: Record<string, string> = {
+  amber:  'border-amber-500/30 text-amber-400 bg-amber-500/10',
+  orange: 'border-orange-500/30 text-orange-400 bg-orange-500/10',
+  red:    'border-red-500/30 text-red-400 bg-red-500/10',
+};
+
+export default function LandlordNoticesPage() {
+  const { loading: authLoading } = useAuth();
+  const searchParams  = useSearchParams();
+  const preselectedId = searchParams.get('tenant') ?? '';
+
+  // Tenancy list for dropdown
+  const [tenancies,  setTenancies]  = useState<Tenancy[]>([]);
+  const [loadingTen, setLoadingTen] = useState(true);
+  const [tenErr,     setTenErr]     = useState('');
+
+  // Notice history
+  const [notices,    setNotices]    = useState<Notice[]>([]);
+  const [loadingNot, setLoadingNot] = useState(true);
+
+  // Form state
+  const [showForm,   setShowForm]   = useState(false);
+  const [selTenancy, setSelTenancy] = useState(preselectedId);
   const [noticeType, setNoticeType] = useState('NOTICE_TO_PAY');
+  const [amountOver, setAmountOver] = useState('');
   const [notes,      setNotes]      = useState('');
-  const [sending,    setSending]    = useState(false);
-  const [result,     setResult]     = useState('');
-  const [isError,    setIsError]    = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitErr,  setSubmitErr]  = useState('');
+  const [submitted,  setSubmitted]  = useState<Notice | null>(null);
 
-  const selectedTenancy = tenancies.find(t => t.id === tenancyId);
-  const selectedNotice  = NOTICE_TYPES.find(n => n.key === noticeType)!;
+  // ── Load tenancies ────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (authLoading) return;
+    api.get('/api/landlord/tenancies/active')
+      .then(r => {
+        const rows: Tenancy[] = r.data.tenancies ?? r.data.rows ?? r.data ?? [];
+        setTenancies(rows);
+      })
+      .catch(() => setTenErr('Could not load tenants. Please refresh.'))
+      .finally(() => setLoadingTen(false));
+  }, [authLoading]);
 
-  const issue = async () => {
-    if (!tenancyId) { setResult('Select a tenant first.'); setIsError(true); return; }
-    setSending(true); setResult(''); setIsError(false);
+  // Pre-select tenant from URL ?tenant= param once tenancies load
+  useEffect(() => {
+    if (preselectedId && tenancies.length > 0) {
+      const match = tenancies.find(t => t.tenancy_id === preselectedId);
+      if (match) { setSelTenancy(preselectedId); setShowForm(true); }
+    }
+  }, [preselectedId, tenancies]);
+
+  // ── Load notice history ───────────────────────────────────────────────────
+  useEffect(() => {
+    if (authLoading) return;
+    api.get('/api/landlord/notices')
+      .then(r => setNotices(r.data.notices ?? []))
+      .catch(() => setNotices([]))
+      .finally(() => setLoadingNot(false));
+  }, [authLoading]);
+
+  // ── Submit notice ─────────────────────────────────────────────────────────
+  const handleIssue = async () => {
+    if (!selTenancy || !noticeType) { setSubmitErr('Please select a tenant and notice type.'); return; }
+    setSubmitting(true); setSubmitErr('');
     try {
-      await api.post('/api/notices/generate', {
-        tenancy_id:    tenancyId,
-        notice_type:   noticeType,
-        amount_overdue:selectedTenancy?.rent_amount ?? 0,
-        days_overdue:  selectedTenancy?.days_overdue ?? 0,
-        notes:         notes || undefined,
+      const r = await api.post('/api/notices/generate', {
+        tenancy_id:     selTenancy,
+        notice_type:    noticeType,
+        amount_overdue: amountOver ? parseFloat(amountOver) : undefined,
+        notes:          notes || undefined,
       });
-      setResult(`✓ ${selectedNotice.label} issued. PDF emailed to ${selectedTenancy?.tenant_email}.`);
-      setTimeout(() => { onIssued(); onClose(); }, 2200);
-    } catch(e:any) {
-      setResult(e?.response?.data?.error ?? 'Failed to issue notice.');
-      setIsError(true);
-    } finally { setSending(false); }
+      const issued  = r.data;
+      const tenant  = tenancies.find(t => t.tenancy_id === selTenancy);
+      const newNote: Notice = {
+        id:                issued.notice_id,
+        notice_number:     issued.notice_number,
+        notice_type:       noticeType,
+        tenant_name:       tenant?.tenant_name ?? '',
+        unit_name:         tenant?.unit_name   ?? '',
+        issued_at:         new Date().toISOString(),
+        status:            'ISSUED',
+        response_deadline: issued.deadline,
+        ledger_hash:       issued.ledger_hash,
+      };
+      setSubmitted(newNote);
+      setNotices(prev => [newNote, ...prev]);
+      setShowForm(false);
+      setSelTenancy(''); setNoticeType('NOTICE_TO_PAY'); setAmountOver(''); setNotes('');
+    } catch (e: any) {
+      setSubmitErr(e?.response?.data?.error ?? 'Failed to issue notice. Please try again.');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
-  return (
-    <div className="fixed inset-0 z-[300] bg-black/90 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="w-full max-w-lg bg-zinc-950 border border-zinc-800 rounded-3xl overflow-hidden shadow-2xl">
+  const totalNotices = notices.length;
+  const servedCount  = notices.filter(n => n.status === 'SERVED').length;
+  const issuedCount  = notices.filter(n => n.status === 'ISSUED').length;
+  const projectCount = new Set(tenancies.map(t => t.project_number)).size || 1;
 
-        {/* Header */}
-        <div className="flex items-center justify-between p-5 border-b border-zinc-900">
-          <div>
-            <p className="text-[8px] text-red-400 uppercase font-black tracking-[0.25em]">Litigation Command</p>
-            <p className="text-sm font-black uppercase tracking-tight text-white mt-0.5">Issue Legal Notice</p>
-          </div>
-          <button onClick={onClose} className="p-2 rounded-xl text-zinc-600 hover:text-white hover:bg-zinc-800 transition-all">
-            <X size={16}/>
-          </button>
-        </div>
-
-        <div className="p-5 space-y-5 max-h-[65vh] overflow-y-auto">
-          {/* Tenant picker */}
-          <div className="space-y-2">
-            <label className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest block">Select Tenant *</label>
-            {tenancies.length === 0 ? (
-              <p className="text-zinc-500 text-sm">No active tenancies found. Onboard a tenant first.</p>
-            ) : (
-              tenancies.map(t => (
-                <button key={t.id} onClick={() => setTenancyId(t.id)}
-                  className={`w-full flex items-center justify-between p-3 rounded-xl border text-left transition-all ${tenancyId===t.id?'border-teal-500/40 bg-teal-500/5':'border-zinc-800 bg-zinc-900/30 hover:border-zinc-700'}`}>
-                  <div>
-                    <p className="text-xs font-bold text-white">{t.tenant_name ?? t.full_name}</p>
-                    <p className="text-[9px] text-zinc-500">{t.unit_name} · ₦{safeF(t.rent_amount)}/mo</p>
-                  </div>
-                  <div className="text-right flex-shrink-0 ml-3">
-                    {(t.days_overdue ?? 0) > 0
-                      ? <span className="text-[8px] text-red-400 font-bold">{t.days_overdue}d overdue</span>
-                      : <span className="text-[8px] text-teal-400 font-bold">Current</span>
-                    }
-                    {tenancyId===t.id && <CheckCircle2 size={12} className="text-teal-400 mt-1 ml-auto"/>}
-                  </div>
-                </button>
-              ))
-            )}
-          </div>
-
-          {/* Notice type */}
-          <div className="space-y-2">
-            <label className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest block">Notice Type *</label>
-            <div className="grid grid-cols-2 gap-2">
-              {NOTICE_TYPES.map(n => {
-                const Icon = n.icon;
-                return (
-                  <button key={n.key} onClick={() => setNoticeType(n.key)}
-                    className={`p-3 rounded-xl border text-left transition-all ${noticeType===n.key?n.color:'border-zinc-800 bg-zinc-900/20 hover:border-zinc-700'}`}>
-                    <div className="flex items-center gap-2 mb-1">
-                      <Icon size={12} className={noticeType===n.key?'':'text-zinc-500'}/>
-                      <p className="text-[10px] font-black uppercase tracking-tight">{n.label}</p>
-                    </div>
-                    <p className="text-[8px] text-zinc-500">{n.days}-day deadline</p>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Legal badge */}
-          <div className={`px-3 py-2 rounded-xl border text-[9px] font-bold ${selectedNotice.badge}`}>
-            ⚖️ SHA-256 hashed · emailed as signed PDF · immutably ledgered
-          </div>
-
-          {/* Notes */}
-          <div className="space-y-1.5">
-            <label className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest block">Additional Notes (optional)</label>
-            <textarea value={notes} onChange={e=>setNotes(e.target.value)} rows={3}
-              placeholder="e.g. Rent overdue since 1 March — formal notice as per tenancy agreement…"
-              className="w-full bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-3 text-xs text-white placeholder:text-zinc-700 focus:border-teal-500 outline-none resize-none"/>
-          </div>
-
-          {result && (
-            <div className={`p-3 rounded-xl text-xs font-bold border ${isError?'bg-red-500/10 border-red-500/30 text-red-400':'bg-teal-500/10 border-teal-500/30 text-teal-400'}`}>
-              {result}
-            </div>
-          )}
-        </div>
-
-        <div className="p-5 border-t border-zinc-900 flex gap-2">
-          <button onClick={onClose}
-            className="flex-1 py-3 rounded-xl border border-zinc-800 text-zinc-500 font-bold text-[10px] uppercase tracking-widest hover:text-zinc-300 hover:border-zinc-600 transition-all">
-            Cancel
-          </button>
-          <button onClick={issue} disabled={sending||!tenancyId}
-            className="flex-1 py-3 rounded-xl bg-red-500 text-white font-black text-[10px] uppercase tracking-widest hover:bg-red-400 transition-all disabled:opacity-60 flex items-center justify-center gap-2">
-            {sending?<Loader2 size={13} className="animate-spin"/>:<Gavel size={13}/>}
-            {sending?'Issuing…':'Issue Notice'}
-          </button>
-        </div>
-      </div>
+  if (authLoading) return (
+    <div className="min-h-screen bg-[#050505] flex items-center justify-center">
+      <Loader2 className="animate-spin text-teal-500" size={28} />
     </div>
   );
-}
-
-// ── Main page ─────────────────────────────────────────────────────────────────
-function LandlordNoticesContent() {
-  const [tenancies,    setTenancies]    = useState<any[]>([]);
-  const [allNotices,   setAllNotices]   = useState<any[]>([]);
-  const [projects,     setProjects]     = useState<any[]>([]);
-  const [loading,      setLoading]      = useState(true);
-  const [error,        setError]        = useState('');
-  const [showModal,    setShowModal]    = useState(false);
-  const [downloading,  setDownloading]  = useState<string|null>(null);
-
-  const load = async () => {
-    setLoading(true); setError('');
-    try {
-      const [tRes, pRes] = await Promise.allSettled([
-        api.get('/api/rental/landlord/tenants'),
-        api.get('/api/projects/my'),
-      ]);
-      let tenancyList: any[] = [];
-      let projectList: any[] = [];
-      if (tRes.status==='fulfilled') tenancyList = tRes.value.data.tenants ?? [];
-      if (pRes.status==='fulfilled') projectList = pRes.value.data.projects ?? [];
-      setTenancies(tenancyList);
-      setProjects(projectList);
-
-      // Fetch notices for each project
-      const noticeResults = await Promise.allSettled(
-        projectList.map((p:any) => api.get(`/api/notices/${p.id}`))
-      );
-      const combined: any[] = [];
-      noticeResults.forEach(r => {
-        if (r.status==='fulfilled') combined.push(...(r.value.data.notices ?? []));
-      });
-      combined.sort((a,b) => new Date(b.issued_at).getTime() - new Date(a.issued_at).getTime());
-      setAllNotices(combined);
-    } catch(e:any) {
-      setError(e?.response?.data?.error ?? 'Could not load notices.');
-    } finally { setLoading(false); }
-  };
-
-  useEffect(() => { load(); }, []);
-
-  const downloadNotice = async (noticeId: string, noticeNumber: string) => {
-    setDownloading(noticeId);
-    try {
-      const res = await api.get(`/api/notices/download/${noticeId}`, { responseType:'blob' });
-      const url = URL.createObjectURL(new Blob([res.data]));
-      const a = document.createElement('a');
-      a.href = url; a.download = `${noticeNumber}.pdf`; a.click();
-      URL.revokeObjectURL(url);
-    } catch(e:any) {
-      alert(e?.response?.data?.error ?? 'Download failed.');
-    } finally { setDownloading(null); }
-  };
-
-  if (loading) return (
-    <div className="min-h-screen bg-[#050505] text-white"><Navbar/>
-      <div className="flex items-center justify-center py-40"><Loader2 className="animate-spin text-teal-500" size={28}/></div>
-    <Footer/></div>
-  );
-
-  const overdueCount = tenancies.filter(t=>(t.days_overdue??0)>0).length;
-  const servedCount  = allNotices.filter(n=>n.status==='SERVED').length;
 
   return (
     <div className="min-h-screen bg-[#050505] text-white flex flex-col">
-      <Navbar/>
+      <Navbar />
+      <main className="flex-1 max-w-4xl mx-auto px-6 py-10 w-full space-y-8">
 
-      {showModal && (
-        <IssueNoticeModal
-          tenancies={tenancies}
-          onClose={() => setShowModal(false)}
-          onIssued={load}
-        />
-      )}
-
-      {/* Status bar */}
-      <div className="border-b border-zinc-800 bg-black px-6 py-2 flex items-center gap-5 text-[9px] font-mono uppercase tracking-widest overflow-x-auto">
-        <span className="text-teal-500 flex-shrink-0">Landlord · Legal</span>
-        <span className="text-zinc-500 flex-shrink-0">{allNotices.length} notices</span>
-        {overdueCount>0 && <span className="text-red-400 font-black flex-shrink-0">{overdueCount} tenants overdue</span>}
-      </div>
-
-      <main className="flex-1 max-w-5xl mx-auto px-6 py-10 space-y-8 w-full">
-
-        <Link href="/landlord/tenants" className="flex items-center gap-2 text-zinc-500 hover:text-white text-xs font-bold uppercase tracking-widest transition-colors">
-          <ArrowLeft size={13}/> Tenants
+        {/* Back link */}
+        <Link href="/landlord/tenants"
+          className="flex items-center gap-2 text-zinc-500 hover:text-white text-xs font-bold uppercase tracking-widest transition-colors">
+          <ArrowLeft size={13} /> Tenants
         </Link>
 
-        <div className="flex items-start justify-between flex-wrap gap-4">
+        {/* Header */}
+        <div className="flex items-start justify-between gap-4">
           <div className="border-l-2 border-red-500 pl-5">
-            <p className="text-[9px] text-red-400 font-mono font-black tracking-widest uppercase mb-1">Litigation Command</p>
-            <h1 className="text-3xl font-black uppercase tracking-tighter">Legal Notices</h1>
+            <p className="text-[9px] text-red-400 uppercase font-black tracking-[0.25em] mb-1">Landlord · Legal</p>
+            <h1 className="text-2xl font-black uppercase tracking-tight">Litigation Command</h1>
             <p className="text-zinc-500 text-xs mt-1">Issue, track and download formal notices — SHA-256 ledgered</p>
           </div>
-          <button onClick={() => setShowModal(true)}
-            className="flex items-center gap-1.5 px-5 py-2.5 bg-red-500 text-white rounded-xl text-[9px] font-black uppercase tracking-widest hover:bg-red-400 transition-all">
-            <Gavel size={12}/> Issue Notice
+          <button
+            onClick={() => { setShowForm(true); setSubmitted(null); setSubmitErr(''); }}
+            className="flex items-center gap-2 px-4 py-2.5 bg-red-500/10 border border-red-500/30 text-red-400 font-black text-[10px] uppercase tracking-wider rounded-xl hover:bg-red-500/20 transition-all flex-shrink-0"
+          >
+            <ShieldAlert size={13} /> Issue Notice
           </button>
         </div>
 
-        {error && (
-          <div className="p-4 rounded-xl border border-red-500/20 bg-red-500/5 text-red-400 text-sm font-bold flex items-center gap-2">
-            <AlertCircle size={14}/> {error}
-            <button onClick={load} className="ml-auto text-teal-500 text-xs font-black hover:text-white">Retry →</button>
-          </div>
-        )}
-
-        {/* KPI */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        {/* Stats */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           {[
-            {label:'Total Notices',    value:allNotices.length,     color:'text-white'},
-            {label:'Served',           value:servedCount,           color:'text-red-400'},
-            {label:'Overdue Tenants',  value:overdueCount,          color:overdueCount>0?'text-red-400':'text-teal-400'},
-            {label:'Properties',       value:projects.length,       color:'text-zinc-400'},
-          ].map(s=>(
-            <div key={s.label} className="p-5 rounded-2xl border border-zinc-800 bg-zinc-900/20 space-y-1.5">
-              <p className={`text-2xl font-black font-mono ${s.color}`}>{s.value}</p>
-              <p className="text-[8px] text-zinc-600 uppercase font-bold tracking-widest">{s.label}</p>
+            { label: 'Total Notices',   value: totalNotices },
+            { label: 'Served',          value: servedCount  },
+            { label: 'Overdue Tenants', value: issuedCount  },
+            { label: 'Properties',      value: projectCount },
+          ].map(s => (
+            <div key={s.label} className="p-4 rounded-2xl border border-zinc-800 bg-zinc-900/20 text-center">
+              <p className="text-2xl font-black font-mono text-white">{s.value}</p>
+              <p className="text-[8px] text-zinc-500 uppercase font-bold tracking-widest mt-1">{s.label}</p>
             </div>
           ))}
         </div>
 
-        {/* Overdue tenants needing action */}
-        {overdueCount > 0 && (
-          <div className="p-4 rounded-2xl border border-red-500/30 bg-red-500/5 space-y-3">
-            <p className="text-[9px] text-red-400 uppercase font-black tracking-widest flex items-center gap-1.5">
-              <AlertCircle size={11}/> Tenants Requiring Immediate Action
-            </p>
-            {tenancies.filter(t=>(t.days_overdue??0)>0).map(t=>(
-              <div key={t.id} className="flex items-center justify-between flex-wrap gap-3">
-                <div>
-                  <p className="font-bold text-sm">{t.tenant_name ?? t.full_name}</p>
-                  <p className="text-[9px] text-zinc-500">{t.unit_name} · {t.days_overdue} days overdue · ₦{safeF(t.rent_amount)}</p>
-                </div>
-                <button onClick={() => setShowModal(true)}
-                  className="flex items-center gap-1.5 px-3 py-2 bg-red-500 text-white rounded-xl text-[9px] font-black uppercase hover:bg-red-400 transition-all flex-shrink-0">
-                  <Gavel size={10}/> Issue Notice
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* Notice type quick-issue grid */}
-        <div>
-          <p className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest mb-3">Quick Issue</p>
+        {/* Quick issue pills */}
+        <div className="space-y-3">
+          <p className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest">Quick Issue</p>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            {NOTICE_TYPES.map(n => {
-              const Icon = n.icon;
-              return (
-                <button key={n.key} onClick={() => setShowModal(true)}
-                  className={`p-4 rounded-2xl border text-left transition-all hover:-translate-y-0.5 ${n.color}`}>
-                  <Icon size={14} className="mb-1.5"/>
-                  <p className="text-[10px] font-black uppercase tracking-tight">{n.label}</p>
-                  <p className="text-[8px] text-zinc-500 mt-0.5">{n.days}-day deadline</p>
-                </button>
-              );
-            })}
+            {NOTICE_TYPES.map(nt => (
+              <button key={nt.value}
+                onClick={() => { setNoticeType(nt.value); setShowForm(true); setSubmitted(null); }}
+                className={`p-3 rounded-xl border text-left transition-all hover:scale-[1.02] ${colorMap[nt.color]}`}
+              >
+                <p className="font-black text-xs uppercase tracking-tight">{nt.label}</p>
+                <p className="text-[8px] mt-0.5 opacity-70">{nt.deadline}</p>
+              </button>
+            ))}
           </div>
         </div>
 
+        {/* Issue form modal */}
+        {showForm && (
+          <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+            <div className="bg-[#0a0a0a] border border-zinc-800 rounded-3xl p-7 w-full max-w-lg space-y-5 shadow-2xl">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-[9px] text-red-400 uppercase font-black tracking-widest mb-0.5">Litigation Command</p>
+                  <h2 className="text-base font-black uppercase tracking-tight">Issue Legal Notice</h2>
+                </div>
+                <button onClick={() => setShowForm(false)}
+                  className="p-2 rounded-lg border border-zinc-800 text-zinc-500 hover:text-white hover:border-zinc-600 transition-all">
+                  <X size={14} />
+                </button>
+              </div>
+
+              {/* Tenant selector */}
+              <div>
+                <label className="block text-[9px] text-zinc-500 uppercase font-bold tracking-widest mb-2">
+                  Select Tenant <span className="text-red-400">*</span>
+                </label>
+                {loadingTen ? (
+                  <div className="flex items-center gap-2 text-zinc-600 text-xs py-3">
+                    <Loader2 size={12} className="animate-spin" /> Loading tenants…
+                  </div>
+                ) : tenErr ? (
+                  <p className="text-red-400 text-xs">{tenErr}</p>
+                ) : tenancies.length === 0 ? (
+                  <div className="p-3 rounded-xl border border-zinc-800 text-zinc-500 text-xs flex items-center gap-2">
+                    <Building2 size={14} /> No active tenancies found. Onboard a tenant first.
+                  </div>
+                ) : (
+                  <div className="relative">
+                    <select
+                      value={selTenancy}
+                      onChange={e => setSelTenancy(e.target.value)}
+                      className="w-full bg-[#050505] border border-zinc-800 rounded-xl px-3 py-2.5 text-white text-xs appearance-none pr-8 focus:border-red-500/40 focus:outline-none"
+                    >
+                      <option value="">— Choose tenant —</option>
+                      {tenancies.map(t => (
+                        <option key={t.tenancy_id} value={t.tenancy_id}>
+                          {t.tenant_name} · {t.unit_name} ({t.project_title})
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronDown size={12} className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-500 pointer-events-none" />
+                  </div>
+                )}
+              </div>
+
+              {/* Selected tenant preview */}
+              {selTenancy && (() => {
+                const t = tenancies.find(x => x.tenancy_id === selTenancy);
+                if (!t) return null;
+                return (
+                  <div className="p-3 rounded-xl border border-zinc-800 bg-zinc-900/30 text-xs space-y-1">
+                    <p className="font-bold text-white">{t.tenant_name}</p>
+                    <p className="text-zinc-500">{t.unit_name} · {t.project_title}</p>
+                    <p className="text-zinc-500">Rent: <span className="text-white font-mono">{t.currency || 'NGN'} {safeN(t.rent_amount).toLocaleString()}</span></p>
+                    {t.next_due_date && (
+                      <p className="text-zinc-500">Next due: <span className="text-amber-400">{new Date(t.next_due_date).toLocaleDateString('en-GB')}</span></p>
+                    )}
+                  </div>
+                );
+              })()}
+
+              {/* Notice type */}
+              <div>
+                <label className="block text-[9px] text-zinc-500 uppercase font-bold tracking-widest mb-2">
+                  Notice Type <span className="text-red-400">*</span>
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  {NOTICE_TYPES.map(nt => (
+                    <button key={nt.value} type="button"
+                      onClick={() => setNoticeType(nt.value)}
+                      className={`p-3 rounded-xl border text-left transition-all ${noticeType === nt.value ? colorMap[nt.color] + ' ring-1 ring-current' : 'border-zinc-800 text-zinc-500 hover:border-zinc-700'}`}
+                    >
+                      <p className="font-black text-[10px] uppercase tracking-tight">{nt.label}</p>
+                      <p className="text-[8px] mt-0.5 opacity-70">{nt.deadline}</p>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Amount overdue */}
+              <div>
+                <label className="block text-[9px] text-zinc-500 uppercase font-bold tracking-widest mb-2">
+                  Amount Overdue (₦) — optional
+                </label>
+                <input type="number" value={amountOver} onChange={e => setAmountOver(e.target.value)}
+                  placeholder="Leave blank to use rent amount"
+                  className="w-full bg-[#050505] border border-zinc-800 rounded-xl px-3 py-2.5 text-white text-xs focus:border-red-500/40 focus:outline-none placeholder:text-zinc-700" />
+              </div>
+
+              {/* Notes */}
+              <div>
+                <label className="block text-[9px] text-zinc-500 uppercase font-bold tracking-widest mb-2">
+                  Additional Notes (optional)
+                </label>
+                <textarea rows={2} value={notes} onChange={e => setNotes(e.target.value)}
+                  placeholder="Any additional context for this notice…"
+                  className="w-full bg-[#050505] border border-zinc-800 rounded-xl px-3 py-2.5 text-white text-xs font-sans resize-none focus:border-red-500/40 focus:outline-none placeholder:text-zinc-700" />
+              </div>
+
+              <p className="text-[8px] text-zinc-600 text-center">⚖️ SHA-256 hashed · emailed as signed PDF · immutably ledgered</p>
+
+              {submitErr && (
+                <div className="flex items-center gap-2 p-3 rounded-xl border border-red-500/20 bg-red-500/5 text-red-400 text-xs">
+                  <AlertCircle size={12} /> {submitErr}
+                </div>
+              )}
+
+              <div className="flex gap-3">
+                <button onClick={() => setShowForm(false)}
+                  className="flex-1 py-2.5 border border-zinc-800 rounded-xl text-zinc-500 text-xs font-bold uppercase tracking-wider hover:border-zinc-700 hover:text-white transition-all">
+                  Cancel
+                </button>
+                <button onClick={handleIssue} disabled={submitting || !selTenancy}
+                  className="flex-1 py-2.5 bg-red-500/20 border border-red-500/30 text-red-400 hover:bg-red-500/30 rounded-xl text-xs font-black uppercase tracking-wider transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2">
+                  {submitting
+                    ? <><Loader2 size={12} className="animate-spin" /> Issuing…</>
+                    : <><ShieldAlert size={12} /> Issue Notice</>}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Issued confirmation */}
+        {submitted && (
+          <div className="p-5 rounded-2xl border border-teal-500/20 bg-teal-500/5 space-y-3">
+            <div className="flex items-center gap-2 text-teal-400">
+              <CheckCircle size={16} />
+              <p className="font-black text-sm uppercase tracking-tight">Notice Issued Successfully</p>
+            </div>
+            <div className="grid grid-cols-2 gap-3 text-xs">
+              <div><p className="text-zinc-600 uppercase font-bold text-[8px] tracking-widest">Notice No.</p><p className="text-white font-mono mt-0.5">{submitted.notice_number}</p></div>
+              <div><p className="text-zinc-600 uppercase font-bold text-[8px] tracking-widest">Deadline</p><p className="text-amber-400 mt-0.5">{submitted.response_deadline}</p></div>
+              <div><p className="text-zinc-600 uppercase font-bold text-[8px] tracking-widest">Tenant</p><p className="text-white mt-0.5">{submitted.tenant_name}</p></div>
+              <div><p className="text-zinc-600 uppercase font-bold text-[8px] tracking-widest">Unit</p><p className="text-white mt-0.5">{submitted.unit_name}</p></div>
+            </div>
+            <div className="flex items-start gap-2 pt-1 border-t border-teal-500/20">
+              <Hash size={10} className="text-teal-500 mt-0.5 flex-shrink-0" />
+              <p className="font-mono text-[8px] text-zinc-600 break-all">{submitted.ledger_hash}</p>
+            </div>
+            <button onClick={() => setSubmitted(null)} className="text-[9px] text-zinc-600 hover:text-zinc-400 transition-colors">Dismiss</button>
+          </div>
+        )}
+
         {/* Notice history */}
         <div className="space-y-4">
-          <p className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest">
-            Notice History ({allNotices.length})
-          </p>
+          <p className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest">Notice History ({totalNotices})</p>
 
-          {allNotices.length === 0 ? (
-            <div className="py-16 text-center border border-dashed border-zinc-800 rounded-2xl space-y-3">
-              <Gavel className="text-zinc-700 mx-auto" size={36}/>
-              <p className="text-zinc-400 font-bold">No notices issued yet</p>
-              <p className="text-zinc-600 text-sm">Notices appear here once issued. Each is SHA-256 hashed and court-admissible.</p>
+          {loadingNot ? (
+            <div className="flex items-center gap-2 text-zinc-600 text-xs py-6 justify-center">
+              <Loader2 size={14} className="animate-spin" /> Loading notices…
+            </div>
+          ) : notices.length === 0 ? (
+            <div className="py-12 text-center border border-dashed border-zinc-800 rounded-2xl space-y-3">
+              <FileText className="text-zinc-700 mx-auto" size={28} />
+              <p className="text-zinc-500 text-xs font-bold">No notices issued yet</p>
+              <p className="text-zinc-700 text-[10px]">Notices appear here once issued. Each is SHA-256 hashed and court-admissible.</p>
             </div>
           ) : (
-            <div className="space-y-3">
-              {allNotices.map(n => (
-                <div key={n.id} className="p-5 rounded-2xl border border-zinc-800 bg-zinc-900/20 hover:border-zinc-700 transition-all">
-                  <div className="flex items-start justify-between gap-4 flex-wrap">
-                    <div className="space-y-1 flex-1 min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap mb-1">
-                        <span className="text-[8px] font-mono text-teal-500 bg-teal-500/10 border border-teal-500/20 px-2 py-0.5 rounded">
-                          {n.notice_number}
-                        </span>
-                        <span className={`text-[7px] px-2 py-0.5 rounded border font-black uppercase ${STATUS_STYLE[n.status]??'border-zinc-700 text-zinc-500'}`}>
-                          {n.status}
-                        </span>
-                        <span className="text-[7px] text-zinc-600 border border-zinc-800 px-2 py-0.5 rounded font-mono">
-                          {n.notice_type?.replace(/_/g,' ')}
-                        </span>
+            <div className="space-y-2">
+              {notices.map(n => {
+                const nt = NOTICE_TYPES.find(x => x.value === n.notice_type);
+                return (
+                  <div key={n.id}
+                    className="flex items-center justify-between p-4 rounded-2xl border border-zinc-800 bg-zinc-900/10 hover:border-zinc-700 transition-all">
+                    <div className="flex items-center gap-4">
+                      <span className={`text-[8px] px-2 py-1 rounded border font-black uppercase ${nt ? colorMap[nt.color] : 'border-zinc-700 text-zinc-500'}`}>
+                        {nt?.label ?? n.notice_type}
+                      </span>
+                      <div>
+                        <p className="font-bold text-xs text-white">{n.tenant_name} · {n.unit_name}</p>
+                        <p className="text-[9px] text-zinc-600 font-mono mt-0.5">{n.notice_number} · Due {n.response_deadline}</p>
                       </div>
-                      <p className="font-bold text-sm">{n.tenant_name}</p>
-                      <div className="flex items-center gap-3 text-[9px] text-zinc-500 flex-wrap">
-                        <span>{n.unit_name}</span>
-                        <span>Issued: {fmtDate(n.issued_at)}</span>
-                        {n.response_deadline && <span>Deadline: {fmtDate(n.response_deadline)}</span>}
-                        {n.amount_overdue && <span className="text-red-400 font-bold">₦{safeF(n.amount_overdue)} overdue</span>}
-                      </div>
-                      {n.ledger_hash && (
-                        <p className="text-[8px] text-zinc-700 font-mono flex items-center gap-1 mt-0.5">
-                          <ShieldCheck size={8} className="text-teal-500/40"/> {n.ledger_hash.slice(0,24)}…
-                        </p>
-                      )}
                     </div>
-                    <button
-                      onClick={() => downloadNotice(n.id, n.notice_number)}
-                      disabled={downloading===n.id}
-                      className="flex items-center gap-1.5 px-3 py-2 border border-zinc-700 text-zinc-400 rounded-xl text-[9px] font-bold uppercase hover:text-teal-400 hover:border-teal-500/30 transition-all flex-shrink-0 disabled:opacity-50">
-                      {downloading===n.id?<Loader2 size={10} className="animate-spin"/>:<Download size={10}/>} PDF
-                    </button>
+                    <div className="text-right flex-shrink-0">
+                      <span className={`text-[8px] px-2 py-0.5 rounded border font-bold uppercase ${n.status === 'SERVED' ? 'border-teal-500/30 text-teal-400' : 'border-amber-500/30 text-amber-400'}`}>
+                        {n.status}
+                      </span>
+                      <p className="text-[8px] text-zinc-700 mt-1">{new Date(n.issued_at).toLocaleDateString('en-GB')}</p>
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
 
-        {/* Trust */}
-        <div className="flex flex-wrap gap-3 pt-4 border-t border-zinc-900">
-          {[
-            <><ShieldCheck size={9}/> SHA-256 Hashed</>,
-            <><FileText size={9}/> Court-Admissible PDF</>,
-            <><CheckCircle2 size={9}/> Immutable Ledger</>,
-          ].map((b,i)=>(
-            <span key={i} className="flex items-center gap-1 text-[8px] text-teal-500 border border-teal-500/20 bg-teal-500/5 px-3 py-1.5 rounded-lg font-bold uppercase">{b}</span>
+        {/* Trust anchors */}
+        <div className="flex items-center gap-6 justify-center pt-4 border-t border-zinc-900">
+          {['SHA-256 Hashed', 'Court-Admissible PDF', 'Immutable Ledger'].map(s => (
+            <p key={s} className="text-[8px] text-zinc-600 uppercase font-bold tracking-widest">{s}</p>
           ))}
         </div>
-      </main>
-      <Footer/>
-    </div>
-  );
-}
 
-export default function LandlordNoticesPage() {
-  return (
-    <Suspense fallback={<div className="h-screen bg-[#050505] flex items-center justify-center"><Loader2 className="animate-spin text-teal-500" size={28}/></div>}>
-      <LandlordNoticesContent/>
-    </Suspense>
+      </main>
+      <Footer />
+    </div>
   );
 }
