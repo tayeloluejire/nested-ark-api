@@ -5321,7 +5321,7 @@ app.get('/api/landlord/tenancies/active', authenticate, async (req: Request, res
   try {
     const r = await pool.query(
       `SELECT
-         t.id               AS tenancy_id,
+         t.id                AS tenancy_id,
          t.tenant_name,
          t.tenant_email,
          t.tenant_phone,
@@ -5331,12 +5331,12 @@ app.get('/api/landlord/tenancies/active', authenticate, async (req: Request, res
          t.payment_day,
          t.lease_start,
          t.lease_end,
-         ru.id              AS unit_id,
+         ru.id               AS unit_id,
          ru.unit_name,
-         p.id               AS project_id,
-         p.title            AS project_title,
+         p.id                AS project_id,
+         p.title             AS project_title,
          p.project_number,
-         COALESCE(fpv.vault_balance, 0)  AS vault_balance,
+         COALESCE(fpv.vault_balance, 0) AS vault_balance,
          fpv.next_due_date
        FROM tenancies t
        INNER JOIN rental_units ru ON ru.id = t.unit_id
@@ -5484,6 +5484,45 @@ app.get('/api/rental/units/single/:unitId', authenticate, async (req: Request, r
     if (!r.rows.length) return res.status(404).json({ error: 'Unit not found' });
     return res.json({ success: true, unit: r.rows[0] });
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
+// ── GET /api/rental/landlord/tenants — alias kept for backward compat ────────
+// The notices page calls this path. Delegates to the same cross-project query.
+app.get('/api/rental/landlord/tenants', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const landlordId = (req as any).userId;
+  try {
+    const r = await pool.query(
+      `SELECT
+         t.id               AS tenancy_id,
+         t.id,
+         t.tenant_name,
+         t.tenant_email,
+         t.tenant_phone,
+         t.status,
+         t.rent_amount,
+         t.currency,
+         t.unit_id,
+         ru.unit_name,
+         p.id               AS project_id,
+         p.title            AS project_title,
+         p.project_number,
+         COALESCE(fpv.vault_balance, 0) AS vault_balance,
+         fpv.next_due_date
+       FROM tenancies t
+       INNER JOIN rental_units ru ON ru.id = t.unit_id
+       INNER JOIN projects p      ON p.id  = ru.project_id
+       LEFT  JOIN flex_pay_vaults fpv ON fpv.tenancy_id = t.id
+       WHERE p.sponsor_id = $1
+         AND t.status = 'ACTIVE'
+       ORDER BY p.title, t.tenant_name
+       LIMIT 500`,
+      [landlordId]
+    );
+    // Return both shapes the frontend might expect
+    return res.json({ success: true, tenancies: r.rows, tenants: r.rows, rows: r.rows, count: r.rows.length });
+  } catch (e: any) {
+    return res.status(500).json({ error: e.message });
+  }
 });
 
 // ── GET /api/rental/tenants — landlord's full tenant roster (fast, no timeout) ─────────
@@ -7486,7 +7525,6 @@ app.post('/api/flex-pay/contribute', authenticate, async (req: Request, res: Res
     const periodLabel = new Date().toISOString().slice(0,7);
     const h = crypto.createHash('sha256').update(`flex-contrib-${vault_id}-${amount}-${Date.now()}`).digest('hex');
 
-    // ON CONFLICT DO NOTHING ensures DB-level idempotency even under concurrent requests
     await client.query(
       `INSERT INTO flex_contributions (vault_id, tenancy_id, amount_ngn, paystack_ref, status, period_label, paid_at, ledger_hash)
        VALUES ($1,$2,$3,$4,'SUCCESS',$5,NOW(),$6)
