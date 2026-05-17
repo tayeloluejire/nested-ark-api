@@ -5313,7 +5313,68 @@ app.get('/api/landlord/payout-history', authenticate, async (req: Request, res: 
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
 
-// ── POST /api/rental/units — owner adds a lettable unit ──────────────────
+// ── GET /api/landlord/tenancies/active ─────────────────────────────────────
+// Used by the Litigation Command tenant dropdown — returns ALL active tenancies
+// across all of this landlord's projects in one call (cross-project scope).
+app.get('/api/landlord/tenancies/active', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const landlordId = (req as any).userId;
+  try {
+    const r = await pool.query(
+      `SELECT
+         t.id               AS tenancy_id,
+         t.tenant_name,
+         t.tenant_email,
+         t.tenant_phone,
+         t.status,
+         t.rent_amount,
+         t.currency,
+         t.payment_day,
+         t.lease_start,
+         t.lease_end,
+         ru.id              AS unit_id,
+         ru.unit_name,
+         p.id               AS project_id,
+         p.title            AS project_title,
+         p.project_number,
+         COALESCE(fpv.vault_balance, 0)  AS vault_balance,
+         fpv.next_due_date
+       FROM tenancies t
+       INNER JOIN rental_units ru ON ru.id = t.unit_id
+       INNER JOIN projects p      ON p.id  = ru.project_id
+       LEFT  JOIN flex_pay_vaults fpv ON fpv.tenancy_id = t.id
+       WHERE p.sponsor_id = $1
+         AND t.status = 'ACTIVE'
+       ORDER BY p.title, t.tenant_name
+       LIMIT 500`,
+      [landlordId]
+    );
+    return res.json({ success: true, tenancies: r.rows, count: r.rows.length });
+  } catch (e: any) {
+    return res.status(500).json({ error: e.message });
+  }
+});
+
+// ── GET /api/landlord/notices — all notices across landlord's portfolio ──────
+app.get('/api/landlord/notices', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const landlordId = (req as any).userId;
+  try {
+    const r = await pool.query(
+      `SELECT ln.*, t.tenant_name, t.tenant_email, ru.unit_name,
+              p.title AS project_title, p.project_number
+       FROM legal_notices ln
+       JOIN tenancies t    ON t.id  = ln.tenancy_id
+       JOIN rental_units ru ON ru.id = ln.unit_id
+       JOIN projects p     ON p.id  = ln.project_id
+       WHERE p.sponsor_id = $1
+       ORDER BY ln.issued_at DESC
+       LIMIT 100`,
+      [landlordId]
+    );
+    return res.json({ success: true, notices: r.rows, count: r.rows.length });
+  } catch (e: any) {
+    return res.status(500).json({ error: e.message });
+  }
+});
 app.post('/api/rental/units', authenticate, async (req: Request, res: Response): Promise<any> => {
   const userId = (req as any).userId;
   try {
@@ -7729,7 +7790,7 @@ app.get('/api/tenant/verify-payment', authenticate, async (req: Request, res: Re
   const { reference } = req.query as { reference: string };
   if (!reference) return res.status(400).json({ error: 'reference required' });
 
-  // Sanitise — reference must match ARK-VAULT-... or similar known patterns; reject anything else
+  // Sanitise — reference must match known patterns; reject anything else
   if (!/^[A-Za-z0-9\-_]{6,100}$/.test(reference)) {
     return res.status(400).json({ error: 'Invalid reference format' });
   }
