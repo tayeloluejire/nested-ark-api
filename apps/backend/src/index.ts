@@ -989,14 +989,21 @@ const ensureTablesExist = async () => {
       -- Notice auto-increment counter
       CREATE SEQUENCE IF NOT EXISTS notice_number_seq START 1;
 
-      -- ── legal_notices status column (backfill for DBs created before this column) ──
-      ALTER TABLE legal_notices ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'ISSUED';
+      -- ── legal_notices: backfill columns missing from older prod DBs ─────────────
+      ALTER TABLE legal_notices ADD COLUMN IF NOT EXISTS status     VARCHAR(20) DEFAULT 'ISSUED';
+      ALTER TABLE legal_notices ADD COLUMN IF NOT EXISTS unit_id    UUID REFERENCES rental_units(id);
+      ALTER TABLE legal_notices ADD COLUMN IF NOT EXISTS project_id UUID REFERENCES projects(id);
 
       -- ── flex_contributions: backfill UNIQUE index on paystack_ref for existing DBs ──
       -- (new tables get the UNIQUE in the CREATE TABLE above; this covers existing prod DBs)
       CREATE UNIQUE INDEX IF NOT EXISTS idx_fc_paystack_ref
         ON flex_contributions(paystack_ref)
         WHERE paystack_ref IS NOT NULL;
+
+      -- ── landlord_bank_accounts: ensure paystack_recipient_code column exists ──
+      ALTER TABLE landlord_bank_accounts ADD COLUMN IF NOT EXISTS paystack_recipient_code VARCHAR(100);
+      ALTER TABLE landlord_bank_accounts ADD COLUMN IF NOT EXISTS is_verified BOOLEAN DEFAULT true;
+      ALTER TABLE landlord_bank_accounts ADD COLUMN IF NOT EXISTS currency    VARCHAR(10) DEFAULT 'NGN';
 
       -- ── Unique constraint so onboard-tenant is idempotent ──────────────────
       -- Prevents Joseph Dimpa ×3 / Okon Mavelous ×2 duplicates.
@@ -3757,15 +3764,22 @@ app.post("/api/payments/webhook",
               if (newBalance >= target && PAYSTACK_SECRET) {
                 setImmediate(async () => {
                   try {
+                    // Try fpv.unit_id first; fall back through tenancy if unit_id is NULL
                     const projRes = await pool.query(
                       `SELECT p.sponsor_id, ru.rent_amount, ru.currency
                        FROM flex_pay_vaults fpv
-                       JOIN rental_units ru ON fpv.unit_id = ru.id
-                       JOIN projects p ON ru.project_id = p.id
-                       WHERE fpv.id = $1`,
+                       LEFT JOIN rental_units ru  ON ru.id  = COALESCE(fpv.unit_id, (
+                         SELECT t2.unit_id FROM tenancies t2 WHERE t2.id = fpv.tenancy_id LIMIT 1
+                       ))
+                       LEFT JOIN projects p       ON p.id   = COALESCE(ru.project_id, fpv.project_id)
+                       WHERE fpv.id = $1
+                         AND p.id IS NOT NULL`,
                       [v.id]
                     );
-                    if (!projRes.rows.length) return;
+                    if (!projRes.rows.length) {
+                      console.warn(`[WEBHOOK] Auto-payout skipped — cannot resolve project for vault ${v.id}`);
+                      return;
+                    }
                     const { sponsor_id, rent_amount, currency } = projRes.rows[0];
 
                     const bankRes = await pool.query(
@@ -3833,6 +3847,46 @@ app.post("/api/payments/webhook",
       } catch (e: any) {
         console.error('[WEBHOOK] Rent processing error:', e.message);
       }
+      return res.sendStatus(200);
+    }
+
+    // ── Handle transfer.success — log confirmed landlord payout ──────────────
+    if (event.event === 'transfer.success' || event.event === 'transfer.failed' || event.event === 'transfer.reversed') {
+      const td = event.data;
+      const tStatus   = event.event === 'transfer.success' ? 'SUCCESS'
+                      : event.event === 'transfer.failed'  ? 'FAILED'
+                      : 'REVERSED';
+      const tHash = crypto.createHash('sha256')
+        .update(`transfer-${td.reference}-${tStatus}-${Date.now()}`).digest('hex');
+
+      // Update system_ledger entry for this transfer
+      await pool.query(
+        `UPDATE system_ledger
+         SET payload = payload || $1::jsonb
+         WHERE transaction_type IN ('LANDLORD_PAYOUT','CASHOUT_TRANSFER','AUTO_PAYOUT')
+           AND payload->>'reference' = $2`,
+        [JSON.stringify({ transfer_status: tStatus, settled_at: new Date().toISOString() }), td.reference]
+      ).catch(() => {});
+
+      // Log the transfer outcome
+      await pool.query(
+        `INSERT INTO system_ledger (transaction_type, payload, immutable_hash)
+         VALUES ('TRANSFER_OUTCOME', $1, $2)`,
+        [JSON.stringify({
+          event:          event.event,
+          transfer_code:  td.transfer_code,
+          reference:      td.reference,
+          amount_kobo:    td.amount,
+          amount_ngn:     td.amount / 100,
+          recipient_code: td.recipient?.recipient_code,
+          account_name:   td.recipient?.details?.account_name,
+          bank_name:      td.recipient?.details?.bank_name,
+          status:         tStatus,
+          reason:         td.reason,
+        }), tHash]
+      ).catch(() => {});
+
+      console.log(`[WEBHOOK] Transfer ${tStatus}: ref=${td.reference} amount=₦${td.amount/100}`);
       return res.sendStatus(200);
     }
 
@@ -5108,6 +5162,36 @@ app.post('/api/paystack/resolve-account', authenticate, async (req: Request, res
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
 
+// ── GET /api/landlord/payout-status — show all bank accounts + payout readiness ─
+app.get('/api/landlord/payout-status', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId = (req as any).userId;
+  try {
+    const r = await pool.query(
+      `SELECT id, account_name, account_number, bank_name, currency, is_default,
+              CASE WHEN paystack_recipient_code IS NOT NULL THEN true ELSE false END AS payout_ready,
+              paystack_recipient_code,
+              created_at
+       FROM landlord_bank_accounts
+       WHERE user_id=$1
+       ORDER BY is_default DESC, created_at DESC`,
+      [userId]
+    );
+    const notReady = r.rows.filter((a: any) => !a.payout_ready).length;
+    return res.json({
+      success:    true,
+      accounts:   r.rows,
+      summary: {
+        total:       r.rows.length,
+        payout_ready: r.rows.length - notReady,
+        needs_setup:  notReady,
+        action_needed: notReady > 0
+          ? `${notReady} account(s) need recipient codes. Call POST /api/landlord/bank-accounts/:id/create-recipient for each.`
+          : null,
+      },
+    });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
 // ── GET /api/landlord/bank-accounts — list saved bank accounts ───────────────
 app.get('/api/landlord/bank-accounts', authenticate, async (req: Request, res: Response): Promise<any> => {
   const userId = (req as any).userId;
@@ -5169,6 +5253,56 @@ app.post('/api/landlord/bank-accounts', authenticate, async (req: Request, res: 
        currency || 'NGN', recipientCode, set_as_default ?? true]
     );
     return res.status(201).json({ success: true, account: r.rows[0] });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
+// ── POST /api/landlord/bank-accounts/:id/create-recipient — backfill recipient ─
+// Repairs existing bank accounts that were saved without a Paystack recipient code.
+// Call this once per account; safe to call multiple times (idempotent).
+app.post('/api/landlord/bank-accounts/:id/create-recipient', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId = (req as any).userId;
+  const { id }  = req.params;
+  try {
+    const acctRes = await pool.query(
+      `SELECT * FROM landlord_bank_accounts WHERE id=$1 AND user_id=$2`,
+      [id, userId]
+    );
+    if (!acctRes.rows.length) return res.status(404).json({ error: 'Bank account not found' });
+    const acct = acctRes.rows[0];
+
+    if (acct.paystack_recipient_code) {
+      return res.json({ success: true, message: 'Recipient code already set', recipient_code: acct.paystack_recipient_code });
+    }
+
+    if (!PAYSTACK_SECRET) return res.status(503).json({ error: 'Payment gateway not configured' });
+
+    const prRes = await fetch(`${PAYSTACK_BASE}/transferrecipient`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${PAYSTACK_SECRET}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type:           'nuban',
+        name:           acct.account_name,
+        account_number: acct.account_number,
+        bank_code:      acct.bank_code,
+        currency:       acct.currency || 'NGN',
+      }),
+    });
+    const prData = await prRes.json() as any;
+
+    if (!prData.status || !prData.data?.recipient_code) {
+      return res.status(400).json({ error: prData.message || 'Paystack could not create recipient. Check account details.' });
+    }
+
+    await pool.query(
+      `UPDATE landlord_bank_accounts SET paystack_recipient_code=$1 WHERE id=$2`,
+      [prData.data.recipient_code, id]
+    );
+
+    return res.json({
+      success:        true,
+      recipient_code: prData.data.recipient_code,
+      message:        'Recipient code created and saved. This account can now receive automatic payouts.',
+    });
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
 
@@ -7821,20 +7955,14 @@ app.get('/api/tenant/my-contributions', authenticate, async (req: Request, res: 
 });
 
 // ── GET /api/tenant/verify-payment ──────────────────────────────────────────
-// Called by the success page to confirm a vault installment was recorded.
-// Scoped to authenticated user — cannot be used to probe another tenant's data.
 app.get('/api/tenant/verify-payment', authenticate, async (req: Request, res: Response): Promise<any> => {
   const userId    = (req as any).userId;
   const { reference } = req.query as { reference: string };
   if (!reference) return res.status(400).json({ error: 'reference required' });
-
-  // Sanitise — reference must match known patterns; reject anything else
   if (!/^[A-Za-z0-9\-_]{6,100}$/.test(reference)) {
     return res.status(400).json({ error: 'Invalid reference format' });
   }
-
   try {
-    // JOIN through to tenancies to verify this reference belongs to the calling user
     const r = await pool.query(
       `SELECT fc.id, fc.amount_ngn, fc.paystack_ref, fc.period_label, fc.ledger_hash,
               fc.status, fc.paid_at,
@@ -7847,11 +7975,10 @@ app.get('/api/tenant/verify-payment', authenticate, async (req: Request, res: Re
          AND (fpv.tenant_user_id = $2 OR t.tenant_user_id = $2)`,
       [reference, userId]
     );
-
     if (r.rows.length) {
-      const row       = r.rows[0];
-      const balance   = Math.max(0, Number(row.vault_balance)  || 0);
-      const target    = Math.max(1, Number(row.target_amount)  || 1);
+      const row = r.rows[0];
+      const balance   = Math.max(0, Number(row.vault_balance) || 0);
+      const target    = Math.max(1, Number(row.target_amount) || 1);
       const fundedPct = Math.min(Math.round((balance / target) * 100), 100);
       return res.json({
         verified:      true,
@@ -7867,16 +7994,12 @@ app.get('/api/tenant/verify-payment', authenticate, async (req: Request, res: Re
         paid_at:       row.paid_at,
       });
     }
-
-    // Not yet recorded — webhook may still be processing
     return res.status(202).json({
-      verified:  false,
-      error:     'Payment received but vault update is still processing. Please check your vault in a moment.',
+      verified: false,
+      error: 'Payment received but vault update is still processing. Please check your vault in a moment.',
       reference,
     });
-  } catch (e: any) {
-    return res.status(500).json({ error: e.message });
-  }
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
 
 // ── GET /api/tenant/my-notices ──────────────────────────────────────────────
@@ -7991,7 +8114,6 @@ app.post('/api/tenant/pay-installment', authenticate, async (req: Request, res: 
     const totalNaira    = baseAmountNaira + paystackFee;
     const amountKobo    = Math.round(totalNaira * 100);
 
-    // Safety cap: Paystack single-transaction max ₦9,999,999.99
     if (amountKobo > 999999999) {
       return res.status(400).json({ error: 'Amount exceeds single-transaction limit. Please split into smaller installments.' });
     }
@@ -8000,13 +8122,9 @@ app.post('/api/tenant/pay-installment', authenticate, async (req: Request, res: 
     const ref        = `ARK-VAULT-${resolvedVaultId.slice(0, 8)}-${Date.now()}`;
     const FRONTEND   = process.env.FRONTEND_URL || 'https://nested-ark-api.vercel.app';
 
-    // Initialise Paystack transaction
     const psRes = await fetch('https://api.paystack.co/transaction/initialize', {
       method:  'POST',
-      headers: {
-        Authorization:  `Bearer ${PAYSTACK_SECRET}`,
-        'Content-Type': 'application/json',
-      },
+      headers: { Authorization: `Bearer ${PAYSTACK_SECRET}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         email,
         amount:       amountKobo,
