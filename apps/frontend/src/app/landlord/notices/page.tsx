@@ -139,6 +139,17 @@ function LitigationCommandContent() {
       setNotices(prev => [newNote, ...prev]);
       setShowForm(false);
       setSelTenancy(''); setNoticeType('NOTICE_TO_PAY'); setAmountOver(''); setNotes('');
+      // If the backend generated a PDF, trigger a client-side download automatically
+      if (issued.pdf_base64) {
+        try {
+          const byteArr = Uint8Array.from(atob(issued.pdf_base64), c => c.charCodeAt(0));
+          const blob = new Blob([byteArr], { type: 'application/pdf' });
+          const url  = URL.createObjectURL(blob);
+          const a    = document.createElement('a');
+          a.href = url; a.download = `${issued.notice_number}.pdf`; a.click();
+          setTimeout(() => URL.revokeObjectURL(url), 10000);
+        } catch { /* PDF download is non-critical — notice is already issued */ }
+      }
     } catch (e: any) {
       setSubmitErr(e?.response?.data?.error ?? 'Failed to issue notice. Please try again.');
     } finally {

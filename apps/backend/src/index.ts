@@ -7108,7 +7108,7 @@ app.post('/api/notices/generate', authenticate, async (req: Request, res: Respon
     if (!tenRes.rows.length) return res.status(404).json({ error: 'Tenancy not found' });
     const t = tenRes.rows[0];
     const roleCheck = await pool.query(`SELECT role FROM users WHERE id=$1`, [userId]);
-    if (t.sponsor_id !== userId && !['ADMIN'].includes(roleCheck.rows[0]?.role)) return res.status(403).json({ error: 'Only property owner or admin can issue notices' });
+    if (t.sponsor_id !== userId && !['ADMIN','DEVELOPER'].includes(roleCheck.rows[0]?.role)) return res.status(403).json({ error: 'Only property owner or admin can issue notices' });
     const seqRes = await pool.query(`SELECT nextval('notice_number_seq') AS n`);
     const noticeNumber = `ARK-${notice_type.slice(0,3)}-${new Date().getFullYear()}-${String(seqRes.rows[0].n).padStart(5,'0')}`;
     const deadlineDays = ['NOTICE_TO_QUIT','EVICTION_WARNING','FINAL_WARNING'].includes(notice_type) ? 30 : 7;
@@ -7129,15 +7129,20 @@ app.post('/api/notices/generate', authenticate, async (req: Request, res: Respon
       await mailer.sendMail({ from: `"Nested Ark OS — Legal" <${process.env.EMAIL_USER}>`, to: t.tenant_email, subject: `FORMAL NOTICE: ${noticeNumber} — Rental Arrears · ${t.project_number}`, html: emailHtml, attachments });
       await pool.query(`UPDATE legal_notices SET served_at=NOW(), status='SERVED' WHERE id=$1`, [noticeRes.rows[0].id]);
     } catch (mailErr: any) { console.warn('[NOTICE] Email delivery failed:', mailErr.message); }
-    if (pdfBuffer) {
-      res.setHeader('Content-Type', 'application/pdf');
-      res.setHeader('Content-Disposition', `attachment; filename="${noticeNumber}.pdf"`);
-      res.setHeader('X-Notice-Id', noticeRes.rows[0].id);
-      res.setHeader('X-Notice-Number', noticeNumber);
-      res.setHeader('X-Ledger-Hash', h);
-      return res.send(pdfBuffer);
-    }
-    return res.json({ success: true, notice_id: noticeRes.rows[0].id, notice_number: noticeNumber, notice_type, amount_overdue: overdue, deadline: deadlineStr, ledger_hash: h, html_notice: noticeHtml, message: 'Notice issued and emailed to tenant.' });
+    // Always return JSON so the frontend can parse the response consistently.
+    // If a PDF was generated, embed it as base64 so the client can trigger a download.
+    return res.json({
+      success:        true,
+      notice_id:      noticeRes.rows[0].id,
+      notice_number:  noticeNumber,
+      notice_type,
+      amount_overdue: overdue,
+      deadline:       deadlineStr,
+      ledger_hash:    h,
+      html_notice:    noticeHtml,
+      pdf_base64:     pdfBuffer ? pdfBuffer.toString('base64') : null,
+      message:        'Notice issued and emailed to tenant.',
+    });
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
 
