@@ -990,9 +990,11 @@ const ensureTablesExist = async () => {
       CREATE SEQUENCE IF NOT EXISTS notice_number_seq START 1;
 
       -- ── legal_notices: backfill columns missing from older prod DBs ─────────────
-      ALTER TABLE legal_notices ADD COLUMN IF NOT EXISTS status     VARCHAR(20) DEFAULT 'ISSUED';
-      ALTER TABLE legal_notices ADD COLUMN IF NOT EXISTS unit_id    UUID REFERENCES rental_units(id);
-      ALTER TABLE legal_notices ADD COLUMN IF NOT EXISTS project_id UUID REFERENCES projects(id);
+      ALTER TABLE legal_notices ADD COLUMN IF NOT EXISTS status       VARCHAR(20) DEFAULT 'ISSUED';
+      ALTER TABLE legal_notices ADD COLUMN IF NOT EXISTS unit_id      UUID REFERENCES rental_units(id);
+      ALTER TABLE legal_notices ADD COLUMN IF NOT EXISTS project_id   UUID REFERENCES projects(id);
+      -- Fix: generated_by audit column (landlord/admin UUID who issued the notice)
+      ALTER TABLE legal_notices ADD COLUMN IF NOT EXISTS generated_by UUID REFERENCES users(id);
 
       -- ── flex_contributions: backfill UNIQUE index on paystack_ref for existing DBs ──
       -- (new tables get the UNIQUE in the CREATE TABLE above; this covers existing prod DBs)
