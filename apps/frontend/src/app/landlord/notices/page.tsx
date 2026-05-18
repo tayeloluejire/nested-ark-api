@@ -9,7 +9,7 @@ export const dynamic = 'force-dynamic';
  *
  * If ?tenant=<tenancy_id> is in the URL query string the dropdown is pre-selected.
  */
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import Navbar from '@/components/Navbar';
@@ -61,21 +61,19 @@ const colorMap: Record<string, string> = {
   red:    'border-red-500/30 text-red-400 bg-red-500/10',
 };
 
-export default function LandlordNoticesPage() {
+// ── Inner content — useSearchParams() is safe inside a Suspense boundary ─────
+function LitigationCommandContent() {
   const { loading: authLoading } = useAuth();
   const searchParams  = useSearchParams();
   const preselectedId = searchParams.get('tenant') ?? '';
 
-  // Tenancy list for dropdown
   const [tenancies,  setTenancies]  = useState<Tenancy[]>([]);
   const [loadingTen, setLoadingTen] = useState(true);
   const [tenErr,     setTenErr]     = useState('');
 
-  // Notice history
   const [notices,    setNotices]    = useState<Notice[]>([]);
   const [loadingNot, setLoadingNot] = useState(true);
 
-  // Form state
   const [showForm,   setShowForm]   = useState(false);
   const [selTenancy, setSelTenancy] = useState(preselectedId);
   const [noticeType, setNoticeType] = useState('NOTICE_TO_PAY');
@@ -85,7 +83,7 @@ export default function LandlordNoticesPage() {
   const [submitErr,  setSubmitErr]  = useState('');
   const [submitted,  setSubmitted]  = useState<Notice | null>(null);
 
-  // ── Load tenancies ────────────────────────────────────────────────────────
+  // Load tenancies for dropdown
   useEffect(() => {
     if (authLoading) return;
     api.get('/api/landlord/tenancies/active')
@@ -97,7 +95,7 @@ export default function LandlordNoticesPage() {
       .finally(() => setLoadingTen(false));
   }, [authLoading]);
 
-  // Pre-select tenant from URL ?tenant= param once tenancies load
+  // Pre-select tenant from ?tenant= URL param once tenancies load
   useEffect(() => {
     if (preselectedId && tenancies.length > 0) {
       const match = tenancies.find(t => t.tenancy_id === preselectedId);
@@ -105,7 +103,7 @@ export default function LandlordNoticesPage() {
     }
   }, [preselectedId, tenancies]);
 
-  // ── Load notice history ───────────────────────────────────────────────────
+  // Load notice history
   useEffect(() => {
     if (authLoading) return;
     api.get('/api/landlord/notices')
@@ -114,7 +112,6 @@ export default function LandlordNoticesPage() {
       .finally(() => setLoadingNot(false));
   }, [authLoading]);
 
-  // ── Submit notice ─────────────────────────────────────────────────────────
   const handleIssue = async () => {
     if (!selTenancy || !noticeType) { setSubmitErr('Please select a tenant and notice type.'); return; }
     setSubmitting(true); setSubmitErr('');
@@ -165,13 +162,11 @@ export default function LandlordNoticesPage() {
       <Navbar />
       <main className="flex-1 max-w-4xl mx-auto px-6 py-10 w-full space-y-8">
 
-        {/* Back link */}
         <Link href="/landlord/tenants"
           className="flex items-center gap-2 text-zinc-500 hover:text-white text-xs font-bold uppercase tracking-widest transition-colors">
           <ArrowLeft size={13} /> Tenants
         </Link>
 
-        {/* Header */}
         <div className="flex items-start justify-between gap-4">
           <div className="border-l-2 border-red-500 pl-5">
             <p className="text-[9px] text-red-400 uppercase font-black tracking-[0.25em] mb-1">Landlord · Legal</p>
@@ -186,7 +181,6 @@ export default function LandlordNoticesPage() {
           </button>
         </div>
 
-        {/* Stats */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           {[
             { label: 'Total Notices',   value: totalNotices },
@@ -201,7 +195,6 @@ export default function LandlordNoticesPage() {
           ))}
         </div>
 
-        {/* Quick issue pills */}
         <div className="space-y-3">
           <p className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest">Quick Issue</p>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -217,7 +210,6 @@ export default function LandlordNoticesPage() {
           </div>
         </div>
 
-        {/* Issue form modal */}
         {showForm && (
           <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
             <div className="bg-[#0a0a0a] border border-zinc-800 rounded-3xl p-7 w-full max-w-lg space-y-5 shadow-2xl">
@@ -232,7 +224,6 @@ export default function LandlordNoticesPage() {
                 </button>
               </div>
 
-              {/* Tenant selector */}
               <div>
                 <label className="block text-[9px] text-zinc-500 uppercase font-bold tracking-widest mb-2">
                   Select Tenant <span className="text-red-400">*</span>
@@ -266,7 +257,6 @@ export default function LandlordNoticesPage() {
                 )}
               </div>
 
-              {/* Selected tenant preview */}
               {selTenancy && (() => {
                 const t = tenancies.find(x => x.tenancy_id === selTenancy);
                 if (!t) return null;
@@ -282,7 +272,6 @@ export default function LandlordNoticesPage() {
                 );
               })()}
 
-              {/* Notice type */}
               <div>
                 <label className="block text-[9px] text-zinc-500 uppercase font-bold tracking-widest mb-2">
                   Notice Type <span className="text-red-400">*</span>
@@ -300,7 +289,6 @@ export default function LandlordNoticesPage() {
                 </div>
               </div>
 
-              {/* Amount overdue */}
               <div>
                 <label className="block text-[9px] text-zinc-500 uppercase font-bold tracking-widest mb-2">
                   Amount Overdue (₦) — optional
@@ -310,7 +298,6 @@ export default function LandlordNoticesPage() {
                   className="w-full bg-[#050505] border border-zinc-800 rounded-xl px-3 py-2.5 text-white text-xs focus:border-red-500/40 focus:outline-none placeholder:text-zinc-700" />
               </div>
 
-              {/* Notes */}
               <div>
                 <label className="block text-[9px] text-zinc-500 uppercase font-bold tracking-widest mb-2">
                   Additional Notes (optional)
@@ -344,7 +331,6 @@ export default function LandlordNoticesPage() {
           </div>
         )}
 
-        {/* Issued confirmation */}
         {submitted && (
           <div className="p-5 rounded-2xl border border-teal-500/20 bg-teal-500/5 space-y-3">
             <div className="flex items-center gap-2 text-teal-400">
@@ -365,7 +351,6 @@ export default function LandlordNoticesPage() {
           </div>
         )}
 
-        {/* Notice history */}
         <div className="space-y-4">
           <p className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest">Notice History ({totalNotices})</p>
 
@@ -408,7 +393,6 @@ export default function LandlordNoticesPage() {
           )}
         </div>
 
-        {/* Trust anchors */}
         <div className="flex items-center gap-6 justify-center pt-4 border-t border-zinc-900">
           {['SHA-256 Hashed', 'Court-Admissible PDF', 'Immutable Ledger'].map(s => (
             <p key={s} className="text-[8px] text-zinc-600 uppercase font-bold tracking-widest">{s}</p>
@@ -418,5 +402,18 @@ export default function LandlordNoticesPage() {
       </main>
       <Footer />
     </div>
+  );
+}
+
+// ── Export: Suspense boundary required by Next.js for useSearchParams() ───────
+export default function LandlordNoticesPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-[#050505] flex items-center justify-center">
+        <Loader2 className="animate-spin text-teal-500" size={28} />
+      </div>
+    }>
+      <LitigationCommandContent />
+    </Suspense>
   );
 }
