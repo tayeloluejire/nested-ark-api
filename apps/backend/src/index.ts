@@ -995,6 +995,8 @@ const ensureTablesExist = async () => {
       ALTER TABLE legal_notices ADD COLUMN IF NOT EXISTS project_id   UUID REFERENCES projects(id);
       -- Fix: generated_by audit column (landlord/admin UUID who issued the notice)
       ALTER TABLE legal_notices ADD COLUMN IF NOT EXISTS generated_by UUID REFERENCES users(id);
+      -- Fix: notes column (additional notes on the notice)
+      ALTER TABLE legal_notices ADD COLUMN IF NOT EXISTS notes        TEXT;
 
       -- ── flex_contributions: backfill UNIQUE index on paystack_ref for existing DBs ──
       -- (new tables get the UNIQUE in the CREATE TABLE above; this covers existing prod DBs)
