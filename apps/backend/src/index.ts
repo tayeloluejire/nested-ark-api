@@ -7423,6 +7423,51 @@ app.get('/api/flex-pay/contributions/:tenancyId', authenticate, async (req: Requ
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
 
+// ── GET /api/rental/receipts/:projectId — all contributions across a project ──
+// Used by rental-management page receipts tab (landlord-scoped, ownership verified)
+app.get('/api/rental/receipts/:projectId', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const landlordId = (req as any).userId;
+  const { projectId } = req.params;
+  try {
+    // Verify the project belongs to this landlord before returning any data
+    const ownerCheck = await pool.query(
+      `SELECT id FROM projects WHERE id = $1 AND sponsor_id = $2 LIMIT 1`,
+      [projectId, landlordId]
+    );
+    if (!ownerCheck.rows.length) {
+      return res.status(403).json({ error: 'Project not found or access denied' });
+    }
+
+    const r = await pool.query(
+      `SELECT
+         fc.id,
+         fc.amount_ngn,
+         fc.period_label,
+         fc.paid_at        AS payment_date,
+         fc.ledger_hash,
+         fc.status,
+         fc.paystack_ref   AS receipt_number,
+         t.tenant_name,
+         t.tenant_email,
+         ru.unit_name,
+         COALESCE(fpv.currency, t.currency, 'NGN') AS currency,
+         fpv.tenancy_id
+       FROM flex_contributions fc
+       JOIN flex_pay_vaults fpv ON fpv.id      = fc.vault_id
+       JOIN tenancies t          ON t.id       = fpv.tenancy_id
+       JOIN rental_units ru      ON ru.id      = t.unit_id
+       JOIN projects p           ON p.id       = ru.project_id
+       WHERE p.id        = $1
+         AND p.sponsor_id = $2
+         AND fc.status   = 'SUCCESS'
+       ORDER BY fc.paid_at DESC
+       LIMIT 200`,
+      [projectId, landlordId]
+    );
+    return res.json({ success: true, receipts: r.rows, count: r.rows.length });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
 // ── 2. GET /api/flex-pay/receipt/:contributionId — digital receipt PDF/HTML ───
 app.get('/api/flex-pay/receipt/:contributionId', authenticate, async (req: Request, res: Response): Promise<any> => {
   const { contributionId } = req.params;
