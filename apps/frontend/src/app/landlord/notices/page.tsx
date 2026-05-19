@@ -117,25 +117,52 @@ function LitigationCommandContent() {
     if (!selTenancy || !noticeType) { setSubmitErr('Please select a tenant and notice type.'); return; }
     setSubmitting(true); setSubmitErr('');
     try {
-      const r = await api.post('/api/notices/generate', {
-        tenancy_id:     selTenancy,
-        notice_type:    noticeType,
-        amount_overdue: amountOver ? parseFloat(amountOver) : undefined,
-        notes:          notes || undefined,
+      // Use raw fetch() pointed directly at the backend origin — this bypasses Next.js
+      // routing entirely and prevents Vercel's trailingSlash normalisation from appending
+      // a trailing slash to the URL, which caused the backend to return 404 on every attempt.
+      // Extract token from the same axios instance so it matches api.ts token logic exactly
+      const authHeader = (api.defaults.headers.common?.['Authorization'] as string) ?? '';
+      const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : authHeader;
+      const backendBase = (process.env.NEXT_PUBLIC_API_URL ?? '').replace(/\/$/, '');
+      const endpoint = backendBase
+        ? `${backendBase}/api/notices/generate`
+        : '/api/notices/generate';
+
+      const raw = await fetch(endpoint, {
+        method:  'POST',
+        headers: {
+          'Content-Type':  'application/json',
+          'Authorization': token ? `Bearer ${token}` : '',
+        },
+        credentials: 'include',
+        body: JSON.stringify({
+          tenancy_id:     selTenancy,
+          notice_type:    noticeType,
+          amount_overdue: amountOver ? parseFloat(amountOver) : undefined,
+          notes:          notes || undefined,
+        }),
       });
-      const issued  = r.data;
+
+      // Treat any 2xx as success — do NOT let a non-JSON body crash the UI
+      let issued: any = {};
+      try { issued = await raw.json(); } catch { /* body may be empty on some 201s */ }
+
+      if (!raw.ok) {
+        throw new Error(issued?.error ?? `Server responded ${raw.status}`);
+      }
+
       const tenant  = tenancies.find(t => t.tenancy_id === selTenancy);
       const newNote: Notice = {
-        id:                issued.notice_id,
-        notice_number:     issued.notice_number,
+        id:                issued.notice_id   ?? crypto.randomUUID(),
+        notice_number:     issued.notice_number ?? '',
         notice_type:       noticeType,
-        tenant_name:       tenant?.tenant_name   ?? '',
-        unit_name:         tenant?.unit_name     ?? '',
-        tenant_email:      tenant?.tenant_email  ?? '',
+        tenant_name:       tenant?.tenant_name  ?? '',
+        unit_name:         tenant?.unit_name    ?? '',
+        tenant_email:      tenant?.tenant_email ?? '',
         issued_at:         new Date().toISOString(),
         status:            'ISSUED',
-        response_deadline: issued.deadline,
-        ledger_hash:       issued.ledger_hash,
+        response_deadline: issued.deadline      ?? '',
+        ledger_hash:       issued.ledger_hash   ?? '',
       };
       // Update state BEFORE any browser-native calls so UI is never blocked
       setSubmitted(newNote);
@@ -149,13 +176,13 @@ function LitigationCommandContent() {
           const blob    = new Blob([byteArr], { type: 'application/pdf' });
           const url     = URL.createObjectURL(blob);
           const a       = document.createElement('a');
-          a.href = url; a.download = `${issued.notice_number}.pdf`;
+          a.href = url; a.download = `${issued.notice_number ?? 'notice'}.pdf`;
           document.body.appendChild(a); a.click();
           setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 500);
         } catch { /* PDF download non-critical — notice already committed to ledger */ }
       }
     } catch (e: any) {
-      setSubmitErr(e?.response?.data?.error ?? 'Failed to issue notice. Please try again.');
+      setSubmitErr(e?.message ?? 'Failed to issue notice. Please try again.');
     } finally {
       setSubmitting(false);
     }
