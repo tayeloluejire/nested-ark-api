@@ -3,7 +3,7 @@ export const dynamic = 'force-dynamic';
 /**
  * src/app/landlord/tenants/page.tsx
  * Landlord tenant roster — shows all tenants across their properties.
- * Receipt button → project rental-management receipts tab
+ * Receipt button → /landlord/receipts?tenancy_id=<tenancy_id>
  * Resend Invite → regenerates invite link for pending tenants
  */
 import { useState, useEffect, useCallback } from 'react';
@@ -206,8 +206,8 @@ export default function LandlordTenantsPage() {
                   className="flex items-center gap-1.5 text-[10px] font-black uppercase bg-zinc-800 text-zinc-400 border border-zinc-700 px-3 py-2 rounded-xl hover:bg-zinc-700 transition-colors">
                   <FileText size={12} /> Notice
                 </Link>
-                {/* ✅ Receipt — routes to the receipts smart-redirect page which resolves to the correct project tab */}
-                <Link href={`/landlord/receipts`}
+                {/* ✅ FIX: Pass tenancy_id so receipts page shows THIS tenant's receipts */}
+                <Link href={`/landlord/receipts?tenancy_id=${tenant.id}`}
                   className="flex items-center gap-1.5 text-[10px] font-black uppercase bg-zinc-800 text-zinc-400 border border-zinc-700 px-3 py-2 rounded-xl hover:bg-zinc-700 transition-colors">
                   <Download size={12} /> Receipt
                 </Link>
