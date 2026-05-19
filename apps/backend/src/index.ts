@@ -7099,7 +7099,7 @@ app.get('/api/reminders/:projectId', authenticate, async (req: Request, res: Res
 // ── 4. LEGAL NOTICE GENERATOR ─────────────────────────────────────────────────
 
 // POST /api/notices/generate
-app.post('/api/notices/generate', authenticate, async (req: Request, res: Response): Promise<any> => {
+app.post(['/api/notices/generate', '/api/notices/generate/'], authenticate, async (req: Request, res: Response): Promise<any> => {
   const userId = (req as any).userId;
   const { tenancy_id, notice_type, amount_overdue, days_overdue, notes } = req.body;
   if (!tenancy_id || !notice_type) return res.status(400).json({ error: 'tenancy_id and notice_type required' });
@@ -7145,6 +7145,8 @@ app.post('/api/notices/generate', authenticate, async (req: Request, res: Respon
     });
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
+
+
 
 // GET /api/notices/:projectId
 app.get('/api/notices/:projectId', authenticate, async (req: Request, res: Response): Promise<any> => {
