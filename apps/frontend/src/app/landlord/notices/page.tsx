@@ -41,6 +41,7 @@ type Notice = {
   notice_number:     string;
   notice_type:       string;
   tenant_name:       string;
+  tenant_email?:     string;
   unit_name:         string;
   issued_at:         string;
   status:            string;
@@ -128,27 +129,30 @@ function LitigationCommandContent() {
         id:                issued.notice_id,
         notice_number:     issued.notice_number,
         notice_type:       noticeType,
-        tenant_name:       tenant?.tenant_name ?? '',
-        unit_name:         tenant?.unit_name   ?? '',
+        tenant_name:       tenant?.tenant_name   ?? '',
+        unit_name:         tenant?.unit_name     ?? '',
+        tenant_email:      tenant?.tenant_email  ?? '',
         issued_at:         new Date().toISOString(),
         status:            'ISSUED',
         response_deadline: issued.deadline,
         ledger_hash:       issued.ledger_hash,
       };
+      // Update state BEFORE any browser-native calls so UI is never blocked
       setSubmitted(newNote);
       setNotices(prev => [newNote, ...prev]);
       setShowForm(false);
       setSelTenancy(''); setNoticeType('NOTICE_TO_PAY'); setAmountOver(''); setNotes('');
-      // If the backend generated a PDF, trigger a client-side download automatically
+      // PDF download is fire-and-forget — never allowed to throw into the outer catch
       if (issued.pdf_base64) {
         try {
           const byteArr = Uint8Array.from(atob(issued.pdf_base64), c => c.charCodeAt(0));
-          const blob = new Blob([byteArr], { type: 'application/pdf' });
-          const url  = URL.createObjectURL(blob);
-          const a    = document.createElement('a');
-          a.href = url; a.download = `${issued.notice_number}.pdf`; a.click();
-          setTimeout(() => URL.revokeObjectURL(url), 10000);
-        } catch { /* PDF download is non-critical — notice is already issued */ }
+          const blob    = new Blob([byteArr], { type: 'application/pdf' });
+          const url     = URL.createObjectURL(blob);
+          const a       = document.createElement('a');
+          a.href = url; a.download = `${issued.notice_number}.pdf`;
+          document.body.appendChild(a); a.click();
+          setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 500);
+        } catch { /* PDF download non-critical — notice already committed to ledger */ }
       }
     } catch (e: any) {
       setSubmitErr(e?.response?.data?.error ?? 'Failed to issue notice. Please try again.');
@@ -222,8 +226,8 @@ function LitigationCommandContent() {
         </div>
 
         {showForm && (
-          <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-            <div className="bg-[#0a0a0a] border border-zinc-800 rounded-3xl p-7 w-full max-w-lg space-y-5 shadow-2xl">
+          <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-start justify-center p-4 overflow-y-auto">
+            <div className="bg-[#0a0a0a] border border-zinc-800 rounded-3xl p-7 w-full max-w-lg space-y-5 shadow-2xl max-h-[90dvh] overflow-y-auto overscroll-contain">
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-[9px] text-red-400 uppercase font-black tracking-widest mb-0.5">Litigation Command</p>
@@ -343,22 +347,67 @@ function LitigationCommandContent() {
         )}
 
         {submitted && (
-          <div className="p-5 rounded-2xl border border-teal-500/20 bg-teal-500/5 space-y-3">
-            <div className="flex items-center gap-2 text-teal-400">
-              <CheckCircle size={16} />
-              <p className="font-black text-sm uppercase tracking-tight">Notice Issued Successfully</p>
+          <div className="p-5 rounded-2xl border border-teal-500/30 bg-teal-500/5 space-y-4 shadow-lg">
+            {/* Header */}
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-full bg-teal-500/20 border border-teal-500/30 flex items-center justify-center flex-shrink-0">
+                <CheckCircle size={18} className="text-teal-400" />
+              </div>
+              <div>
+                <p className="font-black text-sm text-teal-400 uppercase tracking-tight">Notice Issued Successfully</p>
+                <p className="text-[9px] text-zinc-500 mt-0.5">Committed to the immutable ledger · SHA-256 hashed</p>
+              </div>
             </div>
+
+            {/* Details grid */}
             <div className="grid grid-cols-2 gap-3 text-xs">
-              <div><p className="text-zinc-600 uppercase font-bold text-[8px] tracking-widest">Notice No.</p><p className="text-white font-mono mt-0.5">{submitted.notice_number}</p></div>
-              <div><p className="text-zinc-600 uppercase font-bold text-[8px] tracking-widest">Deadline</p><p className="text-amber-400 mt-0.5">{submitted.response_deadline}</p></div>
-              <div><p className="text-zinc-600 uppercase font-bold text-[8px] tracking-widest">Tenant</p><p className="text-white mt-0.5">{submitted.tenant_name}</p></div>
-              <div><p className="text-zinc-600 uppercase font-bold text-[8px] tracking-widest">Unit</p><p className="text-white mt-0.5">{submitted.unit_name}</p></div>
+              <div className="p-2.5 rounded-xl bg-zinc-900/50 border border-zinc-800">
+                <p className="text-zinc-600 uppercase font-bold text-[7px] tracking-widest mb-1">Notice Number</p>
+                <p className="text-white font-mono text-[10px]">{submitted.notice_number}</p>
+              </div>
+              <div className="p-2.5 rounded-xl bg-zinc-900/50 border border-zinc-800">
+                <p className="text-zinc-600 uppercase font-bold text-[7px] tracking-widest mb-1">Response Deadline</p>
+                <p className="text-amber-400 text-[10px]">{submitted.response_deadline}</p>
+              </div>
+              <div className="p-2.5 rounded-xl bg-zinc-900/50 border border-zinc-800">
+                <p className="text-zinc-600 uppercase font-bold text-[7px] tracking-widest mb-1">Served To</p>
+                <p className="text-white text-[10px]">{submitted.tenant_name}</p>
+                {submitted.tenant_email && (
+                  <p className="text-zinc-500 text-[9px] mt-0.5 truncate">{submitted.tenant_email}</p>
+                )}
+              </div>
+              <div className="p-2.5 rounded-xl bg-zinc-900/50 border border-zinc-800">
+                <p className="text-zinc-600 uppercase font-bold text-[7px] tracking-widest mb-1">Property Unit</p>
+                <p className="text-white text-[10px]">{submitted.unit_name}</p>
+              </div>
             </div>
+
+            {/* Email sent confirmation */}
+            <div className="flex items-center gap-2 px-3 py-2.5 rounded-xl bg-teal-500/10 border border-teal-500/20">
+              <CheckCircle size={11} className="text-teal-400 flex-shrink-0" />
+              <p className="text-[10px] text-teal-300">
+                Signed PDF notice emailed to <span className="font-bold">{submitted.tenant_email || submitted.tenant_name}</span> and recorded on the Nested Ark immutable ledger.
+              </p>
+            </div>
+
+            {/* Ledger hash */}
             <div className="flex items-start gap-2 pt-1 border-t border-teal-500/20">
               <Hash size={10} className="text-teal-500 mt-0.5 flex-shrink-0" />
               <p className="font-mono text-[8px] text-zinc-600 break-all">{submitted.ledger_hash}</p>
             </div>
-            <button onClick={() => setSubmitted(null)} className="text-[9px] text-zinc-600 hover:text-zinc-400 transition-colors">Dismiss</button>
+
+            {/* Action buttons */}
+            <div className="flex gap-2 pt-1">
+              <button
+                onClick={() => { setSubmitted(null); setShowForm(true); }}
+                className="flex-1 py-2 rounded-xl border border-zinc-800 text-zinc-500 hover:text-white hover:border-zinc-700 text-[9px] font-bold uppercase tracking-wider transition-all">
+                Issue Another
+              </button>
+              <Link href="/landlord/tenants"
+                className="flex-1 py-2 rounded-xl bg-teal-500/10 border border-teal-500/30 text-teal-400 hover:bg-teal-500/20 text-[9px] font-bold uppercase tracking-wider transition-all text-center">
+                ← Back to Tenants
+              </Link>
+            </div>
           </div>
         )}
 
