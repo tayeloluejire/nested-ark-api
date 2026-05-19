@@ -22,7 +22,7 @@ import api from '@/lib/api';
 import { useAuth } from '@/lib/AuthContext';
 import {
   Receipt, Building2, Loader2, Plus, ChevronRight,
-  ArrowLeft, Hash, AlertCircle,
+  ArrowLeft, Hash, AlertCircle, Download,
 } from 'lucide-react';
 
 const safeN = (v: any): number => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
@@ -60,6 +60,7 @@ function LandlordReceiptsContent() {
   const [tenantLabel,   setTenantLabel]   = useState('');
   const [loadingRec,    setLoadingRec]    = useState(false);
   const [receiptsErr,   setReceiptsErr]   = useState('');
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
 
   // ── Load projects (resolves redirect / picker logic) ─────────────────────
   useEffect(() => {
@@ -106,6 +107,30 @@ function LandlordReceiptsContent() {
       })
       .finally(() => setLoadingRec(false));
   }, [tenancyId, authLoading]);
+
+  // ── Download individual receipt PDF/HTML from backend ────────────────────
+  const handleDownloadReceipt = async (contributionId: string, paystackRef: string) => {
+    try {
+      setDownloadingId(contributionId);
+      const res = await api.get(`/api/flex-pay/receipt/${contributionId}`, {
+        responseType: 'blob',
+      });
+      const contentType = res.headers['content-type'] ?? 'application/pdf';
+      const ext  = contentType.includes('pdf') ? 'pdf' : 'html';
+      const blob = new Blob([res.data], { type: contentType });
+      const url  = window.URL.createObjectURL(blob);
+      const a    = document.createElement('a');
+      a.href     = url;
+      a.download = `ARK-Receipt-${paystackRef || contributionId.slice(0, 8)}.${ext}`;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => { document.body.removeChild(a); window.URL.revokeObjectURL(url); }, 200);
+    } catch {
+      /* Non-critical — receipt may not yet exist if puppeteer unavailable on server */
+    } finally {
+      setDownloadingId(null);
+    }
+  };
 
   // ── Shared loading state ──────────────────────────────────────────────────
   if (authLoading || loadingProj) return (
@@ -199,6 +224,18 @@ function LandlordReceiptsContent() {
                     }`}>
                       {c.status}
                     </span>
+                    <div>
+                      <button
+                        onClick={() => handleDownloadReceipt(c.id, c.paystack_ref)}
+                        disabled={downloadingId === c.id}
+                        className="mt-1 flex items-center gap-1 text-[8px] font-bold uppercase text-amber-400 border border-amber-500/20 px-2 py-1 rounded-lg hover:bg-amber-500/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        {downloadingId === c.id
+                          ? <><Loader2 size={9} className="animate-spin" /> Generating…</>
+                          : <><Download size={9} /> Receipt</>
+                        }
+                      </button>
+                    </div>
                   </div>
                 </div>
               ))}
