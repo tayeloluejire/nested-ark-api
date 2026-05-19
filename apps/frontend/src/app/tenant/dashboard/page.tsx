@@ -25,11 +25,8 @@ const safeF = (v:any) => safeN(v).toLocaleString();
 function TenantDashboardContent() {
   const { user } = useAuth();
 
-  // Tenancy from /api/tenant/my-tenancy
   const [tenancy, setTenancy] = useState<any>(null);
-  // Vault from /api/tenant/my-vault
   const [vault,   setVault]   = useState<any>(null);
-  // Notices from /api/tenant/my-notices
   const [notices, setNotices] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error,   setError]   = useState('');
@@ -74,7 +71,8 @@ function TenantDashboardContent() {
     </div>
   );
 
-  const activeNotices = notices.filter(n => n.status === 'SERVED' || n.status === 'PENDING');
+  // FIX: backend status values are 'ISSUED' and 'SERVED' — 'PENDING' does not exist.
+  const activeNotices = notices.filter(n => n.status === 'ISSUED' || n.status === 'SERVED');
   const fundedPct = vault
     ? Math.min(Math.round((safeN(vault.vault_balance) / (safeN(vault.target_amount) || 1)) * 100), 100)
     : 0;
@@ -159,8 +157,8 @@ function TenantDashboardContent() {
         {/* KPI strip */}
         <div className="grid grid-cols-2 gap-4">
           {[
-            { label: 'Vault Balance',     value: vault ? `${vault.currency||'NGN'} ${safeF(vault.vault_balance)}` : '—', color: 'text-teal-400' },
-            { label: 'Active Notices',    value: activeNotices.length, color: activeNotices.length > 0 ? 'text-red-400' : 'text-teal-400' },
+            { label: 'Vault Balance',  value: vault ? `${vault.currency||'NGN'} ${safeF(vault.vault_balance)}` : '—', color: 'text-teal-400' },
+            { label: 'Active Notices', value: activeNotices.length, color: activeNotices.length > 0 ? 'text-red-400' : 'text-teal-400' },
           ].map(s => (
             <div key={s.label} className="p-5 rounded-2xl border border-zinc-800 bg-zinc-900/20 space-y-1.5">
               <p className={`text-xl font-black font-mono tabular-nums ${s.color}`}>{s.value}</p>
@@ -209,7 +207,7 @@ function TenantDashboardContent() {
           </Link>
         </div>
 
-        {/* Notices */}
+        {/* Notices — FIX: was filtering 'SERVED'||'PENDING'; backend only uses 'ISSUED' and 'SERVED' */}
         {notices.length > 0 && (
           <div className="space-y-3">
             <p className="text-[9px] text-red-400 uppercase font-black tracking-widest">Legal Notices</p>
@@ -222,7 +220,7 @@ function TenantDashboardContent() {
                     {n.days_overdue ? ` · ${n.days_overdue} days overdue` : ''}
                   </p>
                 </div>
-                <span className={`text-[8px] px-2 py-1 rounded border font-bold uppercase ${n.status === 'SERVED' ? 'border-red-500/30 text-red-400' : 'border-zinc-700 text-zinc-500'}`}>
+                <span className={`text-[8px] px-2 py-1 rounded border font-bold uppercase ${n.status === 'SERVED' ? 'border-red-500/30 text-red-400' : n.status === 'ISSUED' ? 'border-amber-500/30 text-amber-400' : 'border-zinc-700 text-zinc-500'}`}>
                   {n.status}
                 </span>
               </div>

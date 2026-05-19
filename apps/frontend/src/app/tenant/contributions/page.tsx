@@ -6,6 +6,7 @@ export const dynamic = 'force-dynamic';
  * Returns: contributions[] { id, amount, currency, period_label, paid_at,
  *          status, ledger_hash, receipt_id }
  * Receipt download: GET /api/tenant/receipt/:contributionId
+ * NOTE: endpoint requires auth — uses api.get with blob responseType, not bare <a href>
  */
 import { useState, useEffect, Suspense } from 'react';
 import Link from 'next/link';
@@ -18,9 +19,10 @@ const safeN = (v:any) => { const n=Number(v); return(v==null||isNaN(n))?0:n; };
 const safeF = (v:any) => safeN(v).toLocaleString();
 
 function ContributionsContent() {
-  const [items,    setItems]   = useState<any[]>([]);
-  const [loading,  setLoading] = useState(true);
-  const [error,    setError]   = useState('');
+  const [items,       setItems]       = useState<any[]>([]);
+  const [loading,     setLoading]     = useState(true);
+  const [error,       setError]       = useState('');
+  const [downloading, setDownloading] = useState<string|null>(null);
 
   useEffect(() => {
     api.get('/api/tenant/my-contributions')
@@ -28,6 +30,23 @@ function ContributionsContent() {
       .catch(e => setError(e?.response?.data?.error ?? 'Could not load contributions.'))
       .finally(() => setLoading(false));
   }, []);
+
+  // FIX: receipt endpoint requires authentication — cannot use bare <a href>.
+  // Use api.get with responseType blob, then trigger client-side download.
+  const downloadReceipt = async (receiptId: string, label: string) => {
+    setDownloading(receiptId);
+    try {
+      const res = await api.get(`/api/tenant/receipt/${receiptId}`, { responseType: 'blob' });
+      const contentType = res.headers?.['content-type'] ?? 'text/html';
+      const ext  = contentType.includes('pdf') ? 'pdf' : 'html';
+      const url  = URL.createObjectURL(new Blob([res.data], { type: contentType }));
+      const a    = document.createElement('a');
+      a.href = url; a.download = `Receipt-${label || receiptId}.${ext}`; a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch(e:any) {
+      alert(e?.response?.data?.error ?? 'Download failed. Please try again.');
+    } finally { setDownloading(null); }
+  };
 
   if (loading) return (
     <div className="min-h-screen bg-[#050505] text-white"><Navbar />
@@ -62,9 +81,9 @@ function ContributionsContent() {
         {/* Summary */}
         <div className="grid grid-cols-3 gap-4">
           {[
-            { label: 'Total Paid',     value: `${currency} ${safeF(totalPaid)}`,    color: 'text-teal-400' },
-            { label: 'Payments Made',  value: items.filter(c=>c.status==='SUCCESS').length, color: 'text-white' },
-            { label: 'Total Records',  value: items.length,                          color: 'text-zinc-400' },
+            { label: 'Total Paid',     value: `${currency} ${safeF(totalPaid)}`,                           color: 'text-teal-400' },
+            { label: 'Payments Made',  value: items.filter(c=>c.status==='SUCCESS').length,                 color: 'text-white'    },
+            { label: 'Total Records',  value: items.length,                                                  color: 'text-zinc-400' },
           ].map(s => (
             <div key={s.label} className="p-5 rounded-2xl border border-zinc-800 bg-zinc-900/20 space-y-1.5">
               <p className={`text-xl font-black font-mono ${s.color}`}>{s.value}</p>
@@ -113,11 +132,16 @@ function ContributionsContent() {
                     <p className="font-mono font-bold text-lg text-teal-400">{currency} {safeF(c.amount)}</p>
                     <p className="text-[8px] text-zinc-600 uppercase font-bold">contribution</p>
                   </div>
+                  {/* FIX: was bare <a href> (unauthenticated — always 401). Now uses api.get blob download. */}
                   {c.receipt_id && (
-                    <a href={`/api/tenant/receipt/${c.receipt_id}`} target="_blank" rel="noopener noreferrer"
-                      className="flex items-center gap-1.5 px-3 py-2 border border-zinc-700 text-zinc-400 rounded-xl text-[9px] font-bold uppercase hover:text-teal-400 hover:border-teal-500/30 transition-all">
-                      <Download size={10} /> PDF
-                    </a>
+                    <button
+                      onClick={() => downloadReceipt(c.receipt_id, c.period_label || c.id)}
+                      disabled={downloading === c.receipt_id}
+                      className="flex items-center gap-1.5 px-3 py-2 border border-zinc-700 text-zinc-400 rounded-xl text-[9px] font-bold uppercase hover:text-teal-400 hover:border-teal-500/30 transition-all disabled:opacity-50">
+                      {downloading === c.receipt_id
+                        ? <Loader2 size={10} className="animate-spin" />
+                        : <Download size={10} />} PDF
+                    </button>
                   )}
                 </div>
               </div>

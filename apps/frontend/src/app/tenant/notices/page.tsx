@@ -7,11 +7,14 @@ export const dynamic = 'force-dynamic';
  * Returns: { notices: [{id, notice_number, notice_type, amount_overdue,
  *             days_overdue, issued_at, served_at, response_deadline, status}] }
  *
- * Download individual notice: GET /api/notices/download/:noticeId
+ * Download individual notice: GET /api/notices/download/:noticeId (streams PDF binary)
  * Tenant can download their own PDF copy.
  *
  * Tenant CANNOT issue notices — only landlord can via POST /api/notices/generate.
  * If tenant has active notice, banner links to /tenant/pay immediately.
+ *
+ * STATUS VALUES from backend: 'ISSUED' (default), 'SERVED' (email delivered), 'RESOLVED'
+ * NOTE: 'PENDING' is NOT a backend status — was a bug in the original file.
  */
 import { useState, useEffect, Suspense } from 'react';
 import Link from 'next/link';
@@ -28,15 +31,16 @@ const safeF = (v:any) => safeN(v).toLocaleString();
 const fmtDate = (s:any) => s ? new Date(s).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}) : '—';
 
 const NOTICE_LABELS: Record<string,{label:string; color:string; icon:any}> = {
-  NOTICE_TO_PAY:    { label:'Notice to Pay',    color:'border-amber-500/30 bg-amber-500/5 text-amber-300',  icon:Bell },
-  NOTICE_TO_QUIT:   { label:'Notice to Quit',   color:'border-red-500/30 bg-red-500/5 text-red-300',        icon:Gavel },
-  FINAL_WARNING:    { label:'Final Warning',     color:'border-orange-500/30 bg-orange-500/5 text-orange-300', icon:AlertCircle },
-  EVICTION_WARNING: { label:'Eviction Warning',  color:'border-rose-600/30 bg-rose-600/5 text-rose-300',     icon:Gavel },
+  NOTICE_TO_PAY:    { label:'Notice to Pay',    color:'border-amber-500/30 bg-amber-500/5 text-amber-300',     icon:Bell       },
+  NOTICE_TO_QUIT:   { label:'Notice to Quit',   color:'border-red-500/30 bg-red-500/5 text-red-300',           icon:Gavel      },
+  FINAL_WARNING:    { label:'Final Warning',     color:'border-orange-500/30 bg-orange-500/5 text-orange-300',  icon:AlertCircle },
+  EVICTION_WARNING: { label:'Eviction Warning',  color:'border-rose-600/30 bg-rose-600/5 text-rose-300',        icon:Gavel      },
 };
 
+// FIX: Added 'ISSUED' badge (was missing — only SERVED/PENDING/RESOLVED existed, PENDING never occurs).
 const STATUS_BADGE: Record<string,string> = {
+  ISSUED:   'border-amber-500/30 text-amber-400 bg-amber-500/10',
   SERVED:   'border-red-500/30 text-red-400 bg-red-500/10',
-  PENDING:  'border-amber-500/30 text-amber-400 bg-amber-500/10',
   RESOLVED: 'border-teal-500/30 text-teal-400 bg-teal-500/10',
 };
 
@@ -60,7 +64,7 @@ function TenantNoticesContent() {
       const url = URL.createObjectURL(new Blob([res.data]));
       const a   = document.createElement('a');
       a.href = url; a.download = `${noticeNumber}.pdf`; a.click();
-      URL.revokeObjectURL(url);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch(e:any) {
       alert(e?.response?.data?.error ?? 'Download failed. Try again.');
     } finally { setDownloading(null); }
@@ -72,9 +76,10 @@ function TenantNoticesContent() {
     <Footer/></div>
   );
 
-  const activeNotices  = notices.filter(n => n.status === 'SERVED' || n.status === 'PENDING');
-  const resolvedCount  = notices.filter(n => n.status === 'RESOLVED').length;
-  const totalOverdue   = notices.reduce((s, n) => s + safeN(n.amount_overdue), 0);
+  // FIX: 'PENDING' is not a real backend status. Active notices are 'ISSUED' or 'SERVED'.
+  const activeNotices = notices.filter(n => n.status === 'ISSUED' || n.status === 'SERVED');
+  const resolvedCount = notices.filter(n => n.status === 'RESOLVED').length;
+  const totalOverdue  = notices.reduce((s, n) => s + safeN(n.amount_overdue), 0);
 
   return (
     <div className="min-h-screen bg-[#050505] text-white flex flex-col">
@@ -118,9 +123,9 @@ function TenantNoticesContent() {
         {/* KPI */}
         <div className="grid grid-cols-3 gap-4">
           {[
-            {label:'Total Notices',  value:notices.length,     color:'text-white'},
-            {label:'Active',         value:activeNotices.length, color:activeNotices.length>0?'text-red-400':'text-teal-400'},
-            {label:'Resolved',       value:resolvedCount,      color:'text-teal-400'},
+            { label:'Total Notices', value:notices.length,       color:'text-white' },
+            { label:'Active',        value:activeNotices.length, color:activeNotices.length>0?'text-red-400':'text-teal-400' },
+            { label:'Resolved',      value:resolvedCount,        color:'text-teal-400' },
           ].map(s=>(
             <div key={s.label} className="p-5 rounded-2xl border border-zinc-800 bg-zinc-900/20 space-y-1.5">
               <p className={`text-2xl font-black font-mono ${s.color}`}>{s.value}</p>
@@ -170,7 +175,7 @@ function TenantNoticesContent() {
         {notices.length > 0 && (
           <div className="space-y-3">
             {notices.map(n => {
-              const cfg = NOTICE_LABELS[n.notice_type] ?? { label:n.notice_type, color:'border-zinc-700 bg-zinc-900/20 text-zinc-400', icon:FileText };
+              const cfg  = NOTICE_LABELS[n.notice_type] ?? { label:n.notice_type, color:'border-zinc-700 bg-zinc-900/20 text-zinc-400', icon:FileText };
               const Icon = cfg.icon;
               return (
                 <div key={n.id} className={`p-5 rounded-2xl border ${cfg.color} space-y-3`}>
@@ -181,6 +186,7 @@ function TenantNoticesContent() {
                         <span className="text-[8px] font-mono bg-black/30 px-2 py-0.5 rounded border border-white/10">
                           {n.notice_number}
                         </span>
+                        {/* FIX: STATUS_BADGE now includes ISSUED key (was missing, showed no badge for new notices) */}
                         <span className={`text-[7px] px-2 py-0.5 rounded border font-black uppercase ${STATUS_BADGE[n.status]??'border-zinc-700 text-zinc-500'}`}>
                           {n.status}
                         </span>
@@ -212,8 +218,8 @@ function TenantNoticesContent() {
                     </button>
                   </div>
 
-                  {/* What to do guidance */}
-                  {(n.status==='SERVED'||n.status==='PENDING') && (
+                  {/* What to do guidance — FIX: was checking 'PENDING' (never occurs), now checks 'ISSUED' */}
+                  {(n.status==='ISSUED' || n.status==='SERVED') && (
                     <div className="pt-3 border-t border-white/10">
                       <p className="text-[9px] opacity-70 leading-relaxed">
                         To resolve this notice, make a payment before the deadline above. 
