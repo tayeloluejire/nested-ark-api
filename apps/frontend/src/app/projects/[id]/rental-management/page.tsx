@@ -26,14 +26,15 @@ export const dynamic = 'force-dynamic';
  *      as JSON. The existing units display now UNPACKS those fields.
  *   3. Success banner directly links to /landlord/onboard/:unitId.
  */
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, Suspense } from 'react';
+import { useSearchParams } from 'next/navigation';
 import api from '@/lib/api';
 import Link from 'next/link';
 import Navbar from '@/components/Navbar';
 import Footer from '@/components/Footer';
 import {
   Building2, Landmark, Send, ArrowLeft, CheckCircle2,
-  Loader2, PlusCircle, Home, AlertCircle,
+  Loader2, PlusCircle, Home, AlertCircle, Receipt, Hash,
 } from 'lucide-react';
 
 const safeN = (v: any): number => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
@@ -48,6 +49,20 @@ interface Unit {
   tenant_name?: string;
   tenancy_status?: string;
   description?: string;
+}
+
+interface RentReceipt {
+  id: string;
+  receipt_number: string;
+  tenant_name: string;
+  unit_name?: string;
+  amount: number;
+  currency: string;
+  payment_date: string;
+  status: string;
+  payment_method?: string;
+  ledger_hash?: string;
+  tenancy_id?: string;
 }
 
 // Parse extra fields packed into description JSON
@@ -84,8 +99,10 @@ const EMPTY = {
   payment_frequency: 'monthly',
 };
 
-export default function RentalManagementPage({ params }: { params: { id: string } }) {
+function RentalManagementInner({ params }: { params: { id: string } }) {
   const projectId = params.id;
+  const searchParams = useSearchParams();
+  const activeTab = searchParams.get('tab') === 'receipts' ? 'receipts' : 'units';
 
   const [form,          setForm]          = useState({ ...EMPTY });
   const [submitting,    setSubmitting]    = useState(false);
@@ -95,6 +112,9 @@ export default function RentalManagementPage({ params }: { params: { id: string 
   const [loadingUnits,  setLoadingUnits]  = useState(true);
   const [unitsError,    setUnitsError]    = useState('');
   const [projectTitle,  setProjectTitle]  = useState('');
+  const [receipts,      setReceipts]      = useState<RentReceipt[]>([]);
+  const [loadingRec,    setLoadingRec]    = useState(false);
+  const [receiptsError, setReceiptsError] = useState('');
 
   // Load project title
   useEffect(() => {
@@ -128,6 +148,27 @@ export default function RentalManagementPage({ params }: { params: { id: string 
   }, [projectId]);
 
   useEffect(() => { reloadUnits(); }, [reloadUnits]);
+
+  // Load receipts when receipts tab is active
+  useEffect(() => {
+    if (activeTab !== 'receipts') return;
+    setLoadingRec(true);
+    setReceiptsError('');
+    api.get(`/api/rental/receipts/${projectId}`)
+      .then(r => {
+        const d = r.data;
+        setReceipts(Array.isArray(d) ? d : (d?.receipts ?? d?.payments ?? []));
+      })
+      .catch(e => {
+        const status = e?.response?.status;
+        if (status && status !== 404) {
+          setReceiptsError(e?.response?.data?.error ?? 'Could not load receipts.');
+        } else {
+          setReceipts([]); // 404 = no receipts yet
+        }
+      })
+      .finally(() => setLoadingRec(false));
+  }, [activeTab, projectId]);
 
   const set = (k: string, v: string) => setForm(f => ({ ...f, [k]: v }));
 
@@ -228,6 +269,100 @@ export default function RentalManagementPage({ params }: { params: { id: string 
             Deploy and configure apartment units for this property
           </p>
         </header>
+
+        {/* ── Tab Navigation ── */}
+        <nav className="flex gap-1 p-1 bg-zinc-900 border border-zinc-800 rounded-2xl w-fit">
+          <Link
+            href={`/projects/${projectId}/rental-management`}
+            className={`px-5 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
+              activeTab === 'units'
+                ? 'bg-teal-500 text-black'
+                : 'text-zinc-500 hover:text-white'
+            }`}
+          >
+            <span className="flex items-center gap-1.5"><Home size={11} /> Units</span>
+          </Link>
+          <Link
+            href={`/projects/${projectId}/rental-management?tab=receipts`}
+            className={`px-5 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
+              activeTab === 'receipts'
+                ? 'bg-amber-500 text-black'
+                : 'text-zinc-500 hover:text-white'
+            }`}
+          >
+            <span className="flex items-center gap-1.5"><Receipt size={11} /> Receipts</span>
+          </Link>
+        </nav>
+
+        {/* ── Receipts Tab ── */}
+        {activeTab === 'receipts' && (
+          <div className="space-y-4">
+            <div className="border-l-2 border-amber-500 pl-4">
+              <p className="text-[9px] text-amber-400 uppercase font-black tracking-widest mb-0.5">Payment Ledger</p>
+              <h2 className="text-lg font-black uppercase italic">Receipts &amp; History</h2>
+            </div>
+
+            {receiptsError && (
+              <div className="flex items-start gap-3 bg-red-500/10 border border-red-500/30 rounded-2xl p-4 text-red-400">
+                <AlertCircle size={16} className="shrink-0 mt-0.5" />
+                <p className="text-xs font-bold">{receiptsError}</p>
+              </div>
+            )}
+
+            {loadingRec ? (
+              <div className="flex items-center justify-center py-12">
+                <Loader2 className="animate-spin text-amber-500" size={22} />
+              </div>
+            ) : receipts.length === 0 ? (
+              <div className="py-14 text-center border border-dashed border-zinc-800 rounded-3xl space-y-3">
+                <Receipt className="text-zinc-700 mx-auto" size={28} />
+                <p className="text-zinc-500 text-xs font-black uppercase">No receipts yet</p>
+                <p className="text-zinc-700 text-[10px]">Rent payments will appear here once tenants pay through their vault.</p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {receipts.map(r => (
+                  <div key={r.id}
+                    className="flex items-center justify-between p-4 rounded-2xl border border-zinc-800 bg-zinc-900/10 hover:border-zinc-700 transition-all">
+                    <div className="flex items-center gap-4">
+                      <div className="w-9 h-9 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center shrink-0">
+                        <Receipt size={14} className="text-amber-400" />
+                      </div>
+                      <div className="space-y-0.5">
+                        <p className="font-bold text-xs text-white">
+                          {r.tenant_name}{r.unit_name ? ` · ${r.unit_name}` : ''}
+                        </p>
+                        <p className="text-[9px] text-zinc-500 font-mono">
+                          {r.receipt_number} · {new Date(r.payment_date).toLocaleDateString('en-GB')}
+                        </p>
+                        {r.ledger_hash && (
+                          <p className="text-[8px] text-zinc-700 font-mono flex items-center gap-1 truncate max-w-[200px]">
+                            <Hash size={8} className="shrink-0" />{r.ledger_hash.slice(0, 24)}…
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                    <div className="text-right shrink-0 space-y-1">
+                      <p className="font-black text-sm text-white">
+                        {r.currency} {safeF(r.amount)}
+                      </p>
+                      <span className={`text-[8px] px-2 py-0.5 rounded border font-bold uppercase ${
+                        r.status === 'PAID' || r.status === 'SUCCESS'
+                          ? 'border-teal-500/30 text-teal-400'
+                          : 'border-amber-500/30 text-amber-400'
+                      }`}>
+                        {r.status}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── Units Tab content — only rendered when tab = units ── */}
+        {activeTab === 'units' && <>
 
         {/* Success banner — appears after unit added */}
         {newUnit && (
@@ -557,8 +692,22 @@ export default function RentalManagementPage({ params }: { params: { id: string 
           </p>
         </div>
 
+        </> /* end units tab */}
+
       </main>
       <Footer />
     </div>
+  );
+}
+
+export default function RentalManagementPage({ params }: { params: { id: string } }) {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-[#050505] flex items-center justify-center">
+        <Loader2 className="animate-spin text-teal-500" size={28} />
+      </div>
+    }>
+      <RentalManagementInner params={params} />
+    </Suspense>
   );
 }
