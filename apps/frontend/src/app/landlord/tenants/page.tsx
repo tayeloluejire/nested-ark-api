@@ -12,6 +12,7 @@ import Link from 'next/link';
 import {
   Users, Loader2, RefreshCw, Search, MessageCircle,
   FileText, ChevronRight, Plus, Download,
+  SlidersHorizontal, X, Trash2, CheckCircle, AlertTriangle,
 } from 'lucide-react';
 
 interface Tenant {
@@ -27,11 +28,12 @@ interface Tenant {
   currency: string;
   payment_frequency: string;
   status: string;
+  unit_status?: string;       // ACTIVE | VACANT | SOLD — for unit lifecycle management
   move_in_date?: string;
   next_payment_date?: string;
   vault_balance?: number;
-  invite_link?: string;   // full invite URL if returned by backend
-  invite_token?: string;  // raw token for constructing invite URL
+  invite_link?: string;       // full invite URL if returned by backend
+  invite_token?: string;      // raw token for constructing invite URL
 }
 
 const STATUS_STYLES: Record<string, string> = {
@@ -49,6 +51,87 @@ export default function LandlordTenantsPage() {
   const [loading, setLoading] = useState(true);
   const [search,  setSearch]  = useState('');
   const [filter,  setFilter]  = useState<'all' | 'active' | 'pending' | 'overdue'>('all');
+
+  // ── Edit / Manage modal state ─────────────────────────────────────────────
+  const [editTarget,    setEditTarget]    = useState<Tenant | null>(null);
+  const [editName,      setEditName]      = useState('');
+  const [editEmail,     setEditEmail]     = useState('');
+  const [editPhone,     setEditPhone]     = useState('');
+  const [editRent,      setEditRent]      = useState('');
+  const [editUnitName,  setEditUnitName]  = useState('');
+  const [editUnitStatus,setEditUnitStatus]= useState('ACTIVE');
+  const [editFreq,      setEditFreq]      = useState('');
+  const [modalSaving,   setModalSaving]   = useState(false);
+  const [modalErr,      setModalErr]      = useState('');
+  const [confirmEvict,  setConfirmEvict]  = useState(false);
+
+  const openEdit = (t: Tenant) => {
+    setEditTarget(t);
+    setEditName(t.tenant_name || '');
+    setEditEmail(t.tenant_email || '');
+    setEditPhone(t.tenant_phone || '');
+    setEditRent(String(t.rent_amount || ''));
+    setEditUnitName(t.unit_name || '');
+    setEditUnitStatus(t.unit_status || 'ACTIVE');
+    setEditFreq(t.payment_frequency || 'monthly');
+    setModalErr('');
+    setConfirmEvict(false);
+  };
+
+  const closeEdit = () => {
+    setEditTarget(null);
+    setModalErr('');
+    setConfirmEvict(false);
+  };
+
+  const handleSaveParticulars = async () => {
+    if (!editTarget) return;
+    setModalSaving(true);
+    setModalErr('');
+    try {
+      // 1. Update tenant particulars (name, email, phone, rent)
+      await api.post('/api/rental/tenancies/lifecycle', {
+        tenancy_id:    editTarget.id,
+        action:        'UPDATE_PARTICULARS',
+        tenant_name:   editName,
+        tenant_email:  editEmail,
+        tenant_phone:  editPhone,
+        rent_override: Number(editRent),
+        payment_frequency: editFreq,
+      });
+      // 2. Update unit metadata (name, status, rent)
+      await api.put(`/api/rental/units/${editTarget.unit_id}`, {
+        unit_name:   editUnitName,
+        rent_amount: Number(editRent),
+        status:      editUnitStatus,
+      });
+      closeEdit();
+      fetchTenants();
+    } catch (e: any) {
+      setModalErr(e?.response?.data?.error ?? 'Could not save changes. Try again.');
+    } finally {
+      setModalSaving(false);
+    }
+  };
+
+  const handleEvictTenant = async () => {
+    if (!editTarget) return;
+    setModalSaving(true);
+    setModalErr('');
+    try {
+      await api.post('/api/rental/tenancies/lifecycle', {
+        tenancy_id: editTarget.id,
+        action:     'TERMINATE_OR_TRANSFER',
+      });
+      closeEdit();
+      fetchTenants();
+    } catch (e: any) {
+      setModalErr(e?.response?.data?.error ?? 'Could not remove tenant. Try again.');
+    } finally {
+      setModalSaving(false);
+      setConfirmEvict(false);
+    }
+  };
 
   const fetchTenants = useCallback(() => {
     setLoading(true);
@@ -252,6 +335,12 @@ export default function LandlordTenantsPage() {
                   className="flex items-center gap-1.5 text-[10px] font-black uppercase bg-zinc-800 text-zinc-400 border border-zinc-700 px-3 py-2 rounded-xl hover:bg-zinc-700 transition-colors">
                   <Download size={12} /> Receipt
                 </Link>
+                {/* ── Edit / Manage tenant & unit ── */}
+                <button
+                  onClick={() => openEdit(tenant)}
+                  className="flex items-center gap-1.5 text-[10px] font-black uppercase bg-blue-500/10 text-blue-400 border border-blue-500/20 px-3 py-2 rounded-xl hover:bg-blue-500/20 transition-colors">
+                  <SlidersHorizontal size={12} /> Edit
+                </button>
                 {['pending','PENDING'].includes(tenant.status) && (
                   <Link href={`/landlord/onboard/${tenant.unit_id}`}
                     className="flex items-center gap-1.5 text-[10px] font-black uppercase bg-amber-500/10 text-amber-400 border border-amber-500/20 px-3 py-2 rounded-xl hover:bg-amber-500/20 transition-colors ml-auto">
@@ -261,6 +350,184 @@ export default function LandlordTenantsPage() {
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* ── Edit / Manage Tenant & Unit Modal ──────────────────────────────── */}
+      {editTarget && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/75 backdrop-blur-sm px-0 sm:px-4">
+          <div className="w-full sm:max-w-lg bg-zinc-950 border-t sm:border border-zinc-800 rounded-t-3xl sm:rounded-3xl p-6 space-y-5 max-h-[92vh] overflow-y-auto">
+
+            {/* Modal header */}
+            <div className="flex items-start justify-between border-b border-zinc-900 pb-4">
+              <div className="border-l-2 border-blue-500 pl-4">
+                <p className="text-[9px] text-blue-400 uppercase font-black tracking-[0.2em]">Tenancy Management</p>
+                <h2 className="text-base font-black uppercase tracking-tight">{editTarget.tenant_name}</h2>
+                <p className="text-zinc-600 text-[10px] mt-0.5">
+                  {editTarget.unit_name}{editTarget.project_title ? ` · ${editTarget.project_title}` : ''}
+                </p>
+              </div>
+              <button onClick={closeEdit} className="text-zinc-600 hover:text-white transition-colors mt-1">
+                <X size={16} />
+              </button>
+            </div>
+
+            {/* ── Tenant particulars ── */}
+            <div className="space-y-3">
+              <p className="text-[9px] text-zinc-500 uppercase font-black tracking-widest">Tenant Particulars</p>
+
+              <div>
+                <label className="text-[9px] text-zinc-600 uppercase font-bold block mb-1">Full Name</label>
+                <input
+                  type="text"
+                  value={editName}
+                  onChange={e => setEditName(e.target.value)}
+                  className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500/50 transition-colors"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[9px] text-zinc-600 uppercase font-bold block mb-1">Email</label>
+                  <input
+                    type="email"
+                    value={editEmail}
+                    onChange={e => setEditEmail(e.target.value)}
+                    className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500/50 transition-colors"
+                  />
+                </div>
+                <div>
+                  <label className="text-[9px] text-zinc-600 uppercase font-bold block mb-1">Phone</label>
+                  <input
+                    type="text"
+                    value={editPhone}
+                    onChange={e => setEditPhone(e.target.value)}
+                    className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-2.5 text-sm text-white font-mono focus:outline-none focus:border-blue-500/50 transition-colors"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[9px] text-zinc-600 uppercase font-bold block mb-1">Rent Amount (NGN)</label>
+                  <input
+                    type="number"
+                    value={editRent}
+                    onChange={e => setEditRent(e.target.value)}
+                    className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-2.5 text-sm text-teal-400 font-mono font-bold focus:outline-none focus:border-blue-500/50 transition-colors"
+                  />
+                </div>
+                <div>
+                  <label className="text-[9px] text-zinc-600 uppercase font-bold block mb-1">Payment Frequency</label>
+                  <select
+                    value={editFreq}
+                    onChange={e => setEditFreq(e.target.value)}
+                    className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500/50 transition-colors"
+                  >
+                    <option value="monthly">Monthly</option>
+                    <option value="quarterly">Quarterly</option>
+                    <option value="biannual">Bi-Annual</option>
+                    <option value="annually">Annually</option>
+                    <option value="weekly">Weekly</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            {/* ── Unit metadata ── */}
+            <div className="space-y-3 pt-1 border-t border-zinc-900">
+              <p className="text-[9px] text-zinc-500 uppercase font-black tracking-widest pt-1">Unit / Property Status</p>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[9px] text-zinc-600 uppercase font-bold block mb-1">Unit Name</label>
+                  <input
+                    type="text"
+                    value={editUnitName}
+                    onChange={e => setEditUnitName(e.target.value)}
+                    className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500/50 transition-colors"
+                  />
+                </div>
+                <div>
+                  <label className="text-[9px] text-zinc-600 uppercase font-bold block mb-1">Unit Lifecycle State</label>
+                  <select
+                    value={editUnitStatus}
+                    onChange={e => setEditUnitStatus(e.target.value)}
+                    className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500/50 transition-colors"
+                  >
+                    <option value="ACTIVE">Active Occupancy</option>
+                    <option value="VACANT">Vacant</option>
+                    <option value="SOLD">Sold</option>
+                    <option value="MAINTENANCE">Maintenance</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            {/* Error */}
+            {modalErr && (
+              <div className="flex items-center gap-2 p-3 rounded-xl border border-red-500/30 bg-red-500/5 text-red-400 text-xs">
+                <AlertTriangle size={12} className="shrink-0" /> {modalErr}
+              </div>
+            )}
+
+            {/* ── Actions ── */}
+            <div className="flex gap-3 pt-1">
+              <button
+                onClick={closeEdit}
+                className="flex-1 py-2.5 border border-zinc-800 rounded-xl text-zinc-500 text-xs font-bold uppercase hover:text-white transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSaveParticulars}
+                disabled={modalSaving}
+                className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-black uppercase tracking-wider transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              >
+                {modalSaving && !confirmEvict
+                  ? <><Loader2 size={12} className="animate-spin" /> Saving…</>
+                  : <><CheckCircle size={12} /> Save Changes</>
+                }
+              </button>
+            </div>
+
+            {/* ── Evict / Remove tenant — two-step confirm ── */}
+            <div className="border-t border-zinc-900 pt-4">
+              {!confirmEvict ? (
+                <button
+                  onClick={() => setConfirmEvict(true)}
+                  className="w-full py-2.5 bg-red-950/20 border border-red-900/40 text-red-400 hover:bg-red-950/40 rounded-xl text-xs font-black uppercase tracking-wider transition-all flex items-center justify-center gap-2"
+                >
+                  <Trash2 size={12} /> Remove Tenant / Vacate Unit
+                </button>
+              ) : (
+                <div className="space-y-2">
+                  <p className="text-[10px] text-red-400 text-center font-bold">
+                    ⚠ This will permanently remove the tenant and reset the unit to VACANT. Confirm?
+                  </p>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => setConfirmEvict(false)}
+                      className="flex-1 py-2 border border-zinc-800 rounded-xl text-zinc-500 text-xs font-bold uppercase hover:text-white transition-colors"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={handleEvictTenant}
+                      disabled={modalSaving}
+                      className="flex-1 py-2 bg-red-600 hover:bg-red-500 text-white rounded-xl text-xs font-black uppercase tracking-wider transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+                    >
+                      {modalSaving
+                        ? <><Loader2 size={12} className="animate-spin" /> Removing…</>
+                        : <><Trash2 size={12} /> Confirm Remove</>
+                      }
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+          </div>
         </div>
       )}
     </div>

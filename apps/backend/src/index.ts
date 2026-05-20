@@ -1004,11 +1004,6 @@ const ensureTablesExist = async () => {
         ON flex_contributions(paystack_ref)
         WHERE paystack_ref IS NOT NULL;
 
-      -- ── flex_contributions: manual / offline payment logging ──────────────────
-      ALTER TABLE flex_contributions ADD COLUMN IF NOT EXISTS payment_channel VARCHAR(30) DEFAULT 'FLEX_PAY';
-      ALTER TABLE flex_contributions ADD COLUMN IF NOT EXISTS logged_by       UUID REFERENCES users(id);
-      ALTER TABLE flex_contributions ADD COLUMN IF NOT EXISTS notes           TEXT;
-
       -- ── landlord_bank_accounts: ensure paystack_recipient_code column exists ──
       ALTER TABLE landlord_bank_accounts ADD COLUMN IF NOT EXISTS paystack_recipient_code VARCHAR(100);
       ALTER TABLE landlord_bank_accounts ADD COLUMN IF NOT EXISTS is_verified BOOLEAN DEFAULT true;
@@ -5680,6 +5675,7 @@ app.get('/api/rental/tenants', authenticate, async (req: Request, res: Response)
          COALESCE(t.payment_frequency, 'monthly') AS payment_frequency,
          t.tenant_user_id,
          ru.unit_name,
+         ru.status AS unit_status,
          p.title AS project_title, p.project_number,
          fpv.next_due_date AS next_payment_date,
          fpv.vault_balance
@@ -5693,6 +5689,73 @@ app.get('/api/rental/tenants', authenticate, async (req: Request, res: Response)
       [landlordId]
     );
     return res.json(r.rows);
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
+// ── POST /api/rental/tenancies/lifecycle — edit particulars or terminate tenancy ─────────
+// Actions: UPDATE_PARTICULARS | TERMINATE_OR_TRANSFER
+app.post('/api/rental/tenancies/lifecycle', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const landlordId = (req as any).userId;
+  const { tenancy_id, action, tenant_name, tenant_email, tenant_phone, rent_override, payment_frequency } = req.body;
+
+  if (!tenancy_id || !action) {
+    return res.status(400).json({ error: 'tenancy_id and action are required.' });
+  }
+
+  try {
+    // Verify the tenancy belongs to one of this landlord's projects
+    const ownerCheck = await pool.query(
+      `SELECT t.id, t.unit_id FROM tenancies t
+       JOIN rental_units ru ON ru.id = t.unit_id
+       JOIN projects p      ON p.id  = ru.project_id
+       WHERE t.id = $1 AND p.sponsor_id = $2`,
+      [tenancy_id, landlordId]
+    );
+    if (!ownerCheck.rows.length) {
+      return res.status(403).json({ error: 'Tenancy not found or access denied.' });
+    }
+    const unitId = ownerCheck.rows[0].unit_id;
+
+    // ── UPDATE_PARTICULARS: edit name, email, phone, rent, frequency ─────────
+    if (action === 'UPDATE_PARTICULARS') {
+      const updated = await pool.query(
+        `UPDATE tenancies SET
+           tenant_name       = COALESCE($1, tenant_name),
+           tenant_email      = COALESCE($2, tenant_email),
+           tenant_phone      = COALESCE($3, tenant_phone),
+           rent_amount       = COALESCE($4, rent_amount),
+           payment_frequency = COALESCE($5, payment_frequency)
+         WHERE id = $6
+         RETURNING id, tenant_name, tenant_email, tenant_phone, rent_amount, payment_frequency`,
+        [
+          tenant_name      || null,
+          tenant_email     || null,
+          tenant_phone     || null,
+          rent_override    ? Number(rent_override) : null,
+          payment_frequency || null,
+          tenancy_id,
+        ]
+      );
+      return res.json({ success: true, tenancy: updated.rows[0], message: 'Tenant particulars updated.' });
+    }
+
+    // ── TERMINATE_OR_TRANSFER: remove tenancy, reset unit to VACANT ──────────
+    if (action === 'TERMINATE_OR_TRANSFER') {
+      // Soft-terminate: set tenancy status to TERMINATED rather than hard delete
+      // so payment ledger history is preserved (never delete, per platform rules)
+      await pool.query(
+        `UPDATE tenancies SET status = 'TERMINATED' WHERE id = $1`,
+        [tenancy_id]
+      );
+      // Reset the unit lifecycle state to VACANT so it can accept a new occupant
+      await pool.query(
+        `UPDATE rental_units SET status = 'VACANT' WHERE id = $1`,
+        [unitId]
+      );
+      return res.json({ success: true, message: 'Tenant terminated. Unit reset to VACANT.' });
+    }
+
+    return res.status(400).json({ error: `Unknown action: ${action}` });
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
 
@@ -5941,6 +6004,7 @@ app.put('/api/rental/units/:id', authenticate, async (req: Request, res: Respons
       description, amenities,
       photo_urls,  // string[] — array of image URLs
       available_from,
+      status,      // ACTIVE | VACANT | SOLD | MAINTENANCE — lifecycle state
     } = req.body;
 
     // Verify ownership via projects join
@@ -5971,6 +6035,7 @@ app.put('/api/rental/units/:id', authenticate, async (req: Request, res: Respons
         amenities        = COALESCE($14, amenities),
         photo_urls       = COALESCE($15, photo_urls),
         available_from   = COALESCE($16, available_from),
+        status           = COALESCE($18, status),
         updated_at       = NOW()
       WHERE id=$17
       RETURNING *`,
@@ -5992,6 +6057,7 @@ app.put('/api/rental/units/:id', authenticate, async (req: Request, res: Respons
         photo_urls      ? JSON.stringify(photo_urls) : null,
         available_from  ?? null,
         id,
+        status          ?? null,
       ]
     );
     return res.json({ success: true, unit: r.rows[0] });
@@ -7416,14 +7482,11 @@ app.get('/api/flex-pay/contributions/:tenancyId', authenticate, async (req: Requ
   const { tenancyId } = req.params;
   try {
     const r = await pool.query(
-      `SELECT fc.id, fc.amount_ngn, fc.period_label, fc.paid_at, fc.ledger_hash,
-              fc.status, fc.paystack_ref,
-              COALESCE(fc.payment_channel, 'FLEX_PAY') AS payment_channel,
-              fc.notes
+      `SELECT fc.id, fc.amount_ngn, fc.period_label, fc.paid_at, fc.ledger_hash, fc.status, fc.paystack_ref
        FROM flex_contributions fc
        JOIN flex_pay_vaults fpv ON fpv.id = fc.vault_id
        WHERE fpv.tenancy_id = $1
-       ORDER BY fc.paid_at DESC NULLS LAST
+       ORDER BY fc.created_at DESC
        LIMIT 50`,
       [tenancyId]
     );
@@ -7431,68 +7494,7 @@ app.get('/api/flex-pay/contributions/:tenancyId', authenticate, async (req: Requ
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
 
-// ── POST /api/flex-pay/manual-log — landlord logs a past / offline receipt ────
-// Creates a MANUAL_ENTRY contribution record. Requires the tenancy to belong to
-// a project owned by the authenticated landlord (ownership verified before insert).
-app.post('/api/flex-pay/manual-log', authenticate, async (req: Request, res: Response): Promise<any> => {
-  const landlordId = (req as any).userId;
-  const { tenancy_id, amount_ngn, period_label, paid_at, payment_channel, notes } = req.body;
-
-  if (!tenancy_id || !amount_ngn || !period_label || !paid_at) {
-    return res.status(400).json({ error: 'tenancy_id, amount_ngn, period_label, paid_at are required.' });
-  }
-  const channel = payment_channel || 'MANUAL_ENTRY';
-  const parsedAmount = parseFloat(String(amount_ngn));
-  if (isNaN(parsedAmount) || parsedAmount <= 0) {
-    return res.status(400).json({ error: 'amount_ngn must be a positive number.' });
-  }
-
-  try {
-    // 1. Verify the tenancy belongs to a project owned by this landlord
-    const ownerCheck = await pool.query(
-      `SELECT t.id AS tenancy_id, fpv.id AS vault_id
-       FROM tenancies t
-       JOIN rental_units ru ON ru.id = t.unit_id
-       JOIN projects p      ON p.id  = ru.project_id
-       LEFT JOIN flex_pay_vaults fpv ON fpv.tenancy_id = t.id
-       WHERE t.id = $1 AND p.sponsor_id = $2
-       LIMIT 1`,
-      [tenancy_id, landlordId]
-    );
-    if (!ownerCheck.rows.length) {
-      return res.status(403).json({ error: 'Tenancy not found or access denied.' });
-    }
-
-    let vaultId: string = ownerCheck.rows[0].vault_id;
-
-    // 2. If no vault exists yet for this tenancy, create a shell vault so the FK is satisfied
-    if (!vaultId) {
-      const newVault = await pool.query(
-        `INSERT INTO flex_pay_vaults (tenancy_id, vault_balance, target_amount, frequency, status)
-         VALUES ($1, 0, 0, 'MONTHLY', 'ACTIVE')
-         RETURNING id`,
-        [tenancy_id]
-      );
-      vaultId = newVault.rows[0].id;
-    }
-
-    // 3. Build a SHA-256 ledger hash (same pattern as automated payments)
-    const hashPayload = `${tenancy_id}|${parsedAmount}|${period_label}|${paid_at}|${channel}|${landlordId}`;
-    const ledgerHash  = crypto.createHash('sha256').update(hashPayload).digest('hex');
-
-    // 4. Insert the manual contribution record
-    const ins = await pool.query(
-      `INSERT INTO flex_contributions
-         (vault_id, tenancy_id, amount_ngn, period_label, paid_at,
-          status, payment_channel, ledger_hash, notes, logged_by)
-       VALUES ($1,$2,$3,$4,$5,'MANUAL_ENTRY',$6,$7,$8,$9)
-       RETURNING id, amount_ngn, period_label, paid_at, ledger_hash, status, payment_channel, notes`,
-      [vaultId, tenancy_id, parsedAmount, period_label, paid_at, channel, ledgerHash, notes || null, landlordId]
-    );
-
-    return res.json({ success: true, contribution: ins.rows[0], message: 'Manual receipt logged and ledgered.' });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
-});
+// ── GET /api/rental/receipts/:projectId — all contributions across a project ──
 // Used by rental-management page receipts tab (landlord-scoped, ownership verified)
 app.get('/api/rental/receipts/:projectId', authenticate, async (req: Request, res: Response): Promise<any> => {
   const landlordId = (req as any).userId;
