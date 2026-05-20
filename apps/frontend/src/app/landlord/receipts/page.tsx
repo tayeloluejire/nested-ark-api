@@ -336,5 +336,3 @@ export default function LandlordReceiptsPage() {
     </Suspense>
   );
 }
-5 / 2 0 / 2 0 2 6   5 : 1 7 : 2 7   A M  
- 
