@@ -18,7 +18,7 @@ import api from '@/lib/api';
 import { useAuth } from '@/lib/AuthContext';
 import {
   Receipt, Building2, Loader2, Plus, ChevronRight,
-  ArrowLeft, Hash, AlertCircle, Download, X, PenLine,
+  ArrowLeft, Hash, AlertCircle, Download, X, PenLine, Share2,
 } from 'lucide-react';
 
 const safeN = (v: any): number => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
@@ -177,29 +177,56 @@ function LandlordReceiptsContent() {
     }
   };
 
-  // ── Loading spinner ───────────────────────────────────────────────────────
-  if (authLoading || loadingProj) return (
-    <div className="min-h-screen bg-[#050505] flex items-center justify-center">
-      <Loader2 className="animate-spin text-teal-500" size={28} />
-    </div>
-  );
-
-  // ── Channel badge helper ─────────────────────────────────────────────────
+  // ── Channel badge helper (must be above early returns) ───────────────────
   const channelBadge = (channel: string | undefined) => {
     switch (channel) {
       case 'MANUAL_ENTRY':
       case 'CASH':
       case 'BANK_TRANSFER':
       case 'CHEQUE':
+      case 'MOBILE_MONEY':
+      case 'OTHER':
         return (
           <span className="text-[7px] px-1.5 py-0.5 rounded border border-purple-500/30 text-purple-400 font-bold uppercase">
-            {channel?.replace('_', ' ') ?? 'OFFLINE'}
+            {(channel ?? 'OFFLINE').replace(/_/g, ' ')}
           </span>
         );
       default:
         return null; // FLEX_PAY entries need no badge — status badge already shows
     }
   };
+
+  // ── Print / share a manual receipt row ───────────────────────────────────
+  const handleShareManualReceipt = (c: Contribution) => {
+    const text = [
+      `NESTED ARK OS — Payment Receipt`,
+      `──────────────────────────────`,
+      `Tenant   : ${tenantLabel || tenancyId}`,
+      `Period   : ${c.period_label || new Date(c.paid_at).toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })}`,
+      `Date Paid: ${c.paid_at ? new Date(c.paid_at).toLocaleDateString('en-GB') : '—'}`,
+      `Amount   : NGN ${safeF(c.amount_ngn)}`,
+      `Channel  : ${(c.payment_channel ?? 'OFFLINE').replace(/_/g, ' ')}`,
+      c.notes ? `Notes    : ${c.notes}` : '',
+      `Ledger   : ${c.ledger_hash ?? 'N/A'}`,
+      `Status   : MANUAL ENTRY — SHA-256 Ledgered`,
+      `──────────────────────────────`,
+      `Nested Ark OS · Impressions & Impacts Ltd`,
+      `Lagos · London · Dubai`,
+    ].filter(Boolean).join('\n');
+
+    if (navigator.share) {
+      navigator.share({ title: 'Nested Ark Receipt', text }).catch(() => {});
+    } else {
+      navigator.clipboard.writeText(text).then(() => alert('Receipt text copied to clipboard.')).catch(() => {});
+    }
+  };
+
+  // ── Loading spinner ───────────────────────────────────────────────────────
+  if (authLoading || loadingProj) return (
+    <div className="min-h-screen bg-[#050505] flex items-center justify-center">
+      <Loader2 className="animate-spin text-teal-500" size={28} />
+    </div>
+  );
 
   // ── TENANT-SCOPED VIEW ────────────────────────────────────────────────────
   if (tenancyId) {
@@ -319,7 +346,16 @@ function LandlordReceiptsContent() {
                       </span>
                       {channelBadge(c.payment_channel)}
                     </div>
-                    {c.status !== 'MANUAL_ENTRY' && (
+                    {c.status === 'MANUAL_ENTRY' ? (
+                      <div>
+                        <button
+                          onClick={() => handleShareManualReceipt(c)}
+                          className="mt-1 flex items-center gap-1 text-[8px] font-bold uppercase text-purple-400 border border-purple-500/20 px-2 py-1 rounded-lg hover:bg-purple-500/10 transition-colors"
+                        >
+                          <Share2 size={9} /> Share
+                        </button>
+                      </div>
+                    ) : (
                       <div>
                         <button
                           onClick={() => handleDownloadReceipt(c.id, c.paystack_ref)}
