@@ -1,17 +1,13 @@
 'use client';
+export const dynamic = 'force-dynamic';
 /**
  * apps/frontend/src/app/landlord/receipts/page.tsx
  *
  * Behaviour:
- *   ?tenancy_id=<id>     → fetch THIS tenant's contributions and display directly (NO redirect)
- *   0 projects           → prompt to submit first project
- *   1 project, no param  → redirect to project rental-management?tab=receipts
+ *   ?tenancy_id=<id>      → fetch THIS tenant's contributions, display directly (NO redirect)
+ *   0 projects            → prompt to submit first project
+ *   1 project, no param   → redirect to project rental-management?tab=receipts
  *   2+ projects, no param → project picker
- *
- * Backend endpoint for tenant receipts:
- *   GET /api/flex-pay/contributions/:tenancyId
- *   → { success: true, contributions: [ { id, amount_ngn, period_label,
- *       paid_at, ledger_hash, status, paystack_ref } ] }
  */
 import { useEffect, useState, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
@@ -33,7 +29,6 @@ interface Project {
   location: string; country: string; status: string;
 }
 
-// Matches /api/flex-pay/contributions/:tenancyId response rows
 interface Contribution {
   id: string;
   amount_ngn: number;
@@ -41,35 +36,32 @@ interface Contribution {
   paid_at: string;
   ledger_hash: string;
   status: string;
-  paystack_ref?: string;
+  paystack_ref: string; // non-optional — coerced to '' on ingest if absent
 }
 
-// ── Inner component — useSearchParams() requires Suspense boundary ────────────
 function LandlordReceiptsContent() {
-  const router       = useRouter();
-  const searchParams = useSearchParams();
-  const tenancyId    = searchParams.get('tenancy_id') ?? '';
+  const router        = useRouter();
+  const searchParams  = useSearchParams();
+  const tenancyId     = searchParams.get('tenancy_id') ?? '';
 
   const { loading: authLoading } = useAuth();
 
   const [projects,      setProjects]      = useState<Project[]>([]);
   const [loadingProj,   setLoadingProj]   = useState(true);
-
-  // Tenant-scoped receipt state
   const [contributions, setContributions] = useState<Contribution[]>([]);
-  const [tenantLabel,   setTenantLabel]   = useState('');
+  const [tenantLabel,   setTenantLabel]   = useState<string>('');
   const [loadingRec,    setLoadingRec]    = useState(false);
-  const [receiptsErr,   setReceiptsErr]   = useState('');
+  const [receiptsErr,   setReceiptsErr]   = useState<string>('');
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
 
-  // ── Load projects (resolves redirect / picker logic) ─────────────────────
+  // ── Load projects (redirect / picker logic) ───────────────────────────────
   useEffect(() => {
     if (authLoading) return;
     api.get('/api/projects/my')
       .then(res => {
         const list: Project[] = res.data.projects ?? [];
         setProjects(list);
-        // Only auto-redirect when no tenancy_id is in the URL AND exactly 1 project
+        // Only auto-redirect when no tenancy_id param AND exactly 1 project
         if (!tenancyId && list.length === 1) {
           router.replace(`/projects/${list[0].id}/rental-management?tab=receipts`);
         }
@@ -78,27 +70,34 @@ function LandlordReceiptsContent() {
       .finally(() => setLoadingProj(false));
   }, [authLoading, router, tenancyId]);
 
-  // ── Fetch contributions for the specific tenant ───────────────────────────
+  // ── Fetch this tenant's contributions ────────────────────────────────────
   useEffect(() => {
     if (!tenancyId || authLoading) return;
     setLoadingRec(true);
     setReceiptsErr('');
-    // GET /api/flex-pay/contributions/:tenancyId
     api.get(`/api/flex-pay/contributions/${tenancyId}`)
       .then(r => {
-        const rows: Contribution[] = r.data?.contributions ?? [];
+        // Normalise paystack_ref to string so the interface stays non-optional
+        const rows: Contribution[] = (r.data?.contributions ?? []).map((c: any) => ({
+          ...c,
+          paystack_ref: String(c.paystack_ref ?? ''),
+        }));
         setContributions(rows);
-        // Also try to pull a display name from the tenancies active endpoint
+        // Resolve tenant display label — non-critical, fails silently
         api.get('/api/landlord/tenancies/active')
           .then(tr => {
-            const tenancies: any[] = tr.data?.tenancies ?? tr.data?.rows ?? [];
-            const match = tenancies.find((t: any) => t.tenancy_id === tenancyId);
-            if (match) setTenantLabel(`${match.tenant_name} · ${match.unit_name}`);
+            const list: any[] = tr.data?.tenancies ?? tr.data?.rows ?? [];
+            const match = list.find((t: any) => String(t.tenancy_id) === tenancyId);
+            if (match) {
+              setTenantLabel(
+                String(match.tenant_name ?? '') + ' · ' + String(match.unit_name ?? '')
+              );
+            }
           })
-          .catch(() => {}); // label is non-critical
+          .catch(() => {});
       })
-      .catch(e => {
-        const status = e?.response?.status;
+      .catch((e: any) => {
+        const status: number | undefined = e?.response?.status;
         if (status && status !== 404) {
           setReceiptsErr(e?.response?.data?.error ?? 'Could not load receipts.');
         } else {
@@ -108,16 +107,16 @@ function LandlordReceiptsContent() {
       .finally(() => setLoadingRec(false));
   }, [tenancyId, authLoading]);
 
-  // ── Download individual receipt PDF/HTML from backend ────────────────────
-  const handleDownloadReceipt = async (contributionId: string, paystackRef: string) => {
+  // ── Download receipt PDF/HTML ─────────────────────────────────────────────
+  const handleDownloadReceipt = async (contributionId: string, paystackRef: string): Promise<void> => {
     try {
       setDownloadingId(contributionId);
       const res = await api.get(`/api/flex-pay/receipt/${contributionId}`, {
         responseType: 'blob',
       });
-      const contentType = res.headers['content-type'] ?? 'application/pdf';
+      const contentType: string = res.headers['content-type'] ?? 'application/pdf';
       const ext  = contentType.includes('pdf') ? 'pdf' : 'html';
-      const blob = new Blob([res.data], { type: contentType });
+      const blob = new Blob([res.data as BlobPart], { type: contentType });
       const url  = window.URL.createObjectURL(blob);
       const a    = document.createElement('a');
       a.href     = url;
@@ -125,21 +124,21 @@ function LandlordReceiptsContent() {
       document.body.appendChild(a);
       a.click();
       setTimeout(() => { document.body.removeChild(a); window.URL.revokeObjectURL(url); }, 200);
-    } catch {
-      /* Non-critical — receipt may not yet exist if puppeteer unavailable on server */
+    } catch (_err) {
+      // Non-critical — receipt generation may be unavailable
     } finally {
       setDownloadingId(null);
     }
   };
 
-  // ── Shared loading state ──────────────────────────────────────────────────
+  // ── Loading spinner ───────────────────────────────────────────────────────
   if (authLoading || loadingProj) return (
     <div className="min-h-screen bg-[#050505] flex items-center justify-center">
       <Loader2 className="animate-spin text-teal-500" size={28} />
     </div>
   );
 
-  // ── TENANT-SCOPED VIEW — when ?tenancy_id= is present ────────────────────
+  // ── TENANT-SCOPED VIEW ────────────────────────────────────────────────────
   if (tenancyId) {
     return (
       <div className="min-h-screen bg-[#050505] text-white flex flex-col">
@@ -157,7 +156,7 @@ function LandlordReceiptsContent() {
                 Payment Ledger
               </p>
               <h1 className="text-2xl font-black uppercase tracking-tight">
-                {tenantLabel ? `${tenantLabel}` : 'Tenant Receipts'}
+                {tenantLabel || 'Tenant Receipts'}
               </h1>
               <p className="text-zinc-600 text-xs mt-0.5">
                 Flex-Pay contributions · SHA-256 ledgered
@@ -165,14 +164,14 @@ function LandlordReceiptsContent() {
             </div>
           </div>
 
-          {/* Error */}
+          {/* Error banner */}
           {receiptsErr && (
             <div className="flex items-center gap-3 p-4 rounded-2xl border border-red-500/30 bg-red-500/5 text-red-400 text-xs">
               <AlertCircle size={14} className="shrink-0" /> {receiptsErr}
             </div>
           )}
 
-          {/* Loading */}
+          {/* Body */}
           {loadingRec ? (
             <div className="flex items-center justify-center py-14">
               <Loader2 className="animate-spin text-amber-500" size={22} />
@@ -189,7 +188,7 @@ function LandlordReceiptsContent() {
 
           ) : (
             <div className="space-y-2">
-              {contributions.map(c => (
+              {contributions.map((c: Contribution) => (
                 <div key={c.id}
                   className="flex items-center justify-between p-4 rounded-2xl border border-zinc-800 bg-zinc-900/10 hover:border-zinc-700 transition-all">
                   <div className="flex items-center gap-4">
@@ -198,7 +197,10 @@ function LandlordReceiptsContent() {
                     </div>
                     <div className="space-y-0.5">
                       <p className="font-bold text-xs text-white">
-                        {c.period_label || new Date(c.paid_at).toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })}
+                        {c.period_label ||
+                          new Date(c.paid_at).toLocaleDateString('en-GB', {
+                            month: 'long', year: 'numeric',
+                          })}
                       </p>
                       <p className="text-[9px] text-zinc-500 font-mono">
                         {new Date(c.paid_at).toLocaleDateString('en-GB')}
@@ -206,11 +208,13 @@ function LandlordReceiptsContent() {
                       </p>
                       {c.ledger_hash && (
                         <p className="text-[8px] text-zinc-700 font-mono flex items-center gap-1 truncate max-w-[220px]">
-                          <Hash size={8} className="shrink-0" />{c.ledger_hash.slice(0, 28)}…
+                          <Hash size={8} className="shrink-0" />
+                          {c.ledger_hash.slice(0, 28)}…
                         </p>
                       )}
                     </div>
                   </div>
+
                   <div className="text-right shrink-0 space-y-1">
                     <p className="font-black text-sm text-white">
                       NGN {safeF(c.amount_ngn)}
@@ -242,7 +246,7 @@ function LandlordReceiptsContent() {
             </div>
           )}
 
-          {/* Ledger trust badges */}
+          {/* Trust badges */}
           <div className="flex items-center gap-6 justify-center pt-4 border-t border-zinc-900">
             {['SHA-256 Hashed', 'Paystack Verified', 'Immutable Ledger'].map(s => (
               <p key={s} className="text-[8px] text-zinc-600 uppercase font-bold tracking-widest">{s}</p>
@@ -266,7 +270,7 @@ function LandlordReceiptsContent() {
           <div>
             <h1 className="text-xl font-black uppercase tracking-tight">No Projects Yet</h1>
             <p className="text-zinc-500 text-sm mt-2">
-              Submit your first property project to start seeing rent receipts and payment history.
+              Submit your first property project to start seeing rent receipts.
             </p>
           </div>
           <Link href="/projects/submit"
@@ -279,7 +283,7 @@ function LandlordReceiptsContent() {
     </div>
   );
 
-  // ── 1 PROJECT — spinner while router.replace fires ────────────────────────
+  // ── 1 PROJECT — spinner while redirect fires ──────────────────────────────
   if (projects.length === 1) return (
     <div className="min-h-screen bg-[#050505] flex items-center justify-center">
       <Loader2 className="animate-spin text-teal-500" size={28} />
@@ -297,8 +301,9 @@ function LandlordReceiptsContent() {
           <p className="text-zinc-500 text-sm mt-1">Select the property whose payment history you want to view</p>
         </div>
         <div className="space-y-3">
-          {projects.map(p => (
-            <Link key={p.id} href={`/projects/${p.id}/rental-management?tab=receipts`}
+          {projects.map((p: Project) => (
+            <Link key={p.id}
+              href={`/projects/${p.id}/rental-management?tab=receipts`}
               className="flex items-center justify-between p-5 rounded-2xl border border-zinc-800 bg-zinc-900/20 hover:border-amber-500/30 hover:bg-amber-500/5 transition-all group">
               <div className="flex items-center gap-4">
                 <div className="w-10 h-10 rounded-xl bg-zinc-800 border border-zinc-700 flex items-center justify-center flex-shrink-0 group-hover:border-amber-500/30">
@@ -306,12 +311,16 @@ function LandlordReceiptsContent() {
                 </div>
                 <div>
                   <p className="font-bold text-sm uppercase tracking-tight">{p.title}</p>
-                  <p className="text-[9px] text-zinc-500 mt-0.5">{p.project_number} · {p.location}, {p.country}</p>
+                  <p className="text-[9px] text-zinc-500 mt-0.5">
+                    {p.project_number} · {p.location}, {p.country}
+                  </p>
                 </div>
               </div>
               <div className="flex items-center gap-3 flex-shrink-0">
                 <span className={`text-[8px] px-2 py-0.5 rounded border font-bold uppercase ${
-                  p.status === 'ACTIVE' ? 'border-teal-500/40 text-teal-500' : 'border-zinc-700 text-zinc-500'
+                  p.status === 'ACTIVE'
+                    ? 'border-teal-500/40 text-teal-500'
+                    : 'border-zinc-700 text-zinc-500'
                 }`}>{p.status}</span>
                 <ChevronRight size={16} className="text-zinc-600 group-hover:text-amber-400 transition-colors" />
               </div>
@@ -324,7 +333,7 @@ function LandlordReceiptsContent() {
   );
 }
 
-// ── Export with Suspense boundary ─────────────────────────────────────────────
+// ── Suspense boundary (required for useSearchParams in Next.js App Router) ────
 export default function LandlordReceiptsPage() {
   return (
     <Suspense fallback={
