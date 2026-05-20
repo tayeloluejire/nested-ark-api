@@ -30,6 +30,8 @@ interface Tenant {
   move_in_date?: string;
   next_payment_date?: string;
   vault_balance?: number;
+  invite_link?: string;   // full invite URL if returned by backend
+  invite_token?: string;  // raw token for constructing invite URL
 }
 
 const STATUS_STYLES: Record<string, string> = {
@@ -74,9 +76,47 @@ export default function LandlordTenantsPage() {
     overdue: tenants.filter(t => ['overdue','OVERDUE'].includes(t.status)).length,
   };
 
+  // ── WhatsApp: rent reminder (active tenants) ────────────────────────────
   const sendReminder = (t: Tenant) => {
-    const text = `Hello ${t.tenant_name}, this is a friendly reminder from Nested Ark OS that your rent of ${t.currency || 'NGN'} ${Number(t.rent_amount).toLocaleString()} is due. Please visit your tenant portal to make payment.`;
-    window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
+    const currency = t.currency || 'NGN';
+    const amount   = Number(t.rent_amount).toLocaleString();
+    const text =
+      `Hello ${t.tenant_name}, this is a friendly reminder from Nested Ark OS that your rent of ${currency} ${amount} is due. Please visit your tenant portal to make payment.`;
+    const phone = String(t.tenant_phone || '').replace(/\D/g, '');
+    const url   = phone
+      ? `https://api.whatsapp.com/send?phone=${phone}&text=${encodeURIComponent(text)}`
+      : `https://wa.me/?text=${encodeURIComponent(text)}`;
+    window.open(url, '_blank', 'noopener,noreferrer');
+  };
+
+  // ── WhatsApp: onboarding invite card with deep-link ──────────────────────
+  // Builds the same rich invite message that was previously working, carrying
+  // the correct /tenant/invite?token=...&unit=... deep-link from the backend.
+  // Falls back to a generic onboard URL if invite fields are absent.
+  const sendInvite = (t: Tenant) => {
+    const baseUrl   = process.env.NEXT_PUBLIC_FRONTEND_URL || 'https://nested-ark-api.vercel.app';
+    const inviteUrl = (t as any).invite_link
+      || `${baseUrl}/tenant/invite?token=${(t as any).invite_token || t.id}&unit=${t.unit_id}`;
+    const currency = t.currency || 'NGN';
+    const amount   = Number(t.rent_amount).toLocaleString();
+    const unit     = [t.unit_name, t.project_title].filter(Boolean).join(' · ');
+    const text = [
+      `Hello ${t.tenant_name},`,
+      ``,
+      `You have been invited to join as a tenant on *Nested Ark OS* for *${unit}*.`,
+      ``,
+      `💰 Rent: ${currency} ${amount} / ${(t.payment_frequency || 'monthly').toLowerCase()}`,
+      ``,
+      `Please complete your AI KYC verification and securely set up your Flex-Pay vault here:`,
+      `🔗 ${inviteUrl}`,
+      ``,
+      `_Powered by Nested Ark OS · Impressions & Impacts Ltd_`,
+    ].join('\n');
+    const phone = String(t.tenant_phone || '').replace(/\D/g, '');
+    const url   = phone
+      ? `https://api.whatsapp.com/send?phone=${phone}&text=${encodeURIComponent(text)}`
+      : `https://wa.me/?text=${encodeURIComponent(text)}`;
+    window.open(url, '_blank', 'noopener,noreferrer');
   };
 
   if (loading) return (
@@ -198,7 +238,8 @@ export default function LandlordTenantsPage() {
 
               {/* Action Row */}
               <div className="flex gap-2 mt-4 pt-4 border-t border-zinc-800 flex-wrap">
-                <button onClick={() => sendReminder(tenant)}
+                <button
+                  onClick={() => ['pending','PENDING'].includes(tenant.status) ? sendInvite(tenant) : sendReminder(tenant)}
                   className="flex items-center gap-1.5 text-[10px] font-black uppercase bg-green-500/10 text-green-400 border border-green-500/20 px-3 py-2 rounded-xl hover:bg-green-500/20 transition-colors">
                   <MessageCircle size={12} /> WhatsApp
                 </button>
