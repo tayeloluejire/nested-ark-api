@@ -3844,6 +3844,96 @@ app.post("/api/payments/webhook",
           }
         }
 
+        // ── Step 3b: Direct payout — no vault, or vault didn't reach target ──
+        // If the tenant has no Flex-Pay vault (standard rent payment) we must
+        // still forward the rent to the landlord immediately. 2% stays as the
+        // platform fee; the rest is transferred to the landlord's default bank.
+        if (meta.tenancy_id && meta.project_id && PAYSTACK_SECRET) {
+          setImmediate(async () => {
+            try {
+              // Only proceed if a vault payout was NOT already triggered above
+              // (i.e. vault existed AND balance reached target). We detect this
+              // by checking if a LANDLORD_PAYOUT ledger entry already exists for
+              // this reference.
+              const alreadyPaid = await pool.query(
+                `SELECT id FROM system_ledger
+                 WHERE transaction_type = 'LANDLORD_PAYOUT'
+                   AND payload->>'period_label' = $1
+                   AND created_at > NOW() - INTERVAL '5 minutes'
+                 LIMIT 1`,
+                [meta.period_month || reference]
+              );
+              if (alreadyPaid.rows.length) return; // vault already paid out
+
+              // Resolve landlord (sponsor) from tenancy → rental_unit → project
+              const landlordRes = await pool.query(
+                `SELECT p.sponsor_id, ru.rent_amount, ru.currency
+                 FROM tenancies t
+                 JOIN rental_units ru ON ru.id = t.unit_id
+                 JOIN projects p      ON p.id  = ru.project_id
+                 WHERE t.id = $1`,
+                [meta.tenancy_id]
+              );
+              if (!landlordRes.rows.length) {
+                console.warn(`[WEBHOOK] Direct-payout: cannot resolve landlord for tenancy ${meta.tenancy_id}`);
+                return;
+              }
+              const { sponsor_id, rent_amount, currency } = landlordRes.rows[0];
+
+              const bankRes = await pool.query(
+                `SELECT * FROM landlord_bank_accounts
+                 WHERE user_id = $1 AND is_default = true
+                   AND paystack_recipient_code IS NOT NULL LIMIT 1`,
+                [sponsor_id]
+              );
+              if (!bankRes.rows.length) {
+                console.log(`[WEBHOOK] Direct-payout: no default bank for landlord ${sponsor_id} — skipped`);
+                return;
+              }
+              const acct = bankRes.rows[0];
+
+              const platformFee  = Math.round(amountNgn * 0.02 * 100) / 100;
+              const netKobo      = Math.round((amountNgn - platformFee) * 100);
+              const periodLabel  = meta.period_month || new Date().toISOString().slice(0, 7);
+              const payRef       = `RENT-PAYOUT-${uuidv4().split('-')[0].toUpperCase()}-${Date.now()}`;
+
+              const tRes = await fetch(`${PAYSTACK_BASE}/transfer`, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${PAYSTACK_SECRET}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  source:    'balance',
+                  amount:    netKobo,
+                  recipient: acct.paystack_recipient_code,
+                  reason:    `Nested Ark rent — ${periodLabel}`,
+                  reference: payRef,
+                  currency:  currency || 'NGN',
+                }),
+              });
+              const tData = await tRes.json() as any;
+
+              const ph = crypto.createHash('sha256')
+                .update(`direct-payout-${payRef}-${sponsor_id}-${netKobo}-${Date.now()}`)
+                .digest('hex');
+              await pool.query(
+                `INSERT INTO system_ledger (transaction_type, payload, immutable_hash)
+                 VALUES ('LANDLORD_PAYOUT', $1, $2)`,
+                [JSON.stringify({
+                  reference: payRef, amount_ngn: netKobo / 100,
+                  platform_fee: platformFee, user_id: sponsor_id,
+                  bank_account_id: acct.id,
+                  transfer_code: tData.data?.transfer_code,
+                  transfer_status: tData.status ? 'INITIATED' : 'FAILED',
+                  tenancy_id: meta.tenancy_id, period_label: periodLabel,
+                  source: 'DIRECT_RENT',
+                }), ph]
+              );
+              console.log(`[WEBHOOK] Direct rent payout → ${acct.account_name} | ${acct.bank_name} | ₦${netKobo/100} | ref=${payRef} | status=${tData.data?.status ?? (tData.status ? 'ok' : 'failed')}`);
+            } catch (directPayErr: any) {
+              console.warn('[WEBHOOK] Direct-payout error:', directPayErr.message);
+            }
+          });
+        }
+
         // ── Step 4: Yield distributions to investors ────────────────────────
         if (meta.rent_payment_id && meta.project_id) {
           await computeYieldDistributions(meta.project_id, meta.rent_payment_id, amountNgn);
@@ -6318,6 +6408,7 @@ app.post('/api/rental/payments/initialize', async (req: Request, res: Response):
           project_title:   t.project_title,
           period_month:    month,
           tenant_email:    t.tenant_email,
+          tenant_id:       t.tenant_user_id ?? null,
         },
         channels: ['card','bank','ussd','mobile_money','bank_transfer'],
       }),
