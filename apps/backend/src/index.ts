@@ -5386,6 +5386,20 @@ app.post('/api/landlord/bank-accounts/:id/create-recipient', authenticate, async
 
     if (!PAYSTACK_SECRET) return res.status(503).json({ error: 'Payment gateway not configured' });
 
+    // If stored bank_code is missing, accept it from request body (patch-and-repair in one call)
+    const resolvedBankCode: string = acct.bank_code || req.body?.bank_code;
+    if (!resolvedBankCode) {
+      return res.status(400).json({
+        error: 'bank_code missing on this account (saved before bank codes were collected). ' +
+               'Pass { bank_code: "057" } in the request body to patch-and-repair, or delete and re-add via Add Account.',
+        needs_bank_code: true,
+      });
+    }
+    // One-time migration: patch stored bank_code if it was absent
+    if (!acct.bank_code) {
+      await pool.query(`UPDATE landlord_bank_accounts SET bank_code=$1 WHERE id=$2`, [resolvedBankCode, id]);
+    }
+
     const prRes = await fetch(`${PAYSTACK_BASE}/transferrecipient`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${PAYSTACK_SECRET}`, 'Content-Type': 'application/json' },
@@ -5393,7 +5407,7 @@ app.post('/api/landlord/bank-accounts/:id/create-recipient', authenticate, async
         type:           'nuban',
         name:           acct.account_name,
         account_number: acct.account_number,
-        bank_code:      acct.bank_code,
+        bank_code:      resolvedBankCode,
         currency:       acct.currency || 'NGN',
       }),
     });
@@ -5411,7 +5425,7 @@ app.post('/api/landlord/bank-accounts/:id/create-recipient', authenticate, async
     return res.json({
       success:        true,
       recipient_code: prData.data.recipient_code,
-      message:        'Recipient code created and saved. This account can now receive automatic payouts.',
+      message:        'Recipient code created. This account can now receive automatic payouts.',
     });
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
@@ -5628,7 +5642,7 @@ app.post('/api/rental/units', authenticate, async (req: Request, res: Response):
       rent_amount, currency, description, amenities,
       payment_frequency,
       security_deposit, service_charge, agency_fee, legal_fee, caution_fee,
-      bank_name, account_number, account_name, sort_code, bank_code,
+      bank_name, account_number, account_name, sort_code,
       furnished, parking,
     } = req.body;
 
@@ -5700,62 +5714,6 @@ app.post('/api/rental/units', authenticate, async (req: Request, res: Response):
         parking    ? true : false,
       ]
     );
-
-    // ── Auto-bridge: if bank details + bank_code supplied, upsert landlord_bank_accounts ──
-    // This ensures the payout engine can immediately see this account without
-    // the landlord having to visit /landlord/bank separately.
-    if (bank_name && account_number && account_name && bank_code) {
-      try {
-        // Create Paystack recipient
-        let recipientCode: string | null = null;
-        if (PAYSTACK_SECRET) {
-          const prRes = await fetch(`${PAYSTACK_BASE}/transferrecipient`, {
-            method: 'POST',
-            headers: { Authorization: `Bearer ${PAYSTACK_SECRET}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              type: 'nuban',
-              name: account_name,
-              account_number,
-              bank_code,
-              currency: currency || 'NGN',
-            }),
-          });
-          const prData = await prRes.json() as any;
-          if (prData.status && prData.data?.recipient_code) {
-            recipientCode = prData.data.recipient_code;
-          }
-        }
-        // Check if an identical account already exists for this landlord
-        const existing = await pool.query(
-          `SELECT id FROM landlord_bank_accounts WHERE user_id=$1 AND account_number=$2 AND bank_code=$3 LIMIT 1`,
-          [userId, account_number, bank_code]
-        );
-        if (!existing.rows.length) {
-          // Upsert: no existing record → insert and mark as default
-          await pool.query(`UPDATE landlord_bank_accounts SET is_default=false WHERE user_id=$1`, [userId]);
-          await pool.query(
-            `INSERT INTO landlord_bank_accounts
-               (user_id, project_id, account_name, account_number, bank_code, bank_name, currency,
-                paystack_recipient_code, is_verified, is_default)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,true,true)
-             ON CONFLICT DO NOTHING`,
-            [userId, project_id || null, account_name, account_number, bank_code, bank_name,
-             currency || 'NGN', recipientCode]
-          );
-          console.log(`[UNIT-DEPLOY] Auto-bridged bank account for landlord ${userId} → ${bank_name} ${account_number} | recipient=${recipientCode}`);
-        } else if (recipientCode) {
-          // Already exists but may be missing recipient code — patch it
-          await pool.query(
-            `UPDATE landlord_bank_accounts SET paystack_recipient_code=$1 WHERE id=$2 AND paystack_recipient_code IS NULL`,
-            [recipientCode, existing.rows[0].id]
-          );
-        }
-      } catch (bridgeErr: any) {
-        // Non-fatal: unit was created successfully; bank bridge failure is logged only
-        console.warn('[UNIT-DEPLOY] Bank account auto-bridge failed (non-fatal):', bridgeErr.message);
-      }
-    }
-
     return res.status(201).json({ success: true, unit: r.rows[0] });
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
@@ -7713,17 +7671,13 @@ app.get('/api/flex-pay/receipt/:contributionId', authenticate, async (req: Reque
          fpv.vault_balance, fpv.target_amount, fpv.frequency,
          t.tenant_name, t.tenant_email,
          ru.unit_name,
-         COALESCE(ru.currency, t.currency, 'NGN') AS currency,
-         COALESCE(p.title, p2.title)               AS project_title,
-         COALESCE(p.project_number, p2.project_number) AS project_number
+         ru.currency,
+         p.title AS project_title, p.project_number
        FROM flex_contributions fc
-       JOIN flex_pay_vaults fpv ON fpv.id        = fc.vault_id
-       JOIN tenancies t          ON t.id         = fpv.tenancy_id
-       -- Primary path: vault has unit_id set directly
-       LEFT JOIN rental_units ru  ON ru.id       = COALESCE(fpv.unit_id, t.unit_id)
-       -- Project via vault (direct) or via tenancy→unit (self-heal path)
-       LEFT JOIN projects p       ON p.id        = fpv.project_id
-       LEFT JOIN projects p2      ON p2.id       = ru.project_id
+       JOIN flex_pay_vaults fpv ON fpv.id   = fc.vault_id
+       JOIN tenancies t          ON t.id    = fpv.tenancy_id
+       JOIN rental_units ru      ON ru.id   = fpv.unit_id
+       LEFT JOIN projects p      ON p.id    = fpv.project_id
        WHERE fc.id = $1`,
       [contributionId]
     );
