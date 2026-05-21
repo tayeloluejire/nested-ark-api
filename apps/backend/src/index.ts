@@ -998,11 +998,26 @@ const ensureTablesExist = async () => {
       -- Fix: notes column (additional notes on the notice)
       ALTER TABLE legal_notices ADD COLUMN IF NOT EXISTS notes        TEXT;
 
-      -- ── flex_contributions: backfill UNIQUE index on paystack_ref for existing DBs ──
-      -- (new tables get the UNIQUE in the CREATE TABLE above; this covers existing prod DBs)
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_fc_paystack_ref
-        ON flex_contributions(paystack_ref)
-        WHERE paystack_ref IS NOT NULL;
+      -- ── flex_contributions: ensure paystack_ref has a REAL unique constraint ──
+      -- CRITICAL: ON CONFLICT (paystack_ref) requires a non-partial unique CONSTRAINT,
+      -- not a partial index (WHERE paystack_ref IS NOT NULL). A partial index does NOT
+      -- satisfy PostgreSQL's ON CONFLICT clause and causes a runtime crash.
+      -- This block safely adds the named constraint to existing prod DBs.
+      -- New tables already get UNIQUE in the CREATE TABLE above, but IF NOT EXISTS
+      -- skips that on prod — so we enforce it here unconditionally.
+      DO $$ BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conname = 'flex_contributions_paystack_ref_key'
+            AND conrelid = 'flex_contributions'::regclass
+        ) THEN
+          -- Drop the partial index first if it exists (it doesn't satisfy ON CONFLICT)
+          DROP INDEX IF EXISTS idx_fc_paystack_ref;
+          -- Add the real unique constraint
+          ALTER TABLE flex_contributions
+            ADD CONSTRAINT flex_contributions_paystack_ref_key UNIQUE (paystack_ref);
+        END IF;
+      END $$;
 
       -- ── landlord_bank_accounts: ensure paystack_recipient_code column exists ──
       ALTER TABLE landlord_bank_accounts ADD COLUMN IF NOT EXISTS paystack_recipient_code VARCHAR(100);
@@ -3738,7 +3753,7 @@ app.post("/api/payments/webhook",
                 `INSERT INTO flex_contributions
                    (vault_id, tenancy_id, amount_ngn, paystack_ref, status, period_label, paid_at, ledger_hash)
                  VALUES ($1,$2,$3,$4,'SUCCESS',$5,NOW(),$6)
-                 ON CONFLICT (paystack_ref) DO NOTHING`,
+                 ON CONFLICT ON CONSTRAINT flex_contributions_paystack_ref_key DO NOTHING`,
                 [v.id, meta.tenancy_id, amountNgn, reference, periodLabel, h]
               );
 
@@ -3924,7 +3939,6 @@ app.post("/api/payments/webhook",
                   transfer_code: tData.data?.transfer_code,
                   transfer_status: tData.status ? 'INITIATED' : 'FAILED',
                   tenancy_id: meta.tenancy_id, period_label: periodLabel,
-                  paystack_reference: reference,   // ← dedup key
                   source: 'DIRECT_RENT',
                 }), ph]
               );
@@ -7881,7 +7895,7 @@ app.post('/api/flex-pay/contribute', authenticate, async (req: Request, res: Res
     await client.query(
       `INSERT INTO flex_contributions (vault_id, tenancy_id, amount_ngn, paystack_ref, status, period_label, paid_at, ledger_hash)
        VALUES ($1,$2,$3,$4,'SUCCESS',$5,NOW(),$6)
-       ON CONFLICT (paystack_ref) DO NOTHING`,
+       ON CONFLICT ON CONSTRAINT flex_contributions_paystack_ref_key DO NOTHING`,
       [vault_id, v.tenancy_id, amount, paystack_ref || null, periodLabel, h]
     );
 
@@ -8174,23 +8188,19 @@ app.get('/api/tenant/my-contributions', authenticate, async (req: Request, res: 
 });
 
 // ── GET /api/tenant/verify-payment ──────────────────────────────────────────
-// Called by the tenant pay/success page to confirm payment and get vault state.
-// Three-layer resolution:
-//   1. Check flex_contributions by paystack_ref (instant if webhook already fired)
-//   2. If not found, call Paystack verify API directly (webhook may be delayed)
-//   3. If Paystack confirms success but contribution missing, self-heal: credit vault
+// Three-layer resolution so tenant NEVER sees a dead-end error screen:
+//   Layer 1: Check flex_contributions by paystack_ref (instant if webhook fired)
+//   Layer 2: If missing, call Paystack verify API directly (webhook may be delayed)
+//   Layer 3: Paystack confirms success but webhook hasn't fired — self-heal the vault
 app.get('/api/tenant/verify-payment', authenticate, async (req: Request, res: Response): Promise<any> => {
-  const userId    = (req as any).userId;
-  const { reference } = req.query as { reference: string };
+  const userId         = (req as any).userId;
+  const { reference }  = req.query as { reference: string };
   if (!reference) return res.status(400).json({ error: 'reference required' });
   if (!/^[A-Za-z0-9\-_]{6,100}$/.test(reference)) {
     return res.status(400).json({ error: 'Invalid reference format' });
   }
   try {
-    // ── Layer 1: Check our DB — contribution already written by webhook ────
-    // NOTE: We do NOT filter by tenant_user_id here because the tenancy
-    // may not have tenant_user_id populated yet at payment time (it gets
-    // linked at vault setup). We use paystack_ref as the unique identifier.
+    // ── Layer 1: Check our DB — no tenant_user_id filter (may not be linked yet) ──
     const r = await pool.query(
       `SELECT fc.id, fc.amount_ngn, fc.paystack_ref, fc.period_label, fc.ledger_hash,
               fc.status, fc.paid_at,
@@ -8203,9 +8213,8 @@ app.get('/api/tenant/verify-payment', authenticate, async (req: Request, res: Re
        WHERE fc.paystack_ref = $1`,
       [reference]
     );
-
     if (r.rows.length) {
-      const row = r.rows[0];
+      const row       = r.rows[0];
       const balance   = Math.max(0, Number(row.vault_balance) || 0);
       const target    = Math.max(1, Number(row.target_amount) || 1);
       const fundedPct = Math.min(Math.round((balance / target) * 100), 100);
@@ -8224,62 +8233,64 @@ app.get('/api/tenant/verify-payment', authenticate, async (req: Request, res: Re
       });
     }
 
-    // ── Layer 2: Webhook may be delayed — call Paystack directly ──────────
+    // ── Layer 2: Not in DB yet — call Paystack directly to confirm ────────────
     if (!PAYSTACK_SECRET) {
       return res.status(202).json({
         verified: false,
-        error: 'Payment received. Vault is updating — please check again in a moment.',
+        error: 'Payment received. Vault is updating — please check back in a moment.',
         reference,
       });
     }
-
-    const psVerify = await fetch(`${PAYSTACK_BASE}/transaction/verify/${encodeURIComponent(reference)}`, {
-      headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` },
-    });
+    const psVerify  = await fetch(
+      `https://api.paystack.co/transaction/verify/${encodeURIComponent(reference)}`,
+      { headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` } }
+    );
     const psData: any = await psVerify.json();
 
     if (!psData.status || psData.data?.status !== 'success') {
-      // Paystack also shows not-yet-confirmed — genuinely still processing
       return res.status(202).json({
-        verified: false,
-        error: 'Payment is still being confirmed by Paystack. Please check your vault in 30 seconds.',
+        verified:        false,
+        error:           'Payment is still being confirmed. Please check your vault in 30 seconds.',
         reference,
         paystack_status: psData.data?.status ?? 'unknown',
       });
     }
 
-    // ── Layer 3: Paystack confirmed success but webhook hasn't fired yet ───
-    // Self-heal: credit the vault now so tenant isn't stuck on the error screen.
-    const amountNgn   = (psData.data.amount ?? 0) / 100;
-    const meta        = psData.data.metadata ?? {};
-    const vaultId     = meta.vault_id;
-    const tenancyId   = meta.tenancy_id;
+    // ── Layer 3: Paystack confirmed — webhook delayed — self-heal vault ───────
+    const amountNgn = (psData.data.amount ?? 0) / 100;
+    const meta      = psData.data.metadata ?? {};
+    const vaultId   = meta.vault_id;
+    const tenancyId = meta.tenancy_id;
 
     if (!vaultId && !tenancyId) {
-      // Cannot resolve vault — let the webhook handle it
       return res.status(202).json({
         verified: false,
         error: 'Payment confirmed. Vault update in progress — check back in a moment.',
-        reference,
-        paystack_confirmed: true,
+        reference, paystack_confirmed: true,
       });
     }
 
-    // Resolve vault
-    const vaultQuery = vaultId
-      ? await pool.query(`SELECT * FROM flex_pay_vaults WHERE id = $1 AND status IN ('ACTIVE','FUNDED_READY')`, [vaultId])
-      : await pool.query(`SELECT * FROM flex_pay_vaults WHERE tenancy_id = $1 AND status IN ('ACTIVE','FUNDED_READY') ORDER BY created_at DESC LIMIT 1`, [tenancyId]);
+    const vaultQ = vaultId
+      ? await pool.query(
+          `SELECT * FROM flex_pay_vaults WHERE id=$1 AND status IN ('ACTIVE','FUNDED_READY')`,
+          [vaultId]
+        )
+      : await pool.query(
+          `SELECT * FROM flex_pay_vaults
+           WHERE tenancy_id=$1 AND status IN ('ACTIVE','FUNDED_READY')
+           ORDER BY created_at DESC LIMIT 1`,
+          [tenancyId]
+        );
 
-    if (!vaultQuery.rows.length) {
+    if (!vaultQ.rows.length) {
       return res.status(202).json({
         verified: false,
         error: 'Payment confirmed. Vault update in progress — check back in a moment.',
-        reference,
-        paystack_confirmed: true,
+        reference, paystack_confirmed: true,
       });
     }
 
-    const v           = vaultQuery.rows[0];
+    const v           = vaultQ.rows[0];
     const periodLabel = meta.period_month || new Date().toISOString().slice(0, 7);
     const newBalance  = Math.min(
       parseFloat(v.vault_balance) + amountNgn,
@@ -8297,16 +8308,15 @@ app.get('/api/tenant/verify-payment', authenticate, async (req: Request, res: Re
       newStatus = (v.cashout_mode === 'LUMP_SUM') ? 'FUNDED_READY' : v.status;
     }
 
-    // Insert contribution (idempotent)
+    // Idempotent insert using the named constraint
     await pool.query(
       `INSERT INTO flex_contributions
          (vault_id, tenancy_id, amount_ngn, paystack_ref, status, period_label, paid_at, ledger_hash)
        VALUES ($1,$2,$3,$4,'SUCCESS',$5,NOW(),$6)
-       ON CONFLICT (paystack_ref) DO NOTHING`,
+       ON CONFLICT ON CONSTRAINT flex_contributions_paystack_ref_key DO NOTHING`,
       [v.id, v.tenancy_id, amountNgn, reference, periodLabel, h]
     );
 
-    // Update vault balance
     await pool.query(
       `UPDATE flex_pay_vaults
        SET vault_balance=$1, funded_periods=$2, status=$3, updated_at=NOW()
@@ -8314,7 +8324,6 @@ app.get('/api/tenant/verify-payment', authenticate, async (req: Request, res: Re
       [newBalance, newPeriods, newStatus, v.id]
     );
 
-    // Ledger entry
     await pool.query(
       `INSERT INTO system_ledger (transaction_type, payload, immutable_hash)
        VALUES ('FLEX_RENT_SELF_HEAL',$1,$2)`,
@@ -8325,21 +8334,21 @@ app.get('/api/tenant/verify-payment', authenticate, async (req: Request, res: Re
       }), h]
     );
 
-    console.log(`[VERIFY] Self-healed vault ${v.id} → +₦${amountNgn} balance=₦${newBalance} ref=${reference}`);
+    console.log(`[VERIFY] Self-healed vault ${v.id} +₦${amountNgn} → balance=₦${newBalance} ref=${reference}`);
 
     const fundedPct = Math.min(Math.round((newBalance / target) * 100), 100);
     return res.json({
-      verified:           true,
-      amount_ngn:         amountNgn,
+      verified:      true,
+      amount_ngn:    amountNgn,
       reference,
-      vault_balance:      newBalance,
-      target_amount:      target,
-      funded_pct:         fundedPct,
-      vault_status:       newStatus,
-      period_label:       periodLabel,
-      ledger_hash:        h,
-      paid_at:            psData.data.paid_at ?? new Date().toISOString(),
-      self_healed:        true,  // for logging/monitoring
+      vault_balance: newBalance,
+      target_amount: target,
+      funded_pct:    fundedPct,
+      vault_status:  newStatus,
+      period_label:  periodLabel,
+      ledger_hash:   h,
+      paid_at:       psData.data.paid_at ?? new Date().toISOString(),
+      self_healed:   true,
     });
 
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
@@ -8453,17 +8462,17 @@ app.post('/api/tenant/pay-installment', authenticate, async (req: Request, res: 
       : parseFloat(v.installment_amount);
 
     // Platform covers Paystack's 1.5% + ₦100 transaction fee (bearer: 'account').
-    // This means the tenant pays EXACTLY the installment amount shown — no surprise fees.
-    // The platform absorbs the fee cost as part of the 2% service model.
+    // Tenant pays EXACTLY the installment amount — no surprise fees at checkout.
+    // Platform absorbs the fee as part of the 2% service model.
     const amountKobo = Math.round(baseAmountNaira * 100);
 
     if (amountKobo > 999999999) {
       return res.status(400).json({ error: 'Amount exceeds single-transaction limit. Please split into smaller installments.' });
     }
 
-    const email      = v.user_email || v.tenant_email;
-    const ref        = `ARK-VAULT-${resolvedVaultId.slice(0, 8)}-${Date.now()}`;
-    const FRONTEND   = process.env.FRONTEND_URL || 'https://nested-ark-api.vercel.app';
+    const email    = v.user_email || v.tenant_email;
+    const ref      = `ARK-VAULT-${resolvedVaultId.slice(0, 8)}-${Date.now()}`;
+    const FRONTEND = process.env.FRONTEND_URL || 'https://nested-ark-api.vercel.app';
 
     const psRes = await fetch('https://api.paystack.co/transaction/initialize', {
       method:  'POST',
@@ -8473,9 +8482,9 @@ app.post('/api/tenant/pay-installment', authenticate, async (req: Request, res: 
         amount:       amountKobo,
         reference:    ref,
         currency:     'NGN',
-        bearer:       'account',  // Platform covers Paystack fee — tenant pays exact installment
+        bearer:       'account',  // Platform (Impressions & Impacts) covers Paystack fee
         callback_url: `${FRONTEND}/tenant/pay/success?reference=${ref}`,
-        metadata:  {
+        metadata: {
           payment_type:       'RENT_INSTALLMENT',
           vault_id:           resolvedVaultId,
           tenancy_id:         v.tenancy_id,
@@ -8500,7 +8509,7 @@ app.post('/api/tenant/pay-installment', authenticate, async (req: Request, res: 
       vault_id:           resolvedVaultId,
       amount_ngn:         baseAmountNaira,
       processing_fee_ngn: 0,
-      total_charged_ngn:  baseAmountNaira,
+      total_charged_ngn:  baseAmountNaira,  // what tenant actually pays
     });
   } catch (e: any) {
     return res.status(500).json({ error: e.message });
