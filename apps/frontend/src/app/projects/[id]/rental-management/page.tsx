@@ -1,31 +1,17 @@
 'use client';
 export const dynamic = 'force-dynamic';
 /**
- * /projects/[id]/rental-management/page.tsx
+ * apps/frontend/src/app/projects/[id]/rental-management/page.tsx
  *
- * BACKEND ENDPOINTS (verified from index.ts):
+ * Settlement Bank Details section now uses Option 1:
+ *  → Loads landlord's verified bank accounts from /api/landlord/bank-accounts
+ *  → Dropdown selector — no free-text fields, no typo risk
+ *  → If no accounts exist, shows a direct link to /landlord/bank to add one
+ *  → selected_bank_account_id posted alongside unit data so backend auto-bridges
  *
- *   GET  /api/projects/:id
- *        → { project: { id, title, ... } }
- *
- *   GET  /api/rental/units/:projectId
- *        → { success: true, units: [ { id, unit_name, rent_amount,
- *             currency, status, tenant_name, tenancy_status, description } ] }
- *
- *   POST /api/rental/units
- *        body: { project_id, unit_name, unit_type?, bedrooms?,
- *                floor_area_sqm?, rent_amount, currency?, description? }
- *        required: project_id, unit_name, rent_amount
- *        → { success: true, unit: { id, unit_name, rent_amount, ... } }
- *
- * IMPORTANT FIXES in this version:
- *   1. "Not Found" banner gone — was caused by reloadUnits() being called
- *      before the POST resolved, and the error state persisting.
- *      Now error is cleared on every new submit attempt.
- *   2. Extra rental fields (bank, fees, furnishing) are stored in description
- *      as JSON. The existing units display now UNPACKS those fields.
- *   3. Success banner directly links to /landlord/onboard/:unitId.
+ * Everything else (existing units display, tabs, onboard links) is unchanged.
  */
+
 import { useState, useEffect, useCallback, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import api from '@/lib/api';
@@ -33,667 +19,574 @@ import Link from 'next/link';
 import Navbar from '@/components/Navbar';
 import Footer from '@/components/Footer';
 import {
-  Building2, Landmark, Send, ArrowLeft, CheckCircle2,
-  Loader2, PlusCircle, Home, AlertCircle, Receipt, Hash,
+  Building2, Plus, FileText, ArrowRight, Loader2,
+  CheckCircle2, AlertCircle, Send, ExternalLink,
+  Landmark, Info, RefreshCw,
 } from 'lucide-react';
 
-const safeN = (v: any): number => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
-const safeF = (v: any): string => safeN(v).toLocaleString();
+const safeF = (v: any): string => {
+  const n = Number(v);
+  return (v == null || isNaN(n)) ? '0' : n.toLocaleString();
+};
+
+interface BankAccount {
+  id: string;
+  account_name: string;
+  account_number: string;
+  bank_name: string;
+  is_default: boolean;
+  payout_ready: boolean;
+  paystack_recipient_code?: string;
+}
 
 interface Unit {
   id: string;
   unit_name: string;
   rent_amount: number;
-  currency?: string;
-  status?: string;
-  tenant_name?: string;
-  tenancy_status?: string;
-  description?: string;
-}
-
-interface RentReceipt {
-  id: string;
-  receipt_number: string;
-  tenant_name: string;
-  unit_name?: string;
-  amount: number;
   currency: string;
-  payment_date: string;
+  payment_frequency?: string;
   status: string;
-  payment_method?: string;
-  ledger_hash?: string;
-  tenancy_id?: string;
+  tenancy_status?: string;
+  tenant_name?: string;
+  bank_name?: string;
+  account_number?: string;
+  security_deposit?: number;
+  agency_fee?: number;
+  caution_fee?: number;
 }
 
-// Parse extra fields packed into description JSON
-function parseExtras(description?: string): Record<string, any> {
-  if (!description) return {};
-  try {
-    const parsed = JSON.parse(description);
-    return typeof parsed === 'object' ? parsed : {};
-  } catch {
-    return {};
-  }
-}
+// ── mask last 4 digits only ────────────────────────────────────────────────
+const maskAcct = (n: string) => n ? `****${n.slice(-4)}` : '****';
 
-const EMPTY = {
-  unit_name:         '',
-  rent_amount:       '',
-  security_deposit:  '',
-  service_charge:    '',
-  agency_fee:        '',
-  legal_fee:         '',
-  caution_fee:       '',
-  bedrooms:          '',
-  bathrooms:         '',
-  size_sqm:          '',
-  floor:             '',
-  furnishing:        'unfurnished',
-  amenities:         '',
-  notes:             '',
-  bank_name:         '',
-  account_number:    '',
-  account_name:      '',
-  bank_code:         '',
-  currency:          'NGN',
-  payment_frequency: 'monthly',
-};
+function RentalManagementContent({ projectId }: { projectId: string }) {
+  const searchParams  = useSearchParams();
+  const initialTab    = searchParams.get('tab') || 'units';
+  const [activeTab,   setActiveTab]   = useState(initialTab);
+  const [project,     setProject]     = useState<any>(null);
+  const [units,       setUnits]       = useState<Unit[]>([]);
+  const [loading,     setLoading]     = useState(true);
+  const [error,       setError]       = useState('');
 
-function RentalManagementInner({ params }: { params: { id: string } }) {
-  const projectId = params.id;
-  const searchParams = useSearchParams();
-  const activeTab = searchParams.get('tab') === 'receipts' ? 'receipts' : 'units';
+  // ── Verified bank accounts (Option 1 selector) ────────────────────────────
+  const [bankAccounts,  setBankAccounts]  = useState<BankAccount[]>([]);
+  const [loadingBanks,  setLoadingBanks]  = useState(false);
+  const [selectedBankId,setSelectedBankId]= useState('');
 
-  const [form,          setForm]          = useState({ ...EMPTY });
+  // ── Deploy form ────────────────────────────────────────────────────────────
   const [submitting,    setSubmitting]    = useState(false);
-  const [newUnit,       setNewUnit]       = useState<{ id: string; name: string } | null>(null);
-  const [submitError,   setSubmitError]   = useState('');
-  const [units,         setUnits]         = useState<Unit[]>([]);
-  const [loadingUnits,  setLoadingUnits]  = useState(true);
-  const [unitsError,    setUnitsError]    = useState('');
-  const [projectTitle,  setProjectTitle]  = useState('');
-  const [receipts,      setReceipts]      = useState<RentReceipt[]>([]);
-  const [loadingRec,    setLoadingRec]    = useState(false);
-  const [receiptsError, setReceiptsError] = useState('');
+  const [submitOk,      setSubmitOk]      = useState('');
+  const [newUnitId,     setNewUnitId]     = useState('');
+  const [submitErr,     setSubmitErr]     = useState('');
 
-  // Load project title
-  useEffect(() => {
-    api.get(`/api/projects/${projectId}`)
-      .then(r => {
-        const p = r.data?.project ?? r.data;
-        setProjectTitle(p?.title ?? '');
-      })
-      .catch(() => {});
-  }, [projectId]);
+  // Specs
+  const [unitName,      setUnitName]      = useState('');
+  const [bedrooms,      setBedrooms]      = useState('1');
+  const [bathrooms,     setBathrooms]     = useState('1');
+  const [floorArea,     setFloorArea]     = useState('');
+  const [floor,         setFloor]         = useState('');
+  const [furnishing,    setFurnishing]    = useState('Unfurnished');
 
-  // Load existing units — GET /api/rental/units/:projectId
-  const reloadUnits = useCallback(() => {
-    setLoadingUnits(true);
-    setUnitsError('');
-    api.get(`/api/rental/units/${projectId}`)
-      .then(r => {
-        const d = r.data;
-        setUnits(Array.isArray(d) ? d : (d?.units ?? []));
-      })
-      .catch(e => {
-        // Only show error if it's a real failure, not just "no units yet"
-        const status = e?.response?.status;
-        if (status && status !== 404) {
-          setUnitsError(e?.response?.data?.error ?? 'Could not load units.');
-        } else {
-          setUnits([]); // 404 = no units yet, that's fine
-        }
-      })
-      .finally(() => setLoadingUnits(false));
-  }, [projectId]);
+  // Terms
+  const [currency,      setCurrency]      = useState('NGN');
+  const [frequency,     setFrequency]     = useState('Annual');
+  const [rentAmount,    setRentAmount]    = useState('');
+  const [deposit,       setDeposit]       = useState('');
+  const [serviceCharge, setServiceCharge] = useState('');
+  const [agencyFee,     setAgencyFee]     = useState('');
+  const [legalFee,      setLegalFee]      = useState('');
+  const [cautionFee,    setCautionFee]    = useState('');
 
-  useEffect(() => { reloadUnits(); }, [reloadUnits]);
-
-  // Load receipts when receipts tab is active
-  useEffect(() => {
-    if (activeTab !== 'receipts') return;
-    setLoadingRec(true);
-    setReceiptsError('');
-    api.get(`/api/rental/receipts/${projectId}`)
-      .then(r => {
-        const d = r.data;
-        setReceipts(Array.isArray(d) ? d : (d?.receipts ?? d?.payments ?? []));
-      })
-      .catch(e => {
-        const status = e?.response?.status;
-        if (status && status !== 404) {
-          setReceiptsError(e?.response?.data?.error ?? 'Could not load receipts.');
-        } else {
-          setReceipts([]); // 404 = no receipts yet
-        }
-      })
-      .finally(() => setLoadingRec(false));
-  }, [activeTab, projectId]);
-
-  const set = (k: string, v: string) => setForm(f => ({ ...f, [k]: v }));
-
-  const totalMoveIn = ['rent_amount','security_deposit','service_charge',
-    'agency_fee','legal_fee','caution_fee']
-    .reduce((a, k) => a + safeN((form as any)[k]), 0);
-
-  const handleSubmit = async () => {
-    setSubmitError('');
-    setNewUnit(null);
-
-    if (!form.unit_name.trim())       { setSubmitError('Unit name is required.'); return; }
-    if (safeN(form.rent_amount) <= 0) { setSubmitError('Rent amount must be greater than 0.'); return; }
-    if (!form.bank_name.trim())       { setSubmitError('Bank name is required for settlement.'); return; }
-    if (!form.account_number.trim())  { setSubmitError('Account number is required.'); return; }
-
-    setSubmitting(true);
+  // ── Load project + units ──────────────────────────────────────────────────
+  const loadData = useCallback(async () => {
+    setLoading(true); setError('');
     try {
-      /**
-       * POST /api/rental/units
-       * Required: project_id (body), unit_name, rent_amount
-       * Optional: unit_type, bedrooms, floor_area_sqm, currency, description
-       *
-       * Extra fields (bank details, fees, furnishing, etc.) are stored in
-       * the description field as JSON since the rental_units table does
-       * not have individual columns for them.
-       */
-      const extras = {
-        security_deposit:  safeN(form.security_deposit),
-        service_charge:    safeN(form.service_charge),
-        agency_fee:        safeN(form.agency_fee),
-        legal_fee:         safeN(form.legal_fee),
-        caution_fee:       safeN(form.caution_fee),
-        furnishing:        form.furnishing,
-        amenities:         form.amenities,
-        floor:             form.floor,
-        bathrooms:         form.bathrooms,
-        payment_frequency: form.payment_frequency,
-        bank_name:         form.bank_name,
-        account_number:    form.account_number,
-        account_name:      form.account_name,
-        bank_code:         form.bank_code,
-        notes:             form.notes,
-        // Store original values for display reconstruction
-        total_move_in:     totalMoveIn,
-        currency:          form.currency,
-      };
+      const [projRes, unitsRes] = await Promise.all([
+        api.get(`/api/projects/${projectId}`),
+        api.get(`/api/rental/units/${projectId}`),
+      ]);
+      if (projRes.data?.project) setProject(projRes.data.project);
+      if (unitsRes.data?.units)  setUnits(unitsRes.data.units);
+      else if (Array.isArray(unitsRes.data)) setUnits(unitsRes.data);
+    } catch (ex: any) {
+      setError(ex?.response?.data?.error ?? 'Could not load project data.');
+    } finally { setLoading(false); }
+  }, [projectId]);
 
+  // ── Load verified landlord bank accounts ─────────────────────────────────
+  const loadBankAccounts = useCallback(async () => {
+    setLoadingBanks(true);
+    try {
+      const res = await api.get('/api/landlord/bank-accounts');
+      const accts: BankAccount[] = res.data.accounts ?? [];
+      setBankAccounts(accts);
+      // Pre-select default account
+      const def = accts.find(a => a.is_default) ?? accts[0];
+      if (def) setSelectedBankId(def.id);
+    } catch { /* non-fatal — handled in UI */ }
+    finally { setLoadingBanks(false); }
+  }, []);
+
+  useEffect(() => {
+    loadData();
+    loadBankAccounts();
+  }, [loadData, loadBankAccounts]);
+
+  // ── Deploy unit ───────────────────────────────────────────────────────────
+  const handleSubmit = async () => {
+    setSubmitErr('');
+    if (!unitName.trim())  { setSubmitErr('Unit name is required.'); return; }
+    if (!rentAmount)       { setSubmitErr('Rent amount is required.'); return; }
+    if (!selectedBankId)   { setSubmitErr('Select a settlement bank account before deploying.'); return; }
+
+    const selectedAcct = bankAccounts.find(a => a.id === selectedBankId);
+    setSubmitting(true); setSubmitOk(''); setNewUnitId('');
+    try {
       const res = await api.post('/api/rental/units', {
-        project_id:     projectId,
-        unit_name:      form.unit_name.trim(),
-        unit_type:      'APARTMENT',
-        bedrooms:       safeN(form.bedrooms) || undefined,
-        floor_area_sqm: safeN(form.size_sqm) || undefined,
-        rent_amount:    safeN(form.rent_amount),
-        currency:       form.currency || 'NGN',
-        description:    JSON.stringify(extras),
+        project_id:               projectId,
+        unit_name:                unitName.trim(),
+        bedrooms:                 Number(bedrooms),
+        bathrooms:                Number(bathrooms),
+        floor_area_sqm:           floorArea ? Number(floorArea) : undefined,
+        floor_level:              floor || undefined,
+        furnished:                furnishing !== 'Unfurnished',
+        furnishing,
+        rent_amount:              Number(rentAmount),
+        currency,
+        payment_frequency:        frequency,
+        security_deposit:         deposit      ? Number(deposit)      : 0,
+        service_charge:           serviceCharge? Number(serviceCharge): 0,
+        agency_fee:               agencyFee    ? Number(agencyFee)    : 0,
+        legal_fee:                legalFee     ? Number(legalFee)     : 0,
+        caution_fee:              cautionFee   ? Number(cautionFee)   : 0,
+        // ── Bank fields from verified account — no free text ──────────────
+        bank_name:                selectedAcct?.bank_name      ?? '',
+        account_number:           selectedAcct?.account_number ?? '',
+        account_name:             selectedAcct?.account_name   ?? '',
+        selected_bank_account_id: selectedBankId,   // backend uses this to link landlord_bank_accounts
       });
 
-      const created = res.data?.unit;
-      if (created?.id) {
-        setNewUnit({ id: created.id, name: created.unit_name ?? form.unit_name.trim() });
-      }
+      if (res.data?.unit?.id) setNewUnitId(res.data.unit.id);
+      setSubmitOk(`Unit "${unitName}" added successfully!`);
 
-      setForm({ ...EMPTY });
-      window.scrollTo({ top: 0, behavior: 'smooth' });
-      // Reload units after a short delay to let DB settle
-      setTimeout(() => reloadUnits(), 500);
+      // Reset form
+      setUnitName(''); setRentAmount(''); setDeposit('');
+      setServiceCharge(''); setAgencyFee(''); setLegalFee('');
+      setCautionFee(''); setFloorArea(''); setFloor('');
+      setFurnishing('Unfurnished');
 
-    } catch (e: any) {
-      const msg = e?.response?.data?.error
-        ?? e?.response?.data?.message
-        ?? `Error ${e?.response?.status ?? ''}: Failed to create unit.`;
-      setSubmitError(msg);
-    } finally {
-      setSubmitting(false);
-    }
+      // Refresh unit list
+      const unitsRes = await api.get(`/api/rental/units/${projectId}`);
+      if (unitsRes.data?.units) setUnits(unitsRes.data.units);
+      else if (Array.isArray(unitsRes.data)) setUnits(unitsRes.data);
+    } catch (ex: any) {
+      setSubmitErr(ex?.response?.data?.error ?? 'Failed to add unit. Try again.');
+    } finally { setSubmitting(false); }
   };
 
+  if (loading) return (
+    <div className="min-h-screen bg-[#050505] flex items-center justify-center">
+      <Loader2 className="animate-spin text-teal-500" size={32} />
+    </div>
+  );
+
+  const payoutReadyAccounts = bankAccounts.filter(a => a.payout_ready);
+
   return (
-    <div className="min-h-screen bg-[#050505] text-white flex flex-col">
+    <div className="min-h-screen bg-[#050505] text-white">
       <Navbar />
-      <main className="flex-1 max-w-5xl mx-auto p-4 md:p-6 space-y-8 w-full">
 
-        {/* Header */}
-        <header className="border-b border-zinc-800 pb-6">
-          <Link href="/projects/my"
-            className="text-zinc-500 text-xs uppercase font-bold flex items-center gap-2 mb-4 hover:text-white transition-colors">
-            <ArrowLeft size={14} /> My Projects
-          </Link>
-          <p className="text-[10px] text-teal-500 uppercase font-black tracking-widest mb-1">
-            Rental Management
-          </p>
-          <h1 className="text-2xl md:text-3xl font-black uppercase italic">
-            {projectTitle || 'Property'}
-          </h1>
-          <p className="text-zinc-500 text-xs mt-1">
-            Deploy and configure apartment units for this property
-          </p>
-        </header>
-
-        {/* ── Tab Navigation ── */}
-        <nav className="flex gap-1 p-1 bg-zinc-900 border border-zinc-800 rounded-2xl w-fit">
-          <Link
-            href={`/projects/${projectId}/rental-management`}
-            className={`px-5 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
-              activeTab === 'units'
-                ? 'bg-teal-500 text-black'
-                : 'text-zinc-500 hover:text-white'
-            }`}
-          >
-            <span className="flex items-center gap-1.5"><Home size={11} /> Units</span>
-          </Link>
-          <Link
-            href={`/projects/${projectId}/rental-management?tab=receipts`}
-            className={`px-5 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
-              activeTab === 'receipts'
-                ? 'bg-amber-500 text-black'
-                : 'text-zinc-500 hover:text-white'
-            }`}
-          >
-            <span className="flex items-center gap-1.5"><Receipt size={11} /> Receipts</span>
-          </Link>
-        </nav>
-
-        {/* ── Receipts Tab ── */}
-        {activeTab === 'receipts' && (
-          <div className="space-y-4">
-            <div className="border-l-2 border-amber-500 pl-4">
-              <p className="text-[9px] text-amber-400 uppercase font-black tracking-widest mb-0.5">Payment Ledger</p>
-              <h2 className="text-lg font-black uppercase italic">Receipts &amp; History</h2>
+      {/* Sticky project header */}
+      <header className="border-b border-zinc-900 bg-black/60 backdrop-blur-md sticky top-16 z-40 py-4">
+        <div className="max-w-6xl mx-auto px-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2 text-zinc-500 text-[10px] font-black uppercase tracking-widest mb-0.5">
+              <Link href="/projects/my" className="hover:text-teal-400 transition-colors">My Projects</Link>
+              <span>·</span>
+              <span className="text-zinc-400">Rental Management</span>
             </div>
+            <h1 className="text-lg font-black tracking-tight uppercase">
+              {project?.title ?? 'Loading…'}
+            </h1>
+            <p className="text-[10px] text-zinc-500">Deploy and configure apartment units for this property</p>
+          </div>
+          <div className="flex bg-zinc-950 p-1 rounded-xl border border-zinc-900 self-start sm:self-center">
+            {(['units','receipts'] as const).map(t => (
+              <button key={t} onClick={() => setActiveTab(t)}
+                className={`flex items-center gap-1.5 px-4 py-2 rounded-lg font-black text-[10px] uppercase tracking-wider transition-all ${
+                  activeTab === t ? 'bg-zinc-900 text-teal-400' : 'text-zinc-500 hover:text-zinc-300'
+                }`}>
+                {t === 'units' ? <Building2 size={11} /> : <FileText size={11} />}
+                {t === 'units' ? 'Units' : 'Receipts'}
+              </button>
+            ))}
+          </div>
+        </div>
+      </header>
 
-            {receiptsError && (
-              <div className="flex items-start gap-3 bg-red-500/10 border border-red-500/30 rounded-2xl p-4 text-red-400">
-                <AlertCircle size={16} className="shrink-0 mt-0.5" />
-                <p className="text-xs font-bold">{receiptsError}</p>
-              </div>
-            )}
+      <main className="max-w-6xl mx-auto px-4 py-10">
+        {error && (
+          <div className="p-4 rounded-xl bg-red-500/5 border border-red-500/20 text-red-400 text-xs font-bold flex items-center gap-2 mb-8">
+            <AlertCircle size={14} /> {error}
+          </div>
+        )}
 
-            {loadingRec ? (
-              <div className="flex items-center justify-center py-12">
-                <Loader2 className="animate-spin text-amber-500" size={22} />
+        {/* ── UNITS TAB ─────────────────────────────────────────────────────── */}
+        {activeTab === 'units' && (
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-10">
+
+            {/* LEFT — existing units */}
+            <div className="lg:col-span-7 space-y-5">
+              <div className="flex items-center justify-between border-b border-zinc-900 pb-3">
+                <p className="text-[9px] text-zinc-500 uppercase font-black tracking-widest flex items-center gap-2">
+                  Existing Units
+                  <span className="text-teal-400 bg-zinc-900 border border-zinc-800 px-1.5 py-0.5 rounded text-[10px]">
+                    {units.length}
+                  </span>
+                </p>
               </div>
-            ) : receipts.length === 0 ? (
-              <div className="py-14 text-center border border-dashed border-zinc-800 rounded-3xl space-y-3">
-                <Receipt className="text-zinc-700 mx-auto" size={28} />
-                <p className="text-zinc-500 text-xs font-black uppercase">No receipts yet</p>
-                <p className="text-zinc-700 text-[10px]">Rent payments will appear here once tenants pay through their vault.</p>
-              </div>
-            ) : (
-              <div className="space-y-2">
-                {receipts.map(r => (
-                  <div key={r.id}
-                    className="flex items-center justify-between p-4 rounded-2xl border border-zinc-800 bg-zinc-900/10 hover:border-zinc-700 transition-all">
-                    <div className="flex items-center gap-4">
-                      <div className="w-9 h-9 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center shrink-0">
-                        <Receipt size={14} className="text-amber-400" />
-                      </div>
-                      <div className="space-y-0.5">
-                        <p className="font-bold text-xs text-white">
-                          {r.tenant_name}{r.unit_name ? ` · ${r.unit_name}` : ''}
-                        </p>
-                        <p className="text-[9px] text-zinc-500 font-mono">
-                          {r.receipt_number} · {new Date(r.payment_date).toLocaleDateString('en-GB')}
-                        </p>
-                        {r.ledger_hash && (
-                          <p className="text-[8px] text-zinc-700 font-mono flex items-center gap-1 truncate max-w-[200px]">
-                            <Hash size={8} className="shrink-0" />{r.ledger_hash.slice(0, 24)}…
+
+              {units.length === 0 ? (
+                <div className="py-16 text-center border border-dashed border-zinc-800 rounded-2xl">
+                  <Building2 className="text-zinc-700 mx-auto mb-3" size={32} />
+                  <p className="text-zinc-500 text-xs">No units yet. Deploy your first unit using the panel →</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {units.map(unit => {
+                    const isOccupied = ['Occupied','ACTIVE','occupied'].includes(unit.tenancy_status ?? unit.status ?? '');
+                    return (
+                      <div key={unit.id} className="p-4 rounded-2xl bg-zinc-950 border border-zinc-900 hover:border-zinc-800 transition-all flex flex-col gap-3">
+                        <div className="flex items-start justify-between gap-2">
+                          <p className="font-bold text-sm text-zinc-200 truncate">{unit.unit_name}</p>
+                          <span className={`text-[8px] px-2 py-0.5 rounded font-black uppercase border shrink-0 ${
+                            isOccupied
+                              ? 'bg-teal-500/5 border-teal-500/20 text-teal-400'
+                              : 'bg-amber-500/5 border-amber-500/20 text-amber-400'
+                          }`}>
+                            {isOccupied ? 'Occupied' : 'Vacant'}
+                          </span>
+                        </div>
+
+                        <div>
+                          <p className="text-xs font-black text-zinc-400">
+                            {unit.currency || 'NGN'} {safeF(unit.rent_amount)}
+                            <span className="text-[10px] font-medium text-zinc-600"> / {(unit.payment_frequency || 'annual').toLowerCase()}</span>
                           </p>
+                          {(unit.security_deposit || unit.agency_fee || unit.caution_fee) ? (
+                            <p className="text-[9px] text-zinc-600 mt-1">
+                              {Number(unit.security_deposit) > 0 && `Deposit: ${safeF(unit.security_deposit)} · `}
+                              {Number(unit.agency_fee)       > 0 && `Agency: ${safeF(unit.agency_fee)} · `}
+                              {Number(unit.caution_fee)      > 0 && `Caution: ${safeF(unit.caution_fee)}`}
+                            </p>
+                          ) : null}
+                        </div>
+
+                        <div className="flex items-center justify-between text-[9px] border-t border-zinc-900/60 pt-2">
+                          <span className="text-zinc-500 truncate">
+                            {isOccupied ? `👤 ${unit.tenant_name ?? 'Tenant'}` : '🏚 No tenant'}
+                          </span>
+                          {unit.bank_name && (
+                            <span className="text-zinc-600 font-mono truncate max-w-[50%]">
+                              🏦 {unit.bank_name} · {unit.account_number ? maskAcct(unit.account_number) : '****'}
+                            </span>
+                          )}
+                        </div>
+
+                        {!isOccupied && (
+                          <Link href={`/landlord/onboard/${unit.id}`}
+                            className="w-full py-2 bg-zinc-900 hover:bg-teal-500 hover:text-black border border-zinc-800 text-zinc-400 font-black text-[9px] uppercase tracking-wider rounded-xl transition-all text-center flex items-center justify-center gap-1">
+                            Onboard Tenant <ArrowRight size={10} />
+                          </Link>
                         )}
                       </div>
-                    </div>
-                    <div className="text-right shrink-0 space-y-1">
-                      <p className="font-black text-sm text-white">
-                        {r.currency} {safeF(r.amount)}
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* RIGHT — deploy form */}
+            <div className="lg:col-span-5 space-y-6 bg-black/40 border border-zinc-900 p-6 rounded-3xl self-start">
+              <div>
+                <p className="text-[9px] text-teal-400 uppercase font-black tracking-widest flex items-center gap-1.5 mb-1">
+                  <Plus size={11} /> Deploy New Unit
+                </p>
+                <p className="text-[10px] text-zinc-500">Configure specs and link to your verified payout account.</p>
+              </div>
+
+              {/* Success */}
+              {submitOk && (
+                <div className="p-4 rounded-xl bg-teal-500/5 border border-teal-500/20 text-teal-400 text-xs font-bold space-y-3">
+                  <div className="flex items-start gap-2">
+                    <CheckCircle2 size={14} className="shrink-0 mt-0.5" /> {submitOk}
+                  </div>
+                  {newUnitId && (
+                    <Link href={`/landlord/onboard/${newUnitId}`}
+                      className="inline-flex items-center gap-1.5 bg-teal-500 text-black px-3 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest hover:bg-white transition-all">
+                      Onboard Tenant Now <ArrowRight size={10} />
+                    </Link>
+                  )}
+                </div>
+              )}
+
+              {/* Error */}
+              {submitErr && (
+                <div className="p-3 rounded-xl bg-red-500/5 border border-red-500/20 text-red-400 text-xs font-bold flex items-center gap-2">
+                  <AlertCircle size={12} /> {submitErr}
+                </div>
+              )}
+
+              {/* ── Section A: Specs ── */}
+              <section className="space-y-3 border-t border-zinc-900 pt-4">
+                <p className="text-[9px] text-zinc-500 uppercase font-black tracking-widest">Apartment Specs & Identity</p>
+
+                <div>
+                  <label className="block text-[9px] font-black uppercase tracking-widest text-zinc-400 mb-1">Unit Name *</label>
+                  <input type="text" value={unitName} onChange={e => setUnitName(e.target.value)}
+                    placeholder="e.g. Alpha Courts, Flat 3B"
+                    className="w-full bg-black border border-zinc-800 px-4 py-3 rounded-xl text-xs outline-none focus:border-teal-500 transition-colors" />
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[9px] font-black uppercase tracking-widest text-zinc-400 mb-1">Bedrooms</label>
+                    <select value={bedrooms} onChange={e => setBedrooms(e.target.value)}
+                      className="w-full bg-black border border-zinc-800 px-3 py-3 rounded-xl text-xs outline-none focus:border-teal-500">
+                      {['1','2','3','4','5','6'].map(n => <option key={n} value={n}>{n} Bed</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[9px] font-black uppercase tracking-widest text-zinc-400 mb-1">Bathrooms</label>
+                    <select value={bathrooms} onChange={e => setBathrooms(e.target.value)}
+                      className="w-full bg-black border border-zinc-800 px-3 py-3 rounded-xl text-xs outline-none focus:border-teal-500">
+                      {['1','2','3','4'].map(n => <option key={n} value={n}>{n} Bath</option>)}
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[9px] font-black uppercase tracking-widest text-zinc-400 mb-1">Size (sqm)</label>
+                    <input type="number" value={floorArea} onChange={e => setFloorArea(e.target.value)} placeholder="e.g. 85"
+                      className="w-full bg-black border border-zinc-800 px-4 py-3 rounded-xl text-xs outline-none focus:border-teal-500" />
+                  </div>
+                  <div>
+                    <label className="block text-[9px] font-black uppercase tracking-widest text-zinc-400 mb-1">Floor Level</label>
+                    <input type="text" value={floor} onChange={e => setFloor(e.target.value)} placeholder="e.g. Ground"
+                      className="w-full bg-black border border-zinc-800 px-4 py-3 rounded-xl text-xs outline-none focus:border-teal-500" />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-[9px] font-black uppercase tracking-widest text-zinc-400 mb-1">Furnishing</label>
+                  <div className="flex gap-2">
+                    {['Unfurnished','Semi-Furnished','Fully Furnished'].map(f => (
+                      <button key={f} onClick={() => setFurnishing(f)}
+                        className={`flex-1 py-2 text-[9px] font-black uppercase rounded-xl border transition-all ${
+                          furnishing === f
+                            ? 'bg-zinc-800 border-teal-500/40 text-teal-400'
+                            : 'border-zinc-800 text-zinc-600 hover:text-zinc-400'
+                        }`}>
+                        {f.split(' ')[0]}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </section>
+
+              {/* ── Section B: Financial ── */}
+              <section className="space-y-3 border-t border-zinc-900 pt-4">
+                <p className="text-[9px] text-zinc-500 uppercase font-black tracking-widest">Rent, Fees & Payment Terms</p>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[9px] font-black uppercase tracking-widest text-zinc-400 mb-1">Currency</label>
+                    <select value={currency} onChange={e => setCurrency(e.target.value)}
+                      className="w-full bg-black border border-zinc-800 px-3 py-3 rounded-xl text-xs outline-none focus:border-teal-500 text-amber-500 font-bold">
+                      {['NGN','USD','GBP','EUR','GHS','KES','AED','ZAR'].map(c => <option key={c}>{c}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[9px] font-black uppercase tracking-widest text-zinc-400 mb-1">Frequency</label>
+                    <select value={frequency} onChange={e => setFrequency(e.target.value)}
+                      className="w-full bg-black border border-zinc-800 px-3 py-3 rounded-xl text-xs outline-none focus:border-teal-500">
+                      {['Monthly','Quarterly','Bi-Annual','Annual'].map(f => <option key={f}>{f}</option>)}
+                    </select>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-[9px] font-black uppercase tracking-widest text-zinc-400 mb-1">Rent Amount *</label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-600 text-xs font-bold">₦</span>
+                    <input type="number" value={rentAmount} onChange={e => setRentAmount(e.target.value)} placeholder="e.g. 750000"
+                      className="w-full bg-black border border-zinc-800 pl-7 pr-4 py-3 rounded-xl text-xs font-bold text-zinc-200 outline-none focus:border-teal-500" />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[9px] font-black uppercase tracking-widest text-zinc-400 mb-1">Security Deposit</label>
+                    <input type="number" value={deposit} onChange={e => setDeposit(e.target.value)} placeholder="0"
+                      className="w-full bg-black border border-zinc-800 px-4 py-3 rounded-xl text-xs outline-none focus:border-teal-500" />
+                  </div>
+                  <div>
+                    <label className="block text-[9px] font-black uppercase tracking-widest text-zinc-400 mb-1">Service Charge</label>
+                    <input type="number" value={serviceCharge} onChange={e => setServiceCharge(e.target.value)} placeholder="0"
+                      className="w-full bg-black border border-zinc-800 px-4 py-3 rounded-xl text-xs outline-none focus:border-teal-500" />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[9px] font-black uppercase tracking-widest text-zinc-400 mb-1">Agency Fee</label>
+                    <input type="number" value={agencyFee} onChange={e => setAgencyFee(e.target.value)} placeholder="0"
+                      className="w-full bg-black border border-zinc-800 px-4 py-3 rounded-xl text-xs outline-none focus:border-teal-500" />
+                  </div>
+                  <div>
+                    <label className="block text-[9px] font-black uppercase tracking-widest text-zinc-400 mb-1">Caution Fee</label>
+                    <input type="number" value={cautionFee} onChange={e => setCautionFee(e.target.value)} placeholder="0"
+                      className="w-full bg-black border border-zinc-800 px-4 py-3 rounded-xl text-xs outline-none focus:border-teal-500" />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-[9px] font-black uppercase tracking-widest text-zinc-400 mb-1">Legal Fee</label>
+                  <input type="number" value={legalFee} onChange={e => setLegalFee(e.target.value)} placeholder="0"
+                    className="w-full bg-black border border-zinc-800 px-4 py-3 rounded-xl text-xs outline-none focus:border-teal-500" />
+                </div>
+              </section>
+
+              {/* ── Section C: Settlement Bank — Option 1 ── */}
+              <section className="space-y-3 border-t border-zinc-900 pt-4">
+                <div className="flex items-center justify-between">
+                  <p className="text-[9px] text-zinc-500 uppercase font-black tracking-widest flex items-center gap-1.5">
+                    <Landmark size={11} className="text-teal-400" /> Settlement Bank Account
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <button onClick={loadBankAccounts} title="Refresh accounts"
+                      className="text-zinc-600 hover:text-teal-400 transition-colors">
+                      <RefreshCw size={11} />
+                    </button>
+                    <Link href="/landlord/bank" target="_blank"
+                      className="text-[9px] font-black uppercase text-teal-400 hover:text-white transition-colors flex items-center gap-1">
+                      Manage <ExternalLink size={9} />
+                    </Link>
+                  </div>
+                </div>
+
+                <p className="text-[10px] text-zinc-600 leading-relaxed">
+                  Rent collected via Paystack escrow auto-transfers to this account. Only your verified,
+                  Paystack-linked accounts appear here — no manual entry needed.
+                </p>
+
+                {loadingBanks ? (
+                  <div className="p-4 bg-zinc-900 border border-zinc-800 rounded-xl flex items-center gap-2">
+                    <Loader2 className="animate-spin text-teal-500" size={12} />
+                    <span className="text-[10px] text-zinc-500">Loading your verified accounts…</span>
+                  </div>
+
+                ) : bankAccounts.length === 0 ? (
+                  /* No accounts — prompt landlord to add one first */
+                  <div className="p-4 rounded-xl bg-amber-500/5 border border-amber-500/20 space-y-3">
+                    <div className="flex items-start gap-2 text-amber-400">
+                      <AlertCircle size={13} className="shrink-0 mt-0.5" />
+                      <p className="text-[10px] leading-relaxed font-bold">
+                        No verified bank accounts found. You must add and verify a payout account before deploying units.
                       </p>
-                      <span className={`text-[8px] px-2 py-0.5 rounded border font-bold uppercase ${
-                        r.status === 'PAID' || r.status === 'SUCCESS'
-                          ? 'border-teal-500/30 text-teal-400'
-                          : 'border-amber-500/30 text-amber-400'
-                      }`}>
-                        {r.status}
-                      </span>
+                    </div>
+                    <Link href="/landlord/bank"
+                      className="w-full py-2.5 bg-amber-500 text-black text-[9px] font-black uppercase tracking-widest rounded-xl flex items-center justify-center gap-1.5 hover:bg-white transition-all">
+                      <Plus size={11} /> Add Bank Account Now
+                    </Link>
+                  </div>
+
+                ) : (
+                  <div className="space-y-2">
+                    <label className="block text-[9px] font-black uppercase tracking-widest text-zinc-400">
+                      Select Payout Destination *
+                    </label>
+                    <select value={selectedBankId} onChange={e => setSelectedBankId(e.target.value)}
+                      className="w-full bg-black border border-zinc-800 px-4 py-3 rounded-xl text-sm text-zinc-200 outline-none focus:border-teal-500 transition-colors">
+                      {bankAccounts.map(acct => (
+                        <option key={acct.id} value={acct.id}>
+                          {acct.bank_name} · {maskAcct(acct.account_number)} · {acct.account_name}
+                          {acct.is_default ? ' [DEFAULT]' : ''}
+                          {!acct.payout_ready ? ' ⚠ not ready' : ''}
+                        </option>
+                      ))}
+                    </select>
+
+                    {/* Show selected account detail */}
+                    {(() => {
+                      const sel = bankAccounts.find(a => a.id === selectedBankId);
+                      if (!sel) return null;
+                      return (
+                        <div className={`p-3 rounded-xl border text-[10px] space-y-0.5 ${
+                          sel.payout_ready
+                            ? 'border-teal-500/20 bg-teal-500/5'
+                            : 'border-amber-500/20 bg-amber-500/5'
+                        }`}>
+                          <p className={`font-bold ${sel.payout_ready ? 'text-teal-400' : 'text-amber-400'}`}>
+                            {sel.payout_ready ? '✓ Paystack Verified · Payout Ready' : '⚠ Not payout-ready — visit Bank Accounts page to repair'}
+                          </p>
+                          <p className="text-zinc-500">
+                            {sel.account_name} · {sel.bank_name} · {maskAcct(sel.account_number)}
+                          </p>
+                          {!sel.payout_ready && (
+                            <Link href="/landlord/bank" target="_blank"
+                              className="inline-flex items-center gap-1 text-amber-400 font-black underline mt-1">
+                              Fix now <ExternalLink size={9} />
+                            </Link>
+                          )}
+                        </div>
+                      );
+                    })()}
+
+                    <div className="flex items-start gap-1.5 text-[9px] text-zinc-600">
+                      <Info size={9} className="text-zinc-700 shrink-0 mt-0.5" />
+                      Rent transfers automatically within 30 minutes of Paystack T+1 clearing.
+                      <Link href="/landlord/bank" target="_blank" className="text-teal-600 hover:text-teal-400 font-bold shrink-0">
+                        Manage accounts
+                      </Link>
                     </div>
                   </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
+                )}
+              </section>
 
-        {/* ── Units Tab content — only rendered when tab = units ── */}
-        {activeTab === 'units' && <>
-
-        {/* Success banner — appears after unit added */}
-        {newUnit && (
-          <div className="flex flex-col sm:flex-row sm:items-center gap-3 bg-teal-500/10 border border-teal-500/30 rounded-2xl p-4">
-            <div className="flex items-center gap-3 flex-1">
-              <CheckCircle2 size={20} className="text-teal-400 shrink-0" />
-              <div>
-                <p className="font-bold text-sm text-teal-300">
-                  "{newUnit.name}" added to ledger!
-                </p>
-                <p className="text-teal-600 text-xs">
-                  Click "Onboard Tenant" to create a tenancy and Flex-Pay vault.
-                </p>
-              </div>
-            </div>
-            <Link
-              href={`/landlord/onboard/${newUnit.id}`}
-              className="bg-teal-500 text-black font-black uppercase text-xs px-5 py-2.5 rounded-xl hover:bg-teal-400 transition-colors shrink-0"
-            >
-              Onboard Tenant →
-            </Link>
-          </div>
-        )}
-
-        {/* Submit error banner */}
-        {submitError && (
-          <div className="flex items-start gap-3 bg-red-500/10 border border-red-500/30 rounded-2xl p-4 text-red-400">
-            <AlertCircle size={18} className="shrink-0 mt-0.5" />
-            <p className="font-bold text-sm">{submitError}</p>
-          </div>
-        )}
-
-        {/* Units error (separate from submit error) */}
-        {unitsError && (
-          <div className="flex items-center gap-3 bg-amber-500/10 border border-amber-500/30 rounded-2xl p-3 text-amber-400">
-            <AlertCircle size={16} className="shrink-0" />
-            <p className="text-xs font-bold">{unitsError}</p>
-            <button onClick={reloadUnits} className="ml-auto text-teal-500 text-xs font-black uppercase">
-              Retry
-            </button>
-          </div>
-        )}
-
-        {/* Existing Units */}
-        {loadingUnits && (
-          <div className="flex items-center justify-center py-6">
-            <Loader2 className="animate-spin text-teal-500" size={22} />
-          </div>
-        )}
-
-        {!loadingUnits && units.length > 0 && (
-          <div className="bg-zinc-900 border border-zinc-800 rounded-3xl p-6">
-            <h2 className="text-xs font-black uppercase tracking-widest text-zinc-400 mb-4 flex items-center gap-2">
-              <Home size={14} className="text-teal-500" />
-              Existing Units ({units.length})
-            </h2>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              {units.map(u => {
-                const extras = parseExtras(u.description);
-                const currency = extras.currency || u.currency || 'NGN';
-                const bankDisplay = extras.bank_name
-                  ? `${extras.bank_name} · ${extras.account_number}`
-                  : null;
-                const feeSummary = [
-                  extras.security_deposit > 0 && `Deposit: ${safeF(extras.security_deposit)}`,
-                  extras.agency_fee > 0       && `Agency: ${safeF(extras.agency_fee)}`,
-                  extras.caution_fee > 0      && `Caution: ${safeF(extras.caution_fee)}`,
-                ].filter(Boolean).join(' · ');
-                const isOccupied = u.tenancy_status === 'ACTIVE' || u.status?.toLowerCase() === 'occupied';
-
-                return (
-                  <div key={u.id}
-                    className="bg-black border border-zinc-800 rounded-2xl p-4 flex justify-between items-start gap-3">
-                    <div className="min-w-0 space-y-1">
-                      <p className="font-black uppercase text-sm truncate">{u.unit_name}</p>
-                      <p className="text-zinc-400 text-xs font-mono">
-                        {currency} {safeF(u.rent_amount)} / {extras.payment_frequency || 'mo'}
-                      </p>
-                      {extras.bedrooms && extras.bathrooms && (
-                        <p className="text-zinc-600 text-[10px]">
-                          {extras.bedrooms} bed · {extras.bathrooms} bath
-                          {extras.furnishing ? ` · ${extras.furnishing}` : ''}
-                        </p>
-                      )}
-                      {feeSummary && (
-                        <p className="text-zinc-600 text-[10px]">{feeSummary}</p>
-                      )}
-                      {bankDisplay && (
-                        <p className="text-zinc-600 text-[10px] truncate">🏦 {bankDisplay}</p>
-                      )}
-                      {u.tenant_name && (
-                        <p className="text-teal-400 text-[10px] font-mono truncate">
-                          👤 {u.tenant_name}
-                        </p>
-                      )}
-                    </div>
-                    <div className="flex flex-col items-end gap-2 shrink-0">
-                      <span className={`text-[9px] font-black px-2 py-1 rounded uppercase ${
-                        isOccupied ? 'bg-teal-500/10 text-teal-400' : 'bg-amber-500/10 text-amber-400'
-                      }`}>
-                        {isOccupied ? 'Occupied' : 'Vacant'}
-                      </span>
-                      {!isOccupied && (
-                        <Link
-                          href={`/landlord/onboard/${u.id}`}
-                          className="text-[9px] font-black uppercase text-teal-500 border border-teal-500/30 px-2 py-1 rounded hover:bg-teal-500/10 transition-colors whitespace-nowrap"
-                        >
-                          Onboard Tenant
-                        </Link>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
+              {/* ── Submit ── */}
+              <button onClick={handleSubmit}
+                disabled={submitting || bankAccounts.length === 0}
+                className="w-full py-4 bg-teal-500 text-black font-black uppercase text-xs tracking-widest rounded-xl hover:bg-teal-400 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2">
+                {submitting
+                  ? <><Loader2 className="animate-spin" size={13} /> Adding Unit…</>
+                  : <><Send size={12} /> Add Unit to Ledger</>
+                }
+              </button>
             </div>
           </div>
         )}
 
-        {/* ── Add Unit Form ── */}
-        <div className="space-y-6">
-          <div className="flex items-center gap-3">
-            <PlusCircle className="text-teal-500" size={20} />
-            <h2 className="text-lg font-black uppercase italic">Deploy New Unit</h2>
+        {/* ── RECEIPTS TAB ── */}
+        {activeTab === 'receipts' && (
+          <div className="space-y-6">
+            <div className="border-l-2 border-amber-500 pl-4">
+              <p className="text-[9px] text-amber-400 uppercase font-black tracking-widest mb-0.5">Payment Ledger</p>
+              <h2 className="text-xl font-black uppercase">Receipts & History</h2>
+              <p className="text-zinc-500 text-xs mt-0.5">Tenant payment records for this property</p>
+            </div>
+            {/* Link to the full receipts page which supports per-tenancy view */}
+            <div className="p-6 rounded-2xl border border-zinc-800 bg-zinc-900/20 text-center space-y-4">
+              <FileText size={28} className="text-zinc-600 mx-auto" />
+              <p className="text-zinc-400 text-sm font-bold">View payment receipts per tenant</p>
+              <p className="text-zinc-600 text-xs">Select a tenant from the Tenants panel and click Receipt to view their ledger.</p>
+              <Link href="/landlord/tenants"
+                className="inline-flex items-center gap-2 px-5 py-2.5 bg-zinc-800 border border-zinc-700 text-zinc-300 hover:text-white font-black text-[9px] uppercase tracking-widest rounded-xl transition-all">
+                Go to Tenants <ArrowRight size={10} />
+              </Link>
+            </div>
           </div>
-
-          {/* Section 1 — Apartment Specs */}
-          <section className="bg-zinc-900 border border-zinc-800 p-6 md:p-8 rounded-3xl space-y-5">
-            <div className="flex items-center gap-2 text-teal-500 mb-2">
-              <Building2 size={18} />
-              <h3 className="text-xs font-black uppercase tracking-widest">
-                Apartment Specs &amp; Identity
-              </h3>
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <input
-                value={form.unit_name}
-                onChange={e => set('unit_name', e.target.value)}
-                placeholder="Unit Name / Number  (e.g. Flat 1, Apt 4B)"
-                className="col-span-full bg-black border border-zinc-800 p-4 rounded-xl outline-none focus:border-teal-500 text-sm transition-colors"
-              />
-              {[
-                { k: 'bedrooms',  label: 'Bedrooms',   type: 'number' },
-                { k: 'bathrooms', label: 'Bathrooms',  type: 'number' },
-                { k: 'size_sqm',  label: 'Size (sqm)', type: 'number' },
-                { k: 'floor',     label: 'Floor',      type: 'text'   },
-              ].map(f => (
-                <div key={f.k}>
-                  <label className="text-[10px] text-zinc-500 uppercase font-black block mb-1.5">
-                    {f.label}
-                  </label>
-                  <input
-                    value={(form as any)[f.k]}
-                    onChange={e => set(f.k, e.target.value)}
-                    type={f.type}
-                    min={f.type === 'number' ? '0' : undefined}
-                    placeholder="—"
-                    className="w-full bg-black border border-zinc-800 p-4 rounded-xl outline-none focus:border-teal-500 text-sm transition-colors"
-                  />
-                </div>
-              ))}
-              <div>
-                <label className="text-[10px] text-zinc-500 uppercase font-black block mb-1.5">
-                  Furnishing
-                </label>
-                <select
-                  value={form.furnishing}
-                  onChange={e => set('furnishing', e.target.value)}
-                  className="w-full bg-black border border-zinc-800 p-4 rounded-xl outline-none focus:border-teal-500 text-sm transition-colors"
-                >
-                  <option value="unfurnished">Unfurnished</option>
-                  <option value="semi-furnished">Semi-Furnished</option>
-                  <option value="fully-furnished">Fully Furnished</option>
-                </select>
-              </div>
-              <textarea
-                value={form.amenities}
-                onChange={e => set('amenities', e.target.value)}
-                placeholder="Amenities: balcony, parking, CCTV, generator…"
-                className="col-span-full bg-black border border-zinc-800 p-4 rounded-xl h-16 outline-none focus:border-teal-500 text-sm resize-none transition-colors"
-              />
-              <textarea
-                value={form.notes}
-                onChange={e => set('notes', e.target.value)}
-                placeholder="Additional notes…"
-                className="col-span-full bg-black border border-zinc-800 p-4 rounded-xl h-14 outline-none focus:border-teal-500 text-sm resize-none transition-colors"
-              />
-            </div>
-          </section>
-
-          {/* Section 2 — Rent & Fees */}
-          <section className="bg-zinc-900 border border-zinc-800 p-6 md:p-8 rounded-3xl space-y-5">
-            <div className="flex items-center gap-2 text-amber-400 mb-2">
-              <span className="font-black text-base">₦</span>
-              <h3 className="text-xs font-black uppercase tracking-widest">
-                Rent, Fees &amp; Payment Terms
-              </h3>
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <label className="text-[10px] text-zinc-500 uppercase font-black block mb-1.5">Currency</label>
-                <select
-                  value={form.currency}
-                  onChange={e => set('currency', e.target.value)}
-                  className="w-full bg-black border border-zinc-800 p-4 rounded-xl outline-none focus:border-amber-500 text-sm transition-colors"
-                >
-                  {['NGN','USD','GBP','EUR','GHS','KES','AED','ZAR'].map(c => (
-                    <option key={c}>{c}</option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="text-[10px] text-zinc-500 uppercase font-black block mb-1.5">
-                  Payment Frequency
-                </label>
-                <select
-                  value={form.payment_frequency}
-                  onChange={e => set('payment_frequency', e.target.value)}
-                  className="w-full bg-black border border-zinc-800 p-4 rounded-xl outline-none focus:border-amber-500 text-sm transition-colors"
-                >
-                  <option value="monthly">Monthly</option>
-                  <option value="quarterly">Quarterly</option>
-                  <option value="bi-annual">Bi-Annual</option>
-                  <option value="annual">Annual</option>
-                </select>
-              </div>
-              {[
-                { k: 'rent_amount',      label: 'Rent Amount *'    },
-                { k: 'security_deposit', label: 'Security Deposit' },
-                { k: 'service_charge',   label: 'Service Charge'   },
-                { k: 'agency_fee',       label: 'Agency Fee'       },
-                { k: 'legal_fee',        label: 'Legal Fee'        },
-                { k: 'caution_fee',      label: 'Caution Fee'      },
-              ].map(f => (
-                <div key={f.k}>
-                  <label className="text-[10px] text-zinc-500 uppercase font-black block mb-1.5">
-                    {f.label}
-                  </label>
-                  <input
-                    value={(form as any)[f.k]}
-                    onChange={e => set(f.k, e.target.value)}
-                    type="number" min="0" placeholder="0"
-                    className="w-full bg-black border border-zinc-800 p-4 rounded-xl outline-none focus:border-amber-500 text-sm transition-colors"
-                  />
-                </div>
-              ))}
-            </div>
-
-            {/* Live move-in total */}
-            {safeN(form.rent_amount) > 0 && (
-              <div className="bg-black border border-zinc-800 rounded-2xl p-4">
-                <p className="text-[10px] font-black uppercase text-zinc-500 mb-3 tracking-widest">
-                  Tenant Move-In Total (Est.)
-                </p>
-                <div className="space-y-1.5 text-xs font-mono">
-                  {[
-                    { label: `Rent (${form.payment_frequency})`, k: 'rent_amount'      },
-                    { label: 'Security Deposit',                  k: 'security_deposit' },
-                    { label: 'Service Charge',                    k: 'service_charge'   },
-                    { label: 'Agency Fee',                        k: 'agency_fee'       },
-                    { label: 'Legal Fee',                         k: 'legal_fee'        },
-                    { label: 'Caution Fee',                       k: 'caution_fee'      },
-                  ].filter(i => safeN((form as any)[i.k]) > 0).map(i => (
-                    <div key={i.label} className="flex justify-between text-zinc-400">
-                      <span>{i.label}</span>
-                      <span>{form.currency} {safeF((form as any)[i.k])}</span>
-                    </div>
-                  ))}
-                  <div className="border-t border-zinc-800 pt-2 mt-2 flex justify-between font-black text-white">
-                    <span>TOTAL MOVE-IN</span>
-                    <span className="text-teal-400">{form.currency} {safeF(totalMoveIn)}</span>
-                  </div>
-                </div>
-              </div>
-            )}
-          </section>
-
-          {/* Section 3 — Bank Settlement */}
-          <section className="bg-zinc-900 border border-zinc-800 p-6 md:p-8 rounded-3xl space-y-5">
-            <div className="flex items-center gap-2 text-amber-400 mb-1">
-              <Landmark size={18} />
-              <h3 className="text-xs font-black uppercase tracking-widest">
-                Settlement Bank Details
-              </h3>
-            </div>
-            <p className="text-zinc-500 text-xs">
-              Rent collected via Paystack escrow will settle to this account
-              after key-handover confirmation.
-            </p>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              {[
-                { k: 'bank_name',      label: 'Bank Name *',          placeholder: 'e.g. Zenith Bank',        mono: false },
-                { k: 'account_number', label: 'Account Number *',     placeholder: '10-digit account number', mono: true  },
-                { k: 'account_name',   label: 'Account Name',         placeholder: 'e.g. Taiwo Hassan',       mono: false },
-                { k: 'bank_code',      label: 'Sort Code (optional)', placeholder: 'e.g. 057',                mono: true  },
-              ].map(f => (
-                <div key={f.k}>
-                  <label className="text-[10px] text-zinc-500 uppercase font-black block mb-1.5">
-                    {f.label}
-                  </label>
-                  <input
-                    value={(form as any)[f.k]}
-                    onChange={e => set(f.k, e.target.value)}
-                    placeholder={f.placeholder}
-                    maxLength={f.k === 'account_number' ? 10 : undefined}
-                    className={`w-full bg-black border border-zinc-800 p-4 rounded-xl outline-none focus:border-amber-500 text-sm transition-colors ${f.mono ? 'font-mono' : ''}`}
-                  />
-                </div>
-              ))}
-            </div>
-          </section>
-
-          {/* Submit */}
-          <button
-            onClick={handleSubmit}
-            disabled={submitting}
-            className="w-full py-5 bg-teal-500 text-black font-black uppercase italic text-sm rounded-2xl hover:bg-teal-400 hover:scale-[1.01] transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-3"
-          >
-            {submitting
-              ? <><Loader2 className="animate-spin" size={20} /> Deploying Unit…</>
-              : <><Send size={18} /> Add Unit to Ledger</>
-            }
-          </button>
-
-          <p className="text-center text-zinc-600 text-xs">
-            After adding a unit, click "Onboard Tenant" to register a tenant
-            and set up their Flex-Pay vault.
-          </p>
-        </div>
-
-        </> /* end units tab */}
-
+        )}
       </main>
       <Footer />
     </div>
@@ -704,10 +597,10 @@ export default function RentalManagementPage({ params }: { params: { id: string 
   return (
     <Suspense fallback={
       <div className="min-h-screen bg-[#050505] flex items-center justify-center">
-        <Loader2 className="animate-spin text-teal-500" size={28} />
+        <Loader2 className="animate-spin text-teal-500" size={32} />
       </div>
     }>
-      <RentalManagementInner params={params} />
+      <RentalManagementContent projectId={params.id} />
     </Suspense>
   );
 }

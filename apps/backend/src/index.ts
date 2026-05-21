@@ -3806,14 +3806,30 @@ app.post("/api/payments/webhook",
                     }
                     const { sponsor_id, rent_amount, currency } = projRes.rows[0];
 
+                    // ── Prefer the bank account linked to this specific unit (Option 1) ──
+                    // Falls back to landlord's default account if unit has no specific link.
                     const bankRes = await pool.query(
-                      `SELECT * FROM landlord_bank_accounts
-                       WHERE user_id=$1 AND is_default=true
-                         AND paystack_recipient_code IS NOT NULL LIMIT 1`,
-                      [sponsor_id]
+                      `SELECT lba.*
+                       FROM landlord_bank_accounts lba
+                       WHERE lba.paystack_recipient_code IS NOT NULL
+                         AND (
+                           -- Unit-specific account (set when landlord deployed the unit)
+                           lba.id = (SELECT landlord_bank_account_id FROM rental_units
+                                     WHERE id = COALESCE($2, '00000000-0000-0000-0000-000000000000'::uuid)
+                                     LIMIT 1)
+                           OR
+                           -- Fallback: landlord's default account
+                           (lba.user_id = $1 AND lba.is_default = true)
+                         )
+                       ORDER BY
+                         CASE WHEN lba.id = (SELECT landlord_bank_account_id FROM rental_units
+                                             WHERE id = COALESCE($2, '00000000-0000-0000-0000-000000000000'::uuid)
+                                             LIMIT 1) THEN 0 ELSE 1 END
+                       LIMIT 1`,
+                      [sponsor_id, meta.unit_id ?? null]
                     );
                     if (!bankRes.rows.length) {
-                      console.log(`[WEBHOOK] No default bank account for landlord ${sponsor_id} — payout skipped`);
+                      console.log(`[WEBHOOK] No payout-ready bank account for landlord ${sponsor_id} — payout skipped`);
                       return;
                     }
                     const acct = bankRes.rows[0];
@@ -5738,6 +5754,7 @@ app.post('/api/rental/units', authenticate, async (req: Request, res: Response):
       security_deposit, service_charge, agency_fee, legal_fee, caution_fee,
       bank_name, account_number, account_name, sort_code,
       furnished, parking,
+      selected_bank_account_id,  // ← Option 1: ID of verified landlord_bank_accounts record
     } = req.body;
 
     if (!project_id || !unit_name || !rent_amount)
@@ -5766,6 +5783,8 @@ app.post('/api/rental/units', authenticate, async (req: Request, res: Response):
       `ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS sort_code          VARCHAR(20)`,
       `ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS size_sqm           DECIMAL(10,2)`,
       `ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS floor_number       INTEGER`,
+      // ← Link each unit to the landlord's verified payout account (Option 1 bank selector)
+      `ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS landlord_bank_account_id UUID`,
     ];
     for (const sql of migrations) { await pool.query(sql).catch(() => {}); }
 
@@ -5796,57 +5815,60 @@ app.post('/api/rental/units', authenticate, async (req: Request, res: Response):
       ]
     );
 
-    // ── Auto-bridge: if unit has bank details, upsert a landlord_bank_accounts
-    // record so the payout engine can use it immediately without requiring the
-    // landlord to visit the bank page separately.
-    // sort_code doubles as bank_code (Paystack's numeric bank identifier).
-    if (bank_name && account_number && account_name) {
+    // ── Auto-bridge: link unit to the selected verified landlord_bank_accounts record ──
+    // selected_bank_account_id is sent by the rental-management form (Option 1 selector).
+    // This replaces the old free-text bank field bridge — cleaner and guaranteed verified.
+    const linkedBankAccountId = selected_bank_account_id || null;
+    if (linkedBankAccountId) {
       try {
-        const bankCode = sort_code || null; // sort_code field = Paystack bank_code
-        // Only insert if this account number isn't already saved for this landlord
+        // Verify the account belongs to this landlord before linking
+        const acctCheck = await pool.query(
+          `SELECT id, paystack_recipient_code, is_default FROM landlord_bank_accounts
+           WHERE id=$1 AND user_id=$2 LIMIT 1`,
+          [linkedBankAccountId, userId]
+        );
+        if (acctCheck.rows.length) {
+          // Update the unit row to reference this bank account
+          await pool.query(
+            `UPDATE rental_units SET landlord_bank_account_id=$1 WHERE id=$2`,
+            [linkedBankAccountId, r.rows[0].id]
+          ).catch(() => {}); // non-fatal if column doesn't exist yet
+          console.log(`[UNIT] Linked to bank account ${linkedBankAccountId} (recipient=${acctCheck.rows[0].paystack_recipient_code ?? 'pending'})`);
+        }
+      } catch (linkErr: any) {
+        console.warn('[UNIT] Bank account link warning:', linkErr.message);
+      }
+    } else if (bank_name && account_number && account_name) {
+      // Fallback: free-text bank fields provided — auto-bridge as before
+      try {
+        const bankCode = sort_code || null;
         const existing = await pool.query(
-          `SELECT id FROM landlord_bank_accounts
-           WHERE user_id=$1 AND account_number=$2 LIMIT 1`,
+          `SELECT id FROM landlord_bank_accounts WHERE user_id=$1 AND account_number=$2 LIMIT 1`,
           [userId, account_number]
         );
         if (!existing.rows.length) {
           let recipientCode: string | null = null;
-          // Create Paystack transfer recipient if we have a valid bank_code
           if (PAYSTACK_SECRET && bankCode && bankCode.length >= 3) {
             try {
               const prRes = await fetch(`${PAYSTACK_BASE}/transferrecipient`, {
                 method: 'POST',
                 headers: { Authorization: `Bearer ${PAYSTACK_SECRET}`, 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  type: 'nuban', name: account_name,
-                  account_number, bank_code: bankCode,
-                  currency: currency || 'NGN',
-                }),
+                body: JSON.stringify({ type: 'nuban', name: account_name, account_number, bank_code: bankCode, currency: currency || 'NGN' }),
               });
               const prData = await prRes.json() as any;
-              if (prData.status && prData.data?.recipient_code) {
-                recipientCode = prData.data.recipient_code;
-              }
+              if (prData.status && prData.data?.recipient_code) recipientCode = prData.data.recipient_code;
             } catch { /* non-fatal */ }
           }
-          // Set as default if this is the first account for this landlord
-          const cntRes = await pool.query(
-            `SELECT COUNT(*) FROM landlord_bank_accounts WHERE user_id=$1`, [userId]
-          );
+          const cntRes = await pool.query(`SELECT COUNT(*) FROM landlord_bank_accounts WHERE user_id=$1`, [userId]);
           const isFirst = parseInt(cntRes.rows[0].count) === 0;
           await pool.query(
-            `INSERT INTO landlord_bank_accounts
-               (user_id, project_id, account_name, account_number, bank_code,
-                bank_name, currency, paystack_recipient_code, is_verified, is_default)
+            `INSERT INTO landlord_bank_accounts (user_id, project_id, account_name, account_number, bank_code, bank_name, currency, paystack_recipient_code, is_verified, is_default)
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,true,$9)`,
-            [userId, project_id, account_name, account_number,
-             bankCode || '', bank_name, currency || 'NGN',
-             recipientCode, isFirst]
+            [userId, project_id, account_name, account_number, bankCode || '', bank_name, currency || 'NGN', recipientCode, isFirst]
           );
-          console.log(`[UNIT] Auto-bridged bank → ${account_name} | ${bank_name} | ${account_number} | recipient=${recipientCode ?? 'pending-needs-bank-code'}`);
+          console.log(`[UNIT] Auto-bridged bank → ${account_name} | ${bank_name} | ${account_number}`);
         }
       } catch (bankErr: any) {
-        // Non-fatal — unit saved; landlord can add bank account separately
         console.warn('[UNIT] Bank auto-bridge warning:', bankErr.message);
       }
     }
