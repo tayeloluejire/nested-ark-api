@@ -10,6 +10,7 @@ import {
   Landmark, Plus, Trash2, ShieldCheck, AlertCircle,
   CheckCircle2, Loader2, RefreshCw, X, ArrowLeft,
   BadgeCheck, Banknote, Zap, Star, Eye, EyeOff, Wrench,
+  Clock, Info,
 } from 'lucide-react';
 
 const safeN = (v: any): number => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
@@ -31,19 +32,24 @@ interface BankAccount {
 interface BankOption { name: string; code: string; }
 
 export default function LandlordBankPage() {
-  const [accounts,   setAccounts]   = useState<BankAccount[]>([]);
-  const [banks,      setBanks]      = useState<BankOption[]>([]);
-  const [loading,    setLoading]    = useState(true);
-  const [error,      setError]      = useState('');
-  const [showAdd,    setShowAdd]    = useState(false);
-  const [showNums,   setShowNums]   = useState<Record<string, boolean>>({});
+  const [accounts,       setAccounts]       = useState<BankAccount[]>([]);
+  const [banks,          setBanks]          = useState<BankOption[]>([]);
+  const [loading,        setLoading]        = useState(true);
+  const [error,          setError]          = useState('');
+  const [showAdd,        setShowAdd]        = useState(false);
+  const [showNums,       setShowNums]       = useState<Record<string, boolean>>({});
+
+  // Paystack balance
+  const [balanceNgn,     setBalanceNgn]     = useState<number | null>(null);
+  const [balanceLoading, setBalanceLoading] = useState(false);
+  const [balanceNote,    setBalanceNote]    = useState('');
 
   // Repair state — per-account inline bank_code prompt
-  const [repairId,   setRepairId]   = useState('');
-  const [repairCode, setRepairCode] = useState('');
-  const [repairBusy, setRepairBusy] = useState(false);
-  const [repairMsg,  setRepairMsg]  = useState('');
-  const [repairErr,  setRepairErr]  = useState('');
+  const [repairId,       setRepairId]       = useState('');
+  const [repairCode,     setRepairCode]     = useState('');
+  const [repairBusy,     setRepairBusy]     = useState(false);
+  const [repairMsg,      setRepairMsg]      = useState('');
+  const [repairErr,      setRepairErr]      = useState('');
 
   // Add form
   const [form, setForm] = useState({
@@ -62,6 +68,7 @@ export default function LandlordBankPage() {
   const [payoutBusy, setPayoutBusy] = useState(false);
   const [payoutMsg,  setPayoutMsg]  = useState('');
   const [payoutErr,  setPayoutErr]  = useState('');
+  const [t1Note,     setT1Note]     = useState('');
 
   const loadAccounts = useCallback(async () => {
     setLoading(true); setError('');
@@ -80,7 +87,17 @@ export default function LandlordBankPage() {
     } catch { /* non-fatal */ }
   }, []);
 
-  useEffect(() => { loadAccounts(); loadBanks(); }, [loadAccounts, loadBanks]);
+  const loadBalance = useCallback(async () => {
+    setBalanceLoading(true);
+    try {
+      const res = await api.get('/api/landlord/paystack-balance');
+      setBalanceNgn(res.data.available_ngn ?? 0);
+      setBalanceNote(res.data.note ?? '');
+    } catch { setBalanceNgn(null); }
+    finally { setBalanceLoading(false); }
+  }, []);
+
+  useEffect(() => { loadAccounts(); loadBanks(); loadBalance(); }, [loadAccounts, loadBanks, loadBalance]);
 
   const resolveAccountName = async (acctNum: string, bCode: string) => {
     if (acctNum.length !== 10 || !bCode) return;
@@ -122,23 +139,19 @@ export default function LandlordBankPage() {
     } catch (ex: any) { setError(ex?.response?.data?.error ?? 'Delete failed.'); }
   };
 
-  // Two-phase repair:
-  // Phase 1 — click Repair → call endpoint; if needs_bank_code, show inline input
-  // Phase 2 — user types bank_code → re-call with bank_code in body
   const handleRepair = async (id: string, bankCodeOverride?: string) => {
     setRepairBusy(true); setRepairErr(''); setRepairMsg('');
     try {
       const payload = bankCodeOverride ? { bank_code: bankCodeOverride } : {};
       const res = await api.post(`/api/landlord/bank-accounts/${id}/create-recipient`, payload);
-      setRepairMsg(res.data.message ?? 'Recipient created!');
+      setRepairMsg(res.data.message ?? 'Account is now payout-ready!');
       setRepairId(''); setRepairCode('');
-      setTimeout(() => { setRepairMsg(''); loadAccounts(); }, 2000);
+      setTimeout(() => { setRepairMsg(''); loadAccounts(); loadBalance(); }, 2000);
     } catch (ex: any) {
       const d = ex?.response?.data;
       if (d?.needs_bank_code) {
-        // Show inline bank_code input for this account
         setRepairId(id);
-        setRepairErr('This account needs its bank code to complete setup. Select your bank below and click Repair.');
+        setRepairErr('Select your bank below to complete the repair:');
       } else {
         setRepairErr(d?.error ?? 'Repair failed.');
       }
@@ -147,19 +160,29 @@ export default function LandlordBankPage() {
 
   const handlePayout = async () => {
     if (!payoutAcct || !payoutAmt) { setPayoutErr('Select account and enter amount.'); return; }
-    setPayoutBusy(true); setPayoutErr(''); setPayoutMsg('');
+    setPayoutBusy(true); setPayoutErr(''); setPayoutMsg(''); setT1Note('');
     try {
       const res = await api.post('/api/landlord/payout', {
         bank_account_id: payoutAcct, amount_ngn: parseFloat(payoutAmt),
       });
       setPayoutMsg(res.data.message ?? `Transfer initiated successfully!`);
       setPayoutAmt('');
+      loadBalance(); // refresh balance after successful transfer
     } catch (ex: any) {
-      setPayoutErr(ex?.response?.data?.error ?? 'Payout failed.');
+      const d = ex?.response?.data;
+      setPayoutErr(d?.error ?? 'Payout failed.');
+      if (d?.t1_note) setT1Note(d.t1_note);
+      if (d?.insufficient_balance) loadBalance(); // refresh to show current balance
     } finally { setPayoutBusy(false); }
   };
 
-  const payoutReadyAccts = accounts.filter(a => a.payout_ready);
+  const payoutReadyAccts  = accounts.filter(a => a.payout_ready);
+  const grossAmt          = parseFloat(payoutAmt) || 0;
+  const feeAmt            = Math.round(grossAmt * 0.02);
+  const netAmt            = Math.round(grossAmt * 0.98);
+  const balanceKnown      = balanceNgn !== null;
+  const hasSufficientBal  = balanceKnown ? balanceNgn >= netAmt : true; // optimistic if unknown
+  const canInitiatePayout = !!payoutAcct && grossAmt > 0 && !payoutBusy && hasSufficientBal;
 
   return (
     <div className="min-h-screen bg-[#050505] text-white">
@@ -177,6 +200,37 @@ export default function LandlordBankPage() {
           <p className="text-zinc-500 text-xs mt-1">Manage payout destinations. Rent collected flows here automatically.</p>
         </div>
 
+        {/* Paystack Balance Card */}
+        <div className={`p-5 rounded-2xl border flex items-center justify-between gap-4 ${
+          balanceNgn === null ? 'border-zinc-800 bg-zinc-900/20'
+          : balanceNgn > 0   ? 'border-teal-500/20 bg-teal-500/5'
+                              : 'border-amber-500/20 bg-amber-500/5'
+        }`}>
+          <div className="space-y-1">
+            <p className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest">Paystack Available Balance</p>
+            {balanceLoading ? (
+              <Loader2 className="animate-spin text-zinc-500" size={16} />
+            ) : balanceNgn === null ? (
+              <p className="text-zinc-500 text-sm font-bold">—</p>
+            ) : (
+              <p className={`text-2xl font-black font-mono tabular-nums ${balanceNgn > 0 ? 'text-teal-400' : 'text-amber-400'}`}>
+                ₦{safeF(balanceNgn)}
+              </p>
+            )}
+            {balanceNote && (
+              <div className="flex items-start gap-1.5 mt-1">
+                <Clock size={9} className="text-amber-400 flex-shrink-0 mt-0.5" />
+                <p className="text-[9px] text-amber-400/80 leading-relaxed">{balanceNote}</p>
+              </div>
+            )}
+          </div>
+          <button
+            onClick={loadBalance}
+            className="flex items-center gap-1.5 px-3 py-2 border border-zinc-800 text-zinc-500 rounded-xl text-[9px] font-bold uppercase tracking-widest hover:text-white transition-all flex-shrink-0">
+            <RefreshCw size={10} /> Refresh
+          </button>
+        </div>
+
         {/* Status banner */}
         {!loading && accounts.length > 0 && (
           <div className={`p-4 rounded-2xl border flex items-start gap-3 ${
@@ -192,11 +246,9 @@ export default function LandlordBankPage() {
                   </p></>
               : <><AlertCircle size={14} className="text-amber-400 flex-shrink-0 mt-0.5" />
                   <div>
-                    <p className="text-amber-400 text-xs font-bold mb-1">
-                      No accounts are payout-ready.
-                    </p>
+                    <p className="text-amber-400 text-xs font-bold mb-1">No accounts are payout-ready.</p>
                     <p className="text-amber-400/70 text-[10px]">
-                      Click <strong>Repair →</strong> on your account and select your bank to patch it, or delete and re-add via Add Account.
+                      Click <strong>Repair →</strong> on your account and select your bank, or delete and re-add.
                     </p>
                   </div></>
             }
@@ -210,7 +262,6 @@ export default function LandlordBankPage() {
           </div>
         )}
 
-        {/* Global repair feedback */}
         {repairMsg && (
           <div className="p-4 rounded-xl border border-teal-500/20 bg-teal-500/10 text-teal-400 text-xs font-bold flex items-center gap-2">
             <CheckCircle2 size={13} /> {repairMsg}
@@ -297,7 +348,7 @@ export default function LandlordBankPage() {
                         </div>
                       : <button
                           onClick={() => handleRepair(acct.id)}
-                          disabled={repairBusy && repairId !== acct.id}
+                          disabled={repairBusy}
                           className="text-[8px] text-amber-400 font-bold uppercase tracking-widest hover:text-amber-300 transition-colors flex items-center gap-1">
                           {repairBusy && repairId === '' ? <Loader2 size={9} className="animate-spin" /> : <Wrench size={9} />}
                           Repair →
@@ -305,13 +356,10 @@ export default function LandlordBankPage() {
                     }
                   </div>
 
-                  {/* Inline bank_code repair panel — only shown for this account */}
+                  {/* Inline bank_code repair panel */}
                   {repairId === acct.id && (
                     <div className="pt-3 border-t border-zinc-800 space-y-3">
-                      <p className="text-[9px] text-amber-400 font-bold">Select your bank to complete repair:</p>
-                      {repairErr && (
-                        <p className="text-[9px] text-amber-400/80">{repairErr}</p>
-                      )}
+                      <p className="text-[9px] text-amber-400 font-bold">{repairErr || 'Select your bank to complete repair:'}</p>
                       <select
                         value={repairCode}
                         onChange={e => setRepairCode(e.target.value)}
@@ -320,8 +368,7 @@ export default function LandlordBankPage() {
                         {banks.map(b => <option key={b.code} value={b.code}>{b.name}</option>)}
                       </select>
                       <div className="flex gap-2">
-                        <button
-                          onClick={() => { setRepairId(''); setRepairCode(''); setRepairErr(''); }}
+                        <button onClick={() => { setRepairId(''); setRepairCode(''); setRepairErr(''); }}
                           className="flex-1 py-2 border border-zinc-700 text-zinc-500 text-[9px] font-bold uppercase rounded-xl hover:text-white transition-all">
                           Cancel
                         </button>
@@ -348,6 +395,7 @@ export default function LandlordBankPage() {
               <p className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest mb-1">Manual Payout</p>
               <p className="text-xs text-zinc-600">On-demand transfer from collected rent balance. 2% platform fee applies.</p>
             </div>
+
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <select value={payoutAcct} onChange={e => setPayoutAcct(e.target.value)}
                 className="w-full bg-black border border-zinc-800 p-3 rounded-xl text-white text-sm outline-none focus:border-teal-500 transition-colors">
@@ -361,20 +409,51 @@ export default function LandlordBankPage() {
               <div className="relative">
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500 text-sm font-mono">₦</span>
                 <input type="number" placeholder="Amount (NGN)" value={payoutAmt}
-                  onChange={e => setPayoutAmt(e.target.value)}
+                  onChange={e => { setPayoutAmt(e.target.value); setPayoutErr(''); setT1Note(''); }}
                   className="w-full bg-black border border-zinc-800 p-3 pl-7 rounded-xl text-white text-sm font-mono outline-none focus:border-teal-500 transition-colors" />
               </div>
             </div>
-            {payoutAmt && parseFloat(payoutAmt) > 0 && (
-              <div className="p-3 rounded-xl bg-zinc-900 border border-zinc-800 text-[10px] font-mono text-zinc-400 flex flex-wrap items-center gap-4">
-                <span>Gross: <span className="text-white">₦{safeF(parseFloat(payoutAmt))}</span></span>
-                <span>Fee (2%): <span className="text-amber-400">-₦{safeF(Math.round(parseFloat(payoutAmt) * 0.02))}</span></span>
-                <span>You receive: <span className="text-teal-400 font-black">₦{safeF(Math.round(parseFloat(payoutAmt) * 0.98))}</span></span>
+
+            {/* Balance warning when entered amount exceeds available */}
+            {balanceKnown && grossAmt > 0 && !hasSufficientBal && (
+              <div className="p-3 rounded-xl bg-amber-500/5 border border-amber-500/20 flex items-start gap-2">
+                <Clock size={11} className="text-amber-400 flex-shrink-0 mt-0.5" />
+                <div>
+                  <p className="text-amber-400 text-xs font-bold">
+                    Available: ₦{safeF(balanceNgn!)} · Required: ₦{safeF(netAmt)}
+                  </p>
+                  <p className="text-amber-400/70 text-[10px] mt-0.5 leading-relaxed">
+                    Paystack settles collections the next business day (T+1).
+                    Funds collected today will be available tomorrow.
+                  </p>
+                </div>
               </div>
             )}
+
+            {grossAmt > 0 && (
+              <div className="p-3 rounded-xl bg-zinc-900 border border-zinc-800 text-[10px] font-mono text-zinc-400 flex flex-wrap items-center gap-4">
+                <span>Gross: <span className="text-white">₦{safeF(grossAmt)}</span></span>
+                <span>Fee (2%): <span className="text-amber-400">-₦{safeF(feeAmt)}</span></span>
+                <span>You receive: <span className={`font-black ${hasSufficientBal ? 'text-teal-400' : 'text-amber-400'}`}>₦{safeF(netAmt)}</span></span>
+                {balanceKnown && (
+                  <span className="ml-auto text-zinc-600">
+                    Available: <span className={balanceNgn! >= netAmt ? 'text-teal-400' : 'text-amber-400'}>₦{safeF(balanceNgn!)}</span>
+                  </span>
+                )}
+              </div>
+            )}
+
             {payoutErr && (
-              <div className="p-3 rounded-xl bg-red-500/5 border border-red-500/20 text-red-400 text-xs font-bold flex items-center gap-2">
-                <AlertCircle size={11} /> {payoutErr}
+              <div className="p-3 rounded-xl bg-red-500/5 border border-red-500/20 space-y-1">
+                <div className="flex items-center gap-2 text-red-400 text-xs font-bold">
+                  <AlertCircle size={11} /> {payoutErr}
+                </div>
+                {t1Note && (
+                  <div className="flex items-start gap-1.5 pl-5">
+                    <Clock size={9} className="text-amber-400 flex-shrink-0 mt-0.5" />
+                    <p className="text-amber-400/80 text-[9px] leading-relaxed">{t1Note}</p>
+                  </div>
+                )}
               </div>
             )}
             {payoutMsg && (
@@ -382,10 +461,19 @@ export default function LandlordBankPage() {
                 <CheckCircle2 size={11} /> {payoutMsg}
               </div>
             )}
-            <button onClick={handlePayout} disabled={payoutBusy || !payoutAcct || !payoutAmt}
-              className="flex items-center gap-2 px-6 py-3 bg-teal-500 text-black font-black text-[9px] uppercase tracking-widest rounded-xl hover:bg-white transition-all disabled:opacity-50">
-              {payoutBusy ? <Loader2 className="animate-spin" size={12} /> : <Banknote size={12} />}
-              {payoutBusy ? 'Initiating Transfer…' : 'Initiate Transfer'}
+
+            <button onClick={handlePayout} disabled={!canInitiatePayout}
+              className={`flex items-center gap-2 px-6 py-3 font-black text-[9px] uppercase tracking-widest rounded-xl transition-all disabled:opacity-50 ${
+                !hasSufficientBal && grossAmt > 0
+                  ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30 cursor-not-allowed'
+                  : 'bg-teal-500 text-black hover:bg-white'
+              }`}>
+              {payoutBusy
+                ? <><Loader2 className="animate-spin" size={12} /> Initiating Transfer…</>
+                : !hasSufficientBal && grossAmt > 0
+                ? <><Clock size={12} /> Insufficient Balance — Retry Tomorrow</>
+                : <><Banknote size={12} /> Initiate Transfer</>
+              }
             </button>
           </div>
         )}
@@ -393,11 +481,11 @@ export default function LandlordBankPage() {
         {/* How payouts work */}
         <div className="p-5 rounded-2xl border border-zinc-800 bg-zinc-900/10 space-y-4">
           <p className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest">How payouts work</p>
-          <div className="grid grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {[
-              { step: '01', title: 'Tenant pays',  body: 'Rent collected via Paystack and held in the Ark platform balance.' },
-              { step: '02', title: 'Auto-trigger', body: 'Within 24h the cron engine initiates a transfer to your default account.' },
-              { step: '03', title: '98% to you',   body: '2% platform fee deducted. Net transferred via Paystack instant transfer.' },
+              { step: '01', title: 'Tenant pays',    body: 'Rent collected via Paystack and held in your Paystack balance (T+1 settlement).' },
+              { step: '02', title: 'T+1 clearing',   body: 'Paystack settles to your available balance the next business day after collection.' },
+              { step: '03', title: '98% to you',     body: '2% platform fee deducted. Net transferred instantly once balance is available.' },
             ].map(s => (
               <div key={s.step} className="space-y-2">
                 <p className="text-teal-500 font-mono font-black text-[9px] uppercase tracking-widest">{s.step}</p>
@@ -405,6 +493,13 @@ export default function LandlordBankPage() {
                 <p className="text-zinc-500 text-[10px] leading-relaxed">{s.body}</p>
               </div>
             ))}
+          </div>
+          <div className="pt-3 border-t border-zinc-800 flex items-start gap-2">
+            <Info size={10} className="text-zinc-600 flex-shrink-0 mt-0.5" />
+            <p className="text-[9px] text-zinc-600 leading-relaxed">
+              The auto-transfer cron runs every 30 minutes. It will automatically retry payouts once your Paystack balance clears.
+              You don't need to trigger manual payouts — it's fully automated.
+            </p>
           </div>
         </div>
 

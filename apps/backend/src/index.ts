@@ -5472,6 +5472,35 @@ app.delete('/api/landlord/bank-accounts/:id', authenticate, async (req: Request,
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
 
+// ── GET /api/landlord/paystack-balance — show available Paystack balance ────────
+// Frontend uses this to show the landlord what's actually available for payout
+// vs what's still in T+1 settlement (Next Payout / pending)
+app.get('/api/landlord/paystack-balance', authenticate, async (req: Request, res: Response): Promise<any> => {
+  try {
+    if (!PAYSTACK_SECRET) return res.status(503).json({ error: 'Payment gateway not configured' });
+    const balRes = await fetch(`${PAYSTACK_BASE}/balance`, {
+      headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` },
+    });
+    const balData = await balRes.json() as any;
+    if (!balData.status) return res.status(400).json({ error: balData.message || 'Could not fetch balance' });
+
+    // Paystack returns balance in kobo — convert to NGN
+    const balances = Array.isArray(balData.data) ? balData.data : [balData.data];
+    const ngnBalance = balances.find((b: any) => b.currency === 'NGN') || balances[0];
+    const availableNgn = ngnBalance ? Math.floor((ngnBalance.balance || 0) / 100) : 0;
+
+    return res.json({
+      success:       true,
+      available_ngn: availableNgn,
+      currency:      ngnBalance?.currency || 'NGN',
+      // Clear message when balance is 0 but rent was recently collected (T+1)
+      note: availableNgn === 0
+        ? 'Paystack settles collections to your balance the next business day (T+1). If rent was just collected, funds will be available tomorrow.'
+        : null,
+    });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
 // ── POST /api/landlord/payout — trigger Paystack transfer to landlord ────────
 // Called automatically by the cron or manually by admin after rent is collected
 app.post('/api/landlord/payout', authenticate, async (req: Request, res: Response): Promise<any> => {
@@ -5523,6 +5552,32 @@ app.post('/api/landlord/payout', authenticate, async (req: Request, res: Respons
       ]
     ).catch(() => {}); // non-fatal if platform_revenue table not yet created
 
+    // ── Pre-check: verify Paystack balance covers the net amount ────────────
+    // This avoids a hard 500 and gives a clear, actionable error with T+1 context
+    try {
+      const balRes  = await fetch(`${PAYSTACK_BASE}/balance`, {
+        headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` },
+      });
+      const balData = await balRes.json() as any;
+      if (balData.status) {
+        const balances    = Array.isArray(balData.data) ? balData.data : [balData.data];
+        const ngnBalance  = balances.find((b: any) => b.currency === 'NGN') || balances[0];
+        const availableNgn = ngnBalance ? Math.floor((ngnBalance.balance || 0) / 100) : 0;
+        if (availableNgn < netToLandlordNgn) {
+          return res.status(402).json({
+            error: `Insufficient Paystack balance. Available: ₦${availableNgn.toLocaleString()} — Required: ₦${netToLandlordNgn.toLocaleString()}.`,
+            available_ngn:  availableNgn,
+            required_ngn:   netToLandlordNgn,
+            t1_note: 'Paystack settles rent collections to your balance the next business day (T+1). Funds collected today will be available tomorrow.',
+            insufficient_balance: true,
+          });
+        }
+      }
+    } catch (balErr: any) {
+      // Non-fatal — if balance check fails, attempt the transfer anyway (Paystack will reject if needed)
+      console.warn('[PAYOUT] Balance pre-check failed (non-fatal):', balErr.message);
+    }
+
     // ── Paystack Transfer: net amount to landlord ─────────────────────────
     const transferRes = await fetch(`${PAYSTACK_BASE}/transfer`, {
       method: 'POST',
@@ -5545,7 +5600,17 @@ app.post('/api/landlord/payout', authenticate, async (req: Request, res: Respons
       }),
     });
     const tData = await transferRes.json() as any;
-    if (!tData.status) return res.status(500).json({ error: tData.message || 'Transfer failed' });
+    if (!tData.status) {
+      const msg = tData.message || 'Transfer failed';
+      const isBalanceErr = msg.toLowerCase().includes('balance') || msg.toLowerCase().includes('insufficient');
+      return res.status(isBalanceErr ? 402 : 500).json({
+        error: msg,
+        ...(isBalanceErr ? {
+          insufficient_balance: true,
+          t1_note: 'Paystack settles collections the next business day (T+1). If rent was just collected, funds will be available tomorrow.',
+        } : {}),
+      });
+    }
 
     // ── Immutable system ledger entry ─────────────────────────────────────
     await pool.query(
