@@ -1017,6 +1017,17 @@ const ensureTablesExist = async () => {
       ALTER TABLE landlord_bank_accounts ADD COLUMN IF NOT EXISTS paystack_recipient_code VARCHAR(100);
       ALTER TABLE landlord_bank_accounts ADD COLUMN IF NOT EXISTS is_verified BOOLEAN DEFAULT true;
       ALTER TABLE landlord_bank_accounts ADD COLUMN IF NOT EXISTS currency    VARCHAR(10) DEFAULT 'NGN';
+      -- ── Dedup: keep only the row with recipient_code (or latest) per user+account ──
+      -- Safe to run multiple times; only removes true duplicates
+      DELETE FROM landlord_bank_accounts a
+        USING landlord_bank_accounts b
+        WHERE a.user_id = b.user_id
+          AND a.account_number = b.account_number
+          AND a.id < b.id
+          AND (a.paystack_recipient_code IS NULL OR b.paystack_recipient_code IS NOT NULL);
+      -- ── Unique constraint: prevent future duplicate (user_id, account_number) ──
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_lba_user_account
+        ON landlord_bank_accounts(user_id, account_number);
 
       -- ── Unique constraint so onboard-tenant is idempotent ──────────────────
       -- Prevents Joseph Dimpa ×3 / Okon Mavelous ×2 duplicates.
@@ -5301,7 +5312,14 @@ app.get('/api/landlord/bank-accounts', authenticate, async (req: Request, res: R
   const userId = (req as any).userId;
   try {
     const r = await pool.query(
-      `SELECT * FROM landlord_bank_accounts WHERE user_id=$1 ORDER BY is_default DESC, created_at DESC`,
+      `SELECT id, user_id, project_id, account_name, account_number, bank_code,
+              bank_name, currency, is_default, is_verified,
+              paystack_recipient_code, created_at, updated_at,
+              CASE WHEN paystack_recipient_code IS NOT NULL AND paystack_recipient_code <> ''
+                   THEN true ELSE false END AS payout_ready
+       FROM landlord_bank_accounts
+       WHERE user_id=$1
+       ORDER BY is_default DESC, created_at DESC`,
       [userId]
     );
     return res.json({ success: true, accounts: r.rows });
@@ -5348,11 +5366,21 @@ app.post('/api/landlord/bank-accounts', authenticate, async (req: Request, res: 
       );
     }
 
+    // Upsert: if same account_number already exists for this user, update it rather than inserting a dupe
     const r = await pool.query(
       `INSERT INTO landlord_bank_accounts
          (user_id, project_id, account_name, account_number, bank_code, bank_name, currency,
           paystack_recipient_code, is_verified, is_default)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,true,$9) RETURNING *`,
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,true,$9)
+       ON CONFLICT (user_id, account_number)
+       DO UPDATE SET
+         bank_code               = EXCLUDED.bank_code,
+         bank_name               = EXCLUDED.bank_name,
+         paystack_recipient_code = COALESCE(EXCLUDED.paystack_recipient_code, landlord_bank_accounts.paystack_recipient_code),
+         is_default              = EXCLUDED.is_default,
+         is_verified             = true,
+         updated_at              = NOW()
+       RETURNING *`,
       [userId, project_id || null, account_name, account_number, bank_code, bank_name,
        currency || 'NGN', recipientCode, set_as_default ?? true]
     );
@@ -5374,8 +5402,29 @@ app.post('/api/landlord/bank-accounts/:id/create-recipient', authenticate, async
     if (!acctRes.rows.length) return res.status(404).json({ error: 'Bank account not found' });
     const acct = acctRes.rows[0];
 
+    // Accept bank_code override from request body (for patching old rows that were saved without one)
+    const resolvedBankCode: string = req.body?.bank_code || acct.bank_code;
+
+    if (!resolvedBankCode) {
+      return res.status(400).json({
+        error: 'bank_code missing on this account. Pass { bank_code: "057" } in the request body to patch it.',
+        needs_bank_code: true,
+      });
+    }
+
+    // Patch stored bank_code if it was absent (one-time migration for legacy rows)
+    if (!acct.bank_code && resolvedBankCode) {
+      await pool.query(`UPDATE landlord_bank_accounts SET bank_code=$1 WHERE id=$2`, [resolvedBankCode, id]);
+    }
+
     if (acct.paystack_recipient_code) {
-      return res.json({ success: true, message: 'Recipient code already set', recipient_code: acct.paystack_recipient_code });
+      // Recipient already set — return success so the frontend can mark it ready
+      return res.json({
+        success:        true,
+        message:        'Account is already payout-ready.',
+        recipient_code: acct.paystack_recipient_code,
+        already_set:    true,
+      });
     }
 
     if (!PAYSTACK_SECRET) return res.status(503).json({ error: 'Payment gateway not configured' });
@@ -5387,7 +5436,7 @@ app.post('/api/landlord/bank-accounts/:id/create-recipient', authenticate, async
         type:           'nuban',
         name:           acct.account_name,
         account_number: acct.account_number,
-        bank_code:      acct.bank_code,
+        bank_code:      resolvedBankCode,
         currency:       acct.currency || 'NGN',
       }),
     });
@@ -5398,14 +5447,14 @@ app.post('/api/landlord/bank-accounts/:id/create-recipient', authenticate, async
     }
 
     await pool.query(
-      `UPDATE landlord_bank_accounts SET paystack_recipient_code=$1 WHERE id=$2`,
-      [prData.data.recipient_code, id]
+      `UPDATE landlord_bank_accounts SET paystack_recipient_code=$1, bank_code=$2 WHERE id=$3`,
+      [prData.data.recipient_code, resolvedBankCode, id]
     );
 
     return res.json({
       success:        true,
       recipient_code: prData.data.recipient_code,
-      message:        'Recipient code created and saved. This account can now receive automatic payouts.',
+      message:        'Recipient code created. This account can now receive automatic payouts.',
     });
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
@@ -7103,7 +7152,7 @@ app.get('/api/flex-pay/vault/:tenancyId', authenticate, async (req: Request, res
       `SELECT fpv.*, t.tenant_name, t.tenant_email, ru.unit_name, ru.rent_amount,
               COALESCE((SELECT SUM(fc.amount_ngn) FROM flex_contributions fc WHERE fc.vault_id = fpv.id AND fc.status = 'SUCCESS'), 0) AS total_contributed,
               (SELECT COUNT(*) FROM flex_contributions fc WHERE fc.vault_id = fpv.id AND fc.status = 'SUCCESS') AS contribution_count
-       FROM flex_pay_vaults fpv JOIN tenancies t ON t.id = fpv.tenancy_id JOIN rental_units ru ON ru.id = fpv.unit_id
+       FROM flex_pay_vaults fpv JOIN tenancies t ON t.id = fpv.tenancy_id LEFT JOIN rental_units ru ON ru.id = COALESCE(fpv.unit_id, t.unit_id)
        WHERE fpv.tenancy_id = $1 ORDER BY fpv.created_at DESC LIMIT 1`,
       [req.params.tenancyId]
     );
@@ -7699,9 +7748,9 @@ app.get('/api/flex-pay/receipt/:contributionId', authenticate, async (req: Reque
        FROM flex_contributions fc
        JOIN flex_pay_vaults fpv ON fpv.id      = fc.vault_id
        JOIN tenancies t          ON t.id       = fpv.tenancy_id
-       -- COALESCE: self-healed vaults only have tenancy_id, not unit_id/project_id
-       JOIN rental_units ru      ON ru.id      = COALESCE(fpv.unit_id, t.unit_id)
-       LEFT JOIN projects p      ON p.id       = COALESCE(fpv.project_id, ru.project_id)
+       -- COALESCE: self-healed vaults may have NULL unit_id/project_id — use LEFT JOIN
+       LEFT JOIN rental_units ru  ON ru.id     = COALESCE(fpv.unit_id, t.unit_id)
+       LEFT JOIN projects p       ON p.id      = COALESCE(fpv.project_id, ru.project_id)
        WHERE fc.id = $1`,
       [contributionId]
     );
@@ -8570,13 +8619,16 @@ app.get('/api/tenant/receipt/:contributionId', authenticate, async (req: Request
               fc.status, fc.paystack_ref,
               fpv.frequency,
               t.tenant_name, t.tenant_email,
-              ru.unit_name, ru.currency,
-              p.title AS project_title, p.project_number
+              ru.unit_name,
+              COALESCE(ru.currency, t.currency, 'NGN') AS currency,
+              COALESCE(p.title,  p2.title)             AS project_title,
+              COALESCE(p.project_number, p2.project_number) AS project_number
        FROM flex_contributions fc
-       JOIN flex_pay_vaults fpv ON fpv.id = fc.vault_id
-       JOIN tenancies t         ON t.id   = fpv.tenancy_id
-       JOIN rental_units ru     ON ru.id  = fpv.unit_id
-       JOIN projects p          ON p.id   = fpv.project_id
+       JOIN flex_pay_vaults fpv  ON fpv.id        = fc.vault_id
+       JOIN tenancies t           ON t.id         = fpv.tenancy_id
+       LEFT JOIN rental_units ru  ON ru.id        = COALESCE(fpv.unit_id, t.unit_id)
+       LEFT JOIN projects p       ON p.id         = fpv.project_id
+       LEFT JOIN projects p2      ON p2.id        = ru.project_id
        WHERE fc.id = $1`,
       [contributionId]
     );
@@ -8618,21 +8670,6 @@ app.get('/api/tenant/receipt/:contributionId', authenticate, async (req: Request
     return res.status(500).json({ error: e.message });
   }
 });
-
-
-app.use((req: Request, res: Response) => {
-  res.status(404).json({ error: "Not Found" });
-});
-
-/* ============================================
-   SERVER START
-============================================ */
-
-// ============================================================================
-// CRON SCHEDULER — Daily 08:00 WAT automated reminders & drawdown
-// ============================================================================
-
-const PORT = parseInt(process.env.PORT || "10000");
 
 
 // GET: Generate a professional WhatsApp invitation link
@@ -8806,6 +8843,20 @@ app.post('/api/tenant/onboard', async (req: Request, res: Response): Promise<any
   }
 });
 
+// ── 404 catch-all — MUST be last route registration ──────────────────────────
+app.use((req: Request, res: Response) => {
+  res.status(404).json({ error: "Not Found" });
+});
+
+/* ============================================
+   SERVER START
+============================================ */
+
+// ============================================================================
+// CRON SCHEDULER — Daily 08:00 WAT automated reminders & drawdown
+// ============================================================================
+
+const PORT = parseInt(process.env.PORT || "10000");
 
 // ── Pending Payout Retry Cron ────────────────────────────────────────────────
 // Runs every 30 minutes. Finds FUNDED_READY vaults where the landlord had no
