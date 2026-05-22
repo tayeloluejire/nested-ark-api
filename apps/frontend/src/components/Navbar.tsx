@@ -15,8 +15,8 @@ import {
 // ── Solutions mega-menu data ──────────────────────────────────────────────────
 const SOLUTIONS = [
   {
-    // PROPERTY TOOL — routes to /landlord/properties (Register New Property)
-    href: '/landlord/properties',
+    // PROPERTY TOOL — routes to /onboard (Register New Property)
+    href: '/onboard',
     icon: Home,
     accent: 'text-teal-400',
     bg: 'hover:bg-teal-500/8',
@@ -59,22 +59,12 @@ function LandlordQuickPanel({ onClose }: { onClose: () => void }) {
   const ITEMS = [
     {
       // PROPERTY TOOL entry point — separate from NAP Ledger
-      href: '/landlord/properties',
+      href: '/onboard',
       icon: Home,
       label: 'Add New Property',
       sub: 'Register apartments & rental units',
       accent: 'text-teal-400',
       bg: 'hover:bg-teal-500/10',
-    },
-    {
-      // Yield Engine — live rent payment intelligence across all properties
-      href: '/landlord/rent-dashboard',
-      icon: TrendingUp,
-      label: 'Rent Dashboard',
-      sub: 'Live vault status, overdue alerts & rent roll',
-      accent: 'text-teal-400',
-      bg: 'hover:bg-teal-500/10',
-      badge: 'Yield Engine',
     },
     {
       href: '/landlord/tenants',
@@ -109,6 +99,16 @@ function LandlordQuickPanel({ onClose }: { onClose: () => void }) {
       accent: 'text-teal-400',
       bg: 'hover:bg-teal-500/10',
       badge: 'Payout Engine',
+    },
+    {
+      // Yield Engine — live rent payment intelligence across all properties
+      href: '/landlord/rent-dashboard',
+      icon: TrendingUp,
+      label: 'Rent Dashboard',
+      sub: 'Live vault status, overdue alerts & rent roll',
+      accent: 'text-teal-400',
+      bg: 'hover:bg-teal-500/10',
+      badge: 'Yield Engine',
     },
     {
       // NAP Ledger — clearly labeled separately
@@ -232,7 +232,7 @@ export default function Navbar() {
   // ── Role-based nav links ────────────────────────────────────────────────────
   // IMPORTANT separation:
   //   My Projects  (/projects/my)  = NAP Infrastructure Ledger — DEVELOPER/GOVT/ADMIN
-  //   Add Property (/landlord/properties) = Rental Property Tool — DEVELOPER (landlord)
+  //   Add Property (/onboard)      = Rental Property Tool      — DEVELOPER (landlord)
   //   Tenants      (/landlord/tenants) — DEVELOPER (landlord)
   const baseLinks = [
     { name: 'Dashboard',    href: '/dashboard',         icon: LayoutDashboard, roles: ['INVESTOR','CONTRACTOR','SUPPLIER','BANK','GOVERNMENT','ADMIN','VERIFIER','DEVELOPER'] },
@@ -250,7 +250,7 @@ export default function Navbar() {
     // DEVELOPER / Landlord — NAP Ledger (infrastructure projects)
     { name: 'My Projects',  href: '/projects/my',       icon: Building2,       roles: ['DEVELOPER','GOVERNMENT','ADMIN'] },
     // DEVELOPER / Landlord — Property Tool (rental management)
-    { name: 'My Properties',href: '/landlord/properties', icon: Home,            roles: ['DEVELOPER'] },
+    { name: 'My Properties',href: '/onboard',           icon: Home,            roles: ['DEVELOPER'] },
     { name: 'Tenants',      href: '/landlord/tenants',  icon: Users,           roles: ['DEVELOPER'] },
     { name: 'Notices',      href: '/landlord/notices',  icon: Gavel,           roles: ['DEVELOPER'] },
     // Government / Admin
