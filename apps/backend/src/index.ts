@@ -5688,7 +5688,7 @@ app.get('/api/landlord/tenancies/active', authenticate, async (req: Request, res
   const landlordId = (req as any).userId;
   try {
     const r = await pool.query(
-      `SELECT
+      `SELECT DISTINCT ON (t.id)
          t.id                AS tenancy_id,
          t.tenant_name,
          t.tenant_email,
@@ -5709,10 +5709,18 @@ app.get('/api/landlord/tenancies/active', authenticate, async (req: Request, res
        FROM tenancies t
        INNER JOIN rental_units ru ON ru.id = t.unit_id
        INNER JOIN projects p      ON p.id  = ru.project_id
-       LEFT  JOIN flex_pay_vaults fpv ON fpv.tenancy_id = t.id
+       -- DISTINCT ON (t.id): if a tenancy has multiple vaults, take the most recent one
+       -- without DISTINCT the LEFT JOIN fans out and the same tenant appears N times
+       LEFT JOIN LATERAL (
+         SELECT vault_balance, next_due_date
+         FROM flex_pay_vaults
+         WHERE tenancy_id = t.id
+         ORDER BY created_at DESC
+         LIMIT 1
+       ) fpv ON true
        WHERE p.sponsor_id = $1
          AND t.status = 'ACTIVE'
-       ORDER BY p.title, t.tenant_name
+       ORDER BY t.id, p.title, t.tenant_name
        LIMIT 500`,
       [landlordId]
     );
@@ -7462,7 +7470,16 @@ app.post(['/api/notices/generate', '/api/notices/generate/'], authenticate, asyn
     if (t.sponsor_id !== userId && !['ADMIN','DEVELOPER'].includes(roleCheck.rows[0]?.role)) return res.status(403).json({ error: 'Only property owner or admin can issue notices' });
     const seqRes = await pool.query(`SELECT nextval('notice_number_seq') AS n`);
     const noticeNumber = `ARK-${notice_type.slice(0,3)}-${new Date().getFullYear()}-${String(seqRes.rows[0].n).padStart(5,'0')}`;
-    const deadlineDays = ['NOTICE_TO_QUIT','EVICTION_WARNING','FINAL_WARNING'].includes(notice_type) ? 30 : 7;
+    // Correct deadlines matching the UI definition:
+    // NOTICE_TO_PAY → 7 days | NOTICE_TO_QUIT → 30 days
+    // FINAL_WARNING → 2 days | EVICTION_WARNING → 30 days
+    const DEADLINE_MAP: Record<string, number> = {
+      NOTICE_TO_PAY:    7,
+      NOTICE_TO_QUIT:   30,
+      FINAL_WARNING:    2,
+      EVICTION_WARNING: 30,
+    };
+    const deadlineDays = DEADLINE_MAP[notice_type] ?? 7;
     const deadline = new Date(); deadline.setDate(deadline.getDate() + deadlineDays);
     const deadlineStr = deadline.toLocaleDateString('en-GB', { day:'2-digit', month:'long', year:'numeric' });
     const overdue = parseFloat(amount_overdue) || parseFloat(t.rent_amount) || 0;

@@ -64,7 +64,10 @@ const colorMap: Record<string, string> = {
 
 // ── Inner content — useSearchParams() is safe inside a Suspense boundary ─────
 function LitigationCommandContent() {
-  const { loading: authLoading } = useAuth();
+  // `token` comes from AuthContext (set when user logged in).
+  // Reading it here ensures we always have the live value at submission time,
+  // even if the axios defaults haven't been populated yet in this render cycle.
+  const { loading: authLoading, token: contextToken } = useAuth();
   const searchParams  = useSearchParams();
   const preselectedId = searchParams.get('tenant') ?? '';
 
@@ -117,12 +120,19 @@ function LitigationCommandContent() {
     if (!selTenancy || !noticeType) { setSubmitErr('Please select a tenant and notice type.'); return; }
     setSubmitting(true); setSubmitErr('');
     try {
+      // ── Robust 4-layer token resolution ─────────────────────────────────────
+      // Layer 1: token from useAuth() context (live React state — most reliable)
+      // Layer 2: axios defaults header (set by AuthContext interceptor)
+      // Layer 3: localStorage (raw storage value)
+      // Layer 4: '' (will produce a 401 from the backend with a clear error)
+      const axiosHeader = (api.defaults.headers.common?.['Authorization'] as string) ?? '';
+      const axiosToken  = axiosHeader.startsWith('Bearer ') ? axiosHeader.slice(7) : axiosHeader;
+      const lsToken     = typeof window !== 'undefined' ? (localStorage.getItem('token') ?? '') : '';
+      const resolvedToken = contextToken || axiosToken || lsToken;
+
       // Use raw fetch() pointed directly at the backend origin — this bypasses Next.js
       // routing entirely and prevents Vercel's trailingSlash normalisation from appending
-      // a trailing slash to the URL, which caused the backend to return 404 on every attempt.
-      // Extract token from the same axios instance so it matches api.ts token logic exactly
-      const authHeader = (api.defaults.headers.common?.['Authorization'] as string) ?? '';
-      const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : authHeader;
+      // a trailing slash to the URL, which caused 404s on every notice submission.
       const backendBase = (process.env.NEXT_PUBLIC_API_URL ?? '').replace(/\/$/, '');
       const endpoint = backendBase
         ? `${backendBase}/api/notices/generate`
@@ -132,7 +142,7 @@ function LitigationCommandContent() {
         method:  'POST',
         headers: {
           'Content-Type':  'application/json',
-          'Authorization': token ? `Bearer ${token}` : '',
+          'Authorization': resolvedToken ? `Bearer ${resolvedToken}` : '',
         },
         credentials: 'include',
         body: JSON.stringify({
