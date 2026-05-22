@@ -169,9 +169,9 @@ export default function LandlordRentDashboard() {
         {/* ── Header ─────────────────────────────────────────────────────── */}
         <div className="flex items-start justify-between gap-4 flex-wrap">
           <div>
-            <Link href="/landlord/dashboard"
+            <Link href="/projects/my"
               className="inline-flex items-center gap-2 text-zinc-500 hover:text-white text-xs font-bold uppercase tracking-widest transition-colors mb-4">
-              <ArrowLeft size={12} /> Landlord Dashboard
+              <ArrowLeft size={12} /> My Projects
             </Link>
             <div className="border-l-2 border-teal-500 pl-5">
               <p className="text-[9px] text-teal-500 font-mono font-black tracking-widest uppercase mb-1">Yield Engine</p>
