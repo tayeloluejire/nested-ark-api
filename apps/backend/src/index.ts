@@ -8947,6 +8947,192 @@ app.post('/api/tenant/onboard', async (req: Request, res: Response): Promise<any
   }
 });
 
+
+// ── GET /api/landlord/rent-dashboard — full payment intelligence for landlord ─
+// Returns: per-tenancy payment status, vault states, recent transactions,
+//          overdue summary, and portfolio-level KPIs — all in one call.
+app.get('/api/landlord/rent-dashboard', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const landlordId = (req as any).userId;
+  try {
+    // ── 1. All active tenancies with vault state + last payment ───────────────
+    const tenancyRows = await pool.query(
+      `SELECT DISTINCT ON (t.id)
+         t.id              AS tenancy_id,
+         t.tenant_name,
+         t.tenant_email,
+         t.rent_amount,
+         t.currency,
+         t.payment_day,
+         t.lease_start,
+         t.lease_end,
+         t.status          AS tenancy_status,
+         ru.unit_name,
+         ru.id             AS unit_id,
+         p.id              AS project_id,
+         p.title           AS project_title,
+         p.project_number,
+         -- Vault state (most recent vault per tenancy)
+         fpv.id            AS vault_id,
+         fpv.vault_balance,
+         fpv.target_amount,
+         fpv.frequency,
+         fpv.next_due_date,
+         fpv.status        AS vault_status,
+         fpv.funded_periods,
+         -- Latest successful contribution
+         (SELECT fc.amount_ngn
+            FROM flex_contributions fc
+            WHERE fc.tenancy_id = t.id AND fc.status = 'SUCCESS'
+            ORDER BY fc.paid_at DESC LIMIT 1) AS last_payment_amount,
+         (SELECT fc.paid_at
+            FROM flex_contributions fc
+            WHERE fc.tenancy_id = t.id AND fc.status = 'SUCCESS'
+            ORDER BY fc.paid_at DESC LIMIT 1) AS last_payment_at,
+         (SELECT fc.paystack_ref
+            FROM flex_contributions fc
+            WHERE fc.tenancy_id = t.id AND fc.status = 'SUCCESS'
+            ORDER BY fc.paid_at DESC LIMIT 1) AS last_payment_ref,
+         -- Total collected all-time for this tenancy
+         (SELECT COALESCE(SUM(fc.amount_ngn), 0)
+            FROM flex_contributions fc
+            WHERE fc.tenancy_id = t.id AND fc.status = 'SUCCESS') AS total_collected,
+         -- Count successful payments
+         (SELECT COUNT(*)
+            FROM flex_contributions fc
+            WHERE fc.tenancy_id = t.id AND fc.status = 'SUCCESS') AS payment_count,
+         -- Pending (initiated but not confirmed) this period
+         (SELECT COALESCE(SUM(fc.amount_ngn), 0)
+            FROM flex_contributions fc
+            WHERE fc.tenancy_id = t.id AND fc.status = 'PENDING') AS pending_amount,
+         -- Active legal notices
+         (SELECT COUNT(*)
+            FROM legal_notices ln
+            WHERE ln.tenancy_id = t.id AND ln.status IN ('ISSUED','PENDING')) AS open_notices
+       FROM tenancies t
+       INNER JOIN rental_units ru  ON ru.id  = t.unit_id
+       INNER JOIN projects p       ON p.id   = ru.project_id
+       LEFT JOIN LATERAL (
+         SELECT id, vault_balance, target_amount, frequency,
+                next_due_date, status, funded_periods
+         FROM flex_pay_vaults
+         WHERE tenancy_id = t.id
+         ORDER BY created_at DESC LIMIT 1
+       ) fpv ON true
+       WHERE p.sponsor_id = $1
+         AND t.status = 'ACTIVE'
+       ORDER BY t.id, p.title, t.tenant_name`,
+      [landlordId]
+    );
+
+    // ── 2. Recent transactions across ALL tenancies (last 50) ─────────────────
+    const recentTxRows = await pool.query(
+      `SELECT
+         fc.id,
+         fc.amount_ngn,
+         fc.paystack_ref,
+         fc.status,
+         fc.period_label,
+         fc.paid_at,
+         fc.ledger_hash,
+         t.tenant_name,
+         t.tenant_email,
+         ru.unit_name,
+         p.title AS project_title,
+         p.project_number
+       FROM flex_contributions fc
+       JOIN tenancies t    ON t.id   = fc.tenancy_id
+       LEFT JOIN rental_units ru ON ru.id = COALESCE(
+         (SELECT unit_id FROM flex_pay_vaults WHERE id = fc.vault_id LIMIT 1),
+         t.unit_id
+       )
+       LEFT JOIN projects p ON p.id = COALESCE(
+         (SELECT project_id FROM flex_pay_vaults WHERE id = fc.vault_id LIMIT 1),
+         ru.project_id
+       )
+       WHERE p.sponsor_id = $1
+         AND fc.status IN ('SUCCESS', 'PENDING', 'FAILED')
+       ORDER BY fc.created_at DESC
+       LIMIT 50`,
+      [landlordId]
+    );
+
+    // ── 3. Portfolio-level KPIs ───────────────────────────────────────────────
+    const tenancies = tenancyRows.rows;
+    const transactions = recentTxRows.rows;
+
+    const totalMonthlyRent    = tenancies.reduce((s: number, t: any) => s + parseFloat(t.rent_amount || 0), 0);
+    const totalCollectedAllTime = tenancies.reduce((s: number, t: any) => s + parseFloat(t.total_collected || 0), 0);
+    const totalVaultBalance   = tenancies.reduce((s: number, t: any) => s + parseFloat(t.vault_balance || 0), 0);
+    const totalPending        = tenancies.reduce((s: number, t: any) => s + parseFloat(t.pending_amount || 0), 0);
+
+    // Payment status per tenancy
+    const now = new Date();
+    const enriched = tenancies.map((t: any) => {
+      const nextDue     = t.next_due_date ? new Date(t.next_due_date) : null;
+      const lastPaidAt  = t.last_payment_at ? new Date(t.last_payment_at) : null;
+      const vaultPct    = t.target_amount > 0
+        ? Math.min(100, Math.round((parseFloat(t.vault_balance || 0) / parseFloat(t.target_amount)) * 100))
+        : 0;
+
+      // Classify payment status
+      let paymentStatus: string;
+      if (vaultPct >= 100) {
+        paymentStatus = 'FULLY_FUNDED';
+      } else if (nextDue && nextDue < now && vaultPct < 100) {
+        paymentStatus = 'OVERDUE';
+      } else if (parseFloat(t.vault_balance || 0) > 0) {
+        paymentStatus = 'PARTIAL';
+      } else if (t.pending_amount > 0) {
+        paymentStatus = 'PENDING_CONFIRMATION';
+      } else {
+        paymentStatus = 'NOT_PAID';
+      }
+
+      const daysUntilDue = nextDue
+        ? Math.ceil((nextDue.getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
+        : null;
+      const daysSincePaid = lastPaidAt
+        ? Math.floor((now.getTime() - lastPaidAt.getTime()) / (1000 * 60 * 60 * 24))
+        : null;
+
+      return {
+        ...t,
+        vault_pct:      vaultPct,
+        payment_status: paymentStatus,
+        days_until_due: daysUntilDue,
+        days_since_paid: daysSincePaid,
+      };
+    });
+
+    // Summary counts
+    const fullyFunded    = enriched.filter((t: any) => t.payment_status === 'FULLY_FUNDED').length;
+    const overdue        = enriched.filter((t: any) => t.payment_status === 'OVERDUE').length;
+    const partial        = enriched.filter((t: any) => t.payment_status === 'PARTIAL').length;
+    const pending        = enriched.filter((t: any) => t.payment_status === 'PENDING_CONFIRMATION').length;
+    const notPaid        = enriched.filter((t: any) => t.payment_status === 'NOT_PAID').length;
+    const dueThisWeek    = enriched.filter((t: any) => t.days_until_due !== null && t.days_until_due >= 0 && t.days_until_due <= 7).length;
+
+    return res.json({
+      success: true,
+      summary: {
+        total_tenancies:          tenancies.length,
+        fully_funded:             fullyFunded,
+        overdue:                  overdue,
+        partial:                  partial,
+        pending_confirmation:     pending,
+        not_paid:                 notPaid,
+        due_this_week:            dueThisWeek,
+        total_monthly_rent_ngn:   totalMonthlyRent,
+        total_collected_alltime_ngn: totalCollectedAllTime,
+        total_vault_balance_ngn:  totalVaultBalance,
+        total_pending_ngn:        totalPending,
+      },
+      tenancies:    enriched,
+      transactions: transactions,
+    });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
 // ── 404 catch-all — MUST be last route registration ──────────────────────────
 app.use((req: Request, res: Response) => {
   res.status(404).json({ error: "Not Found" });
