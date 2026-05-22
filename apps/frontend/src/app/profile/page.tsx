@@ -19,9 +19,13 @@ export default function InstitutionalProfileConsole() {
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [isRotatingKeys, setIsRotatingKeys] = useState(false);
 
+  // --- Unified Data Mapping Matrix ---
   const role = user?.role || 'DEVELOPER';
   const email = user?.email || 'toluwani@gmail.com';
-  const name = user?.name || 'Taiwo Hassan';
+  
+  // Clean alignment: derive name directly from auth token first, fallback cleanly
+  const name = user?.name || 'Toluwani';
+  
   const nodeId = user?.id || '32a67486-79e5-4256-b6fa-d9e5d065f774';
   const mockPublicKey = "0x74ba...ec63d66b9bc619502c9274bd97c56c2e8cbd20be";
 
