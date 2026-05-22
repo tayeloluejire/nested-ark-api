@@ -9,7 +9,7 @@ import {
   Home, HardHat, ShieldCheck, Gavel, Receipt, FileText,
   LogOut, Menu, X, ChevronDown, ChevronRight,
   Globe, Wallet, User, Bell, Settings,
-  DollarSign, MapPin, BookOpen, Layers,
+  DollarSign, MapPin, BookOpen, Layers, Landmark,
 } from 'lucide-react';
 
 // ── Solutions mega-menu data ──────────────────────────────────────────────────
@@ -91,6 +91,16 @@ function LandlordQuickPanel({ onClose }: { onClose: () => void }) {
       bg: 'hover:bg-amber-500/10',
     },
     {
+      // Payout Engine — required for rent to reach landlord bank account
+      href: '/landlord/bank',
+      icon: Landmark,
+      label: 'Bank Accounts',
+      sub: 'Payout engine · Rent auto-transfers here',
+      accent: 'text-teal-400',
+      bg: 'hover:bg-teal-500/10',
+      badge: 'Payout Engine',
+    },
+    {
       // NAP Ledger — clearly labeled separately
       href: '/projects/my',
       icon: Building2,
@@ -117,10 +127,15 @@ function LandlordQuickPanel({ onClose }: { onClose: () => void }) {
               className={`flex items-center gap-3 px-3 py-2.5 rounded-xl transition-colors ${item.bg}`}
             >
               <Icon size={16} className={`${item.accent} shrink-0`} />
-              <div className="min-w-0">
+              <div className="min-w-0 flex-1">
                 <p className={`text-xs font-black uppercase ${item.accent}`}>{item.label}</p>
                 <p className="text-[9px] text-zinc-600">{item.sub}</p>
               </div>
+              {'badge' in item && item.badge && (
+                <span className="text-[7px] px-1.5 py-0.5 bg-teal-500/10 border border-teal-500/20 text-teal-400 rounded font-black uppercase shrink-0">
+                  {item.badge}
+                </span>
+              )}
             </Link>
           );
         })}
