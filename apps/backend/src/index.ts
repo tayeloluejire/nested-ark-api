@@ -1440,6 +1440,12 @@ app.post("/api/projects", authenticate, async (req: Request, res: Response): Pro
     const userRes = await pool.query("SELECT full_name, email FROM users WHERE id=$1", [userId]);
     const u = userRes.rows[0];
 
+    // Compute project_mode in TypeScript — eliminates PostgreSQL $18 type-inference
+    // conflict caused by reusing $18 in both VALUES and a CASE expression.
+    const resolvedProjectType = project_type || 'INFRASTRUCTURE';
+    const resolvedProjectMode = req.body.project_mode
+      || (['RESIDENTIAL', 'RENOVATION'].includes(resolvedProjectType) ? 'PRIVATE' : 'INVESTMENT');
+
     await pool.query('BEGIN');
 
     const result = await pool.query(
@@ -1455,8 +1461,7 @@ app.post("/api/projects", authenticate, async (req: Request, res: Response): Pro
         $12,$13,$14,$15,$16,$17,
         $18,$19,$20,$21,$22,
         $23,$24,$25,$26,$27,'ACTIVE',
-        CASE WHEN $18::text IN ('RESIDENTIAL','RENOVATION') THEN 'PRIVATE' ELSE COALESCE($28::text,'INVESTMENT') END,
-        COALESCE($29,'CONSTRUCTION')
+        $28,$29
       ) RETURNING *`,
       [
         projectId, userId, title, description, location, country,
@@ -1465,14 +1470,14 @@ app.post("/api/projects", authenticate, async (req: Request, res: Response): Pro
         owner_name  || u?.full_name || null,
         owner_email || u?.email     || null,
         owner_phone || null, owner_company || null, owner_country || country,
-        project_type || 'INFRASTRUCTURE',
+        resolvedProjectType,
         visibility   || 'PUBLIC',
         pitch_summary || null, expected_roi || 12.0, risk_grade || 'B+',
         hero_image_url || null, assigned_bank || null, primary_supplier || null,
         permit_ref || null,
         projectNumber,
-        req.body.project_mode   || null,
-        req.body.lifecycle_stage || null,
+        resolvedProjectMode,
+        req.body.lifecycle_stage || 'CONSTRUCTION',
       ]
     );
 
