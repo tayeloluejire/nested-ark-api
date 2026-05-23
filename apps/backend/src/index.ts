@@ -8953,12 +8953,14 @@ app.post('/api/tenant/onboard', async (req: Request, res: Response): Promise<any
 });
 
 
-// ── GET /api/landlord/units — all rental units across all landlord properties ─
-// Ownership resolved via projects.sponsor_id (rental_units has no landlord_id col).
-// Auth: uses existing (req as any).userId set by authenticate middleware.
-app.get('/api/landlord/units', authenticate, async (req: Request, res: Response): Promise<any> => {
+// ── GET /api/landlord/units /? — all units across landlord properties ──────────
+// Route uses /? to accept both /api/landlord/units and /api/landlord/units/
+// next.config.js trailingSlash:true appends a slash — Express must accept both.
+// Auth: (req as any).userId set by authenticate middleware from JWT decoded.id.
+// Ownership: rental_units has no landlord_id col — resolved via projects.sponsor_id.
+app.get('/api/landlord/units/?', authenticate, async (req: Request, res: Response): Promise<any> => {
   const landlordId = (req as any).userId;
-  console.log('[LANDLORD_UNITS] landlordId:', landlordId);
+  console.log('[LANDLORD_UNITS] hit — landlordId:', landlordId);
   if (!landlordId) return res.status(401).json({ success: false, units: [], error: 'Unauthorized' });
   try {
     const r = await pool.query(
@@ -8990,7 +8992,7 @@ app.get('/api/landlord/units', authenticate, async (req: Request, res: Response)
        ORDER BY p.title ASC, ru.unit_name ASC`,
       [landlordId]
     );
-    console.log('[LANDLORD_UNITS] units found:', r.rows.length);
+    console.log('[LANDLORD_UNITS] rows returned:', r.rows.length);
     return res.json({ success: true, units: r.rows });
   } catch (e: any) {
     console.error('[LANDLORD_UNITS] error:', e.message);
