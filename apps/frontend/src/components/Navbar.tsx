@@ -12,7 +12,7 @@ import {
   LogOut, Menu, X, ChevronDown, ChevronRight,
   Globe, Wallet, User, Bell, Settings,
   DollarSign, MapPin, BookOpen, Layers, Landmark,
-  BarChart3, ShoppingBag, Archive,
+  BarChart3, ShoppingBag, Archive, Edit3,
 } from 'lucide-react';
 
 // ── Solutions mega-menu data ──────────────────────────────────────────────────
@@ -121,6 +121,16 @@ function LandlordQuickPanel({ onClose }: { onClose: () => void }) {
       sub: 'Edit, advertise & manage vacant units',
       accent: 'text-amber-400',
       bg: 'hover:bg-amber-500/10',
+    },
+    {
+      // Unit Editor — upload images, edit specs & update individual units
+      href: '/landlord/inventory/editor',
+      icon: Edit3,
+      label: 'Unit Editor',
+      sub: 'Upload photos, edit specs & update listings',
+      accent: 'text-amber-400',
+      bg: 'hover:bg-amber-500/10',
+      badge: 'Edit & Upload',
     },
     {
       // Marketplace — public rental listings board
@@ -275,7 +285,8 @@ export default function Navbar() {
     { name: 'Tenants',      href: '/landlord/tenants',  icon: Users,           roles: ['DEVELOPER'] },
     { name: 'Notices',      href: '/landlord/notices',  icon: Gavel,           roles: ['DEVELOPER'] },
     { name: 'Rent Roll',    href: '/landlord/rent-dashboard', icon: BarChart3,   roles: ['DEVELOPER'] },
-    { name: 'Inventory',    href: '/landlord/inventory', icon: Archive,         roles: ['DEVELOPER'] },
+    { name: 'Inventory',    href: '/landlord/inventory',        icon: Archive,     roles: ['DEVELOPER'] },
+    { name: 'Unit Editor',  href: '/landlord/inventory/editor', icon: Edit3,       roles: ['DEVELOPER'] },
     { name: 'Marketplace',  href: '/marketplace',        icon: ShoppingBag,     roles: ['DEVELOPER','TENANT','INVESTOR'] },
     // Government / Admin
     { name: 'Gov Portal',   href: '/gov',               icon: Globe,           roles: ['GOVERNMENT','ADMIN'] },
