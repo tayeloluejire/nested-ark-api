@@ -8953,6 +8953,44 @@ app.post('/api/tenant/onboard', async (req: Request, res: Response): Promise<any
 });
 
 
+// ── GET /api/landlord/units — all rental units across all landlord properties ─
+// Returns every unit belonging to projects owned by the authenticated landlord,
+// with tenancy status, tenant name, project title, and advertisement state.
+app.get('/api/landlord/units', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const landlordId = (req as any).userId;
+  try {
+    const r = await pool.query(
+      `SELECT
+         ru.id, ru.unit_name, ru.unit_type, ru.status,
+         ru.rent_amount, ru.currency, ru.payment_frequency,
+         ru.bedrooms, ru.bathrooms, ru.floor_area_sqm AS size_sqm,
+         ru.floor_level, ru.furnished, ru.parking,
+         ru.security_deposit, ru.agency_fee, ru.caution_fee,
+         ru.service_charge, ru.legal_fee,
+         ru.is_advertised, ru.advertised_at,
+         ru.marketing_description, ru.cover_image, ru.photo_urls_arr,
+         ru.project_id,
+         p.title  AS project_title,
+         p.location,
+         p.country,
+         t.tenant_name,
+         t.tenant_email,
+         t.status AS tenancy_status,
+         t.id     AS tenancy_id,
+         (SELECT COUNT(*) FROM legal_notices ln
+          WHERE ln.unit_id = ru.id OR ln.tenant_id = t.tenant_user_id) AS notice_count
+       FROM rental_units ru
+       JOIN projects p ON p.id = ru.project_id
+       LEFT JOIN tenancies t ON t.unit_id = ru.id AND t.status = 'ACTIVE'
+       WHERE p.sponsor_id = $1
+       ORDER BY p.title ASC, ru.unit_name ASC`,
+      [landlordId]
+    );
+    return res.json({ success: true, units: r.rows });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
+
 // ── GET /api/landlord/rent-dashboard — full payment intelligence for landlord ─
 // Returns: per-tenancy payment status, vault states, recent transactions,
 //          overdue summary, and portfolio-level KPIs — all in one call.
