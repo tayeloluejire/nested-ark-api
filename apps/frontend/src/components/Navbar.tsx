@@ -10,6 +10,7 @@ import {
   LogOut, Menu, X, ChevronDown, ChevronRight,
   Globe, Wallet, User, Bell, Settings,
   DollarSign, MapPin, BookOpen, Layers, Landmark,
+  BarChart3, ShoppingBag, Archive,
 } from 'lucide-react';
 
 // ── Solutions mega-menu data ──────────────────────────────────────────────────
@@ -101,14 +102,32 @@ function LandlordQuickPanel({ onClose }: { onClose: () => void }) {
       badge: 'Payout Engine',
     },
     {
-      // Yield Engine — live rent payment intelligence across all properties
+      // Yield Engine — live rent intelligence across all properties
       href: '/landlord/rent-dashboard',
-      icon: TrendingUp,
+      icon: BarChart3,
       label: 'Rent Dashboard',
       sub: 'Live vault status, overdue alerts & rent roll',
       accent: 'text-teal-400',
       bg: 'hover:bg-teal-500/10',
       badge: 'Yield Engine',
+    },
+    {
+      // Inventory Matrix — manage, edit & advertise all units
+      href: '/landlord/inventory',
+      icon: Archive,
+      label: 'Inventory Matrix',
+      sub: 'Edit, advertise & manage vacant units',
+      accent: 'text-amber-400',
+      bg: 'hover:bg-amber-500/10',
+    },
+    {
+      // Marketplace — public rental listings board
+      href: '/marketplace',
+      icon: ShoppingBag,
+      label: 'Property Marketplace',
+      sub: 'View advertised listings & find tenants',
+      accent: 'text-blue-400',
+      bg: 'hover:bg-blue-500/10',
     },
     {
       // NAP Ledger — clearly labeled separately
@@ -253,6 +272,9 @@ export default function Navbar() {
     { name: 'My Properties',href: '/onboard',           icon: Home,            roles: ['DEVELOPER'] },
     { name: 'Tenants',      href: '/landlord/tenants',  icon: Users,           roles: ['DEVELOPER'] },
     { name: 'Notices',      href: '/landlord/notices',  icon: Gavel,           roles: ['DEVELOPER'] },
+    { name: 'Rent Roll',    href: '/landlord/rent-dashboard', icon: BarChart3,   roles: ['DEVELOPER'] },
+    { name: 'Inventory',    href: '/landlord/inventory', icon: Archive,         roles: ['DEVELOPER'] },
+    { name: 'Marketplace',  href: '/marketplace',        icon: ShoppingBag,     roles: ['DEVELOPER','TENANT','INVESTOR'] },
     // Government / Admin
     { name: 'Gov Portal',   href: '/gov',               icon: Globe,           roles: ['GOVERNMENT','ADMIN'] },
     { name: 'Admin',        href: '/admin',             icon: Settings,        roles: ['ADMIN'] },

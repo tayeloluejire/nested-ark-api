@@ -9,6 +9,8 @@ export const dynamic = 'force-dynamic';
 import { useState, useEffect, Suspense } from 'react';
 import Link from 'next/link';
 import api from '@/lib/api';
+import Navbar from '@/components/Navbar';
+import Footer from '@/components/Footer';
 import {
   Search, Home, ShieldCheck, MapPin, Loader2,
   BedDouble, Bath, Building2, DollarSign, ChevronRight, Filter, X,
@@ -54,7 +56,8 @@ function MarketplaceContent() {
   const hasFilters = search || minPrice || maxPrice || bedrooms;
 
   return (
-    <div className="min-h-screen bg-[#050505] text-white">
+    <div className="min-h-screen bg-[#050505] text-white flex flex-col">
+      <Navbar />
 
       {/* Sticky header */}
       <div className="sticky top-0 z-50 border-b border-zinc-900 bg-[#050505]/95 backdrop-blur-md">
@@ -289,6 +292,7 @@ function MarketplaceContent() {
         </p>
         <p className="text-[8px] text-zinc-800 mt-1">All listings verified. Payments secured via Paystack escrow. SHA-256 immutable ledger.</p>
       </div>
+      <Footer />
     </div>
   );
 }
