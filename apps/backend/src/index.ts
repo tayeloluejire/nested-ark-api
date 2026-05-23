@@ -8954,41 +8954,48 @@ app.post('/api/tenant/onboard', async (req: Request, res: Response): Promise<any
 
 
 // ── GET /api/landlord/units — all rental units across all landlord properties ─
-// Single endpoint returning every unit across all projects owned by the landlord,
-// joined with tenancy, project title, and advertisement state.
+// Ownership resolved via projects.sponsor_id (rental_units has no landlord_id col).
+// Auth: uses existing (req as any).userId set by authenticate middleware.
 app.get('/api/landlord/units', authenticate, async (req: Request, res: Response): Promise<any> => {
   const landlordId = (req as any).userId;
+  console.log('[LANDLORD_UNITS] landlordId:', landlordId);
+  if (!landlordId) return res.status(401).json({ success: false, units: [], error: 'Unauthorized' });
   try {
     const r = await pool.query(
       `SELECT
          ru.id, ru.unit_name, ru.unit_type, ru.status,
          ru.rent_amount, ru.currency, ru.payment_frequency,
-         ru.bedrooms, ru.bathrooms, ru.floor_area_sqm AS size_sqm,
+         ru.bedrooms, ru.bathrooms,
+         ru.floor_area_sqm   AS size_sqm,
          ru.floor_level, ru.furnished, ru.parking,
          ru.security_deposit, ru.agency_fee, ru.caution_fee,
-         ru.service_charge, ru.legal_fee,
-         ru.is_advertised, ru.advertised_at,
+         ru.service_charge,  ru.legal_fee,
+         ru.is_advertised,   ru.advertised_at,
          ru.marketing_description, ru.cover_image, ru.photo_urls_arr,
          ru.project_id,
-         p.title   AS project_title,
+         p.title    AS project_title,
          p.location,
          p.country,
          t.tenant_name,
          t.tenant_email,
-         t.status  AS tenancy_status,
-         t.id      AS tenancy_id,
+         t.status   AS tenancy_status,
+         t.id       AS tenancy_id,
          (SELECT COUNT(*) FROM legal_notices ln
           WHERE ln.unit_id = ru.id
              OR ln.tenant_id = t.tenant_user_id) AS notice_count
        FROM rental_units ru
-       JOIN    projects  p ON p.id  = ru.project_id
+       JOIN     projects  p ON p.id     = ru.project_id
        LEFT JOIN tenancies t ON t.unit_id = ru.id AND t.status = 'ACTIVE'
        WHERE p.sponsor_id = $1
        ORDER BY p.title ASC, ru.unit_name ASC`,
       [landlordId]
     );
+    console.log('[LANDLORD_UNITS] units found:', r.rows.length);
     return res.json({ success: true, units: r.rows });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) {
+    console.error('[LANDLORD_UNITS] error:', e.message);
+    return res.status(500).json({ success: false, units: [], error: e.message });
+  }
 });
 
 
