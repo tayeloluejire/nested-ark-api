@@ -40,12 +40,18 @@ const nextConfig = {
     ],
   },
 
-  // Clean handling for production API rewrites and directory fallbacks
+  // API rewrites — routes all /api/* calls to the Render backend.
+  // IMPORTANT: Use API_URL (no NEXT_PUBLIC_ prefix).
+  // NEXT_PUBLIC_ vars are NOT reliably interpolated inside rewrites() at build
+  // time on Vercel — they resolve to an empty string, causing /api/* requests
+  // to stay on Vercel instead of proxying to Render.
+  // API_URL is a server-side-only variable; Next.js resolves it correctly here.
   async rewrites() {
+    const apiUrl = process.env.API_URL || process.env.NEXT_PUBLIC_API_URL || '';
     return [
       {
         source: '/api/:path*',
-        destination: `${process.env.NEXT_PUBLIC_API_URL}/api/:path*`,
+        destination: `${apiUrl}/api/:path*`,
       },
     ];
   },
