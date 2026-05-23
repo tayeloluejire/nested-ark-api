@@ -1455,7 +1455,7 @@ app.post("/api/projects", authenticate, async (req: Request, res: Response): Pro
         $12,$13,$14,$15,$16,$17,
         $18,$19,$20,$21,$22,
         $23,$24,$25,$26,$27,'ACTIVE',
-        CASE WHEN $18 IN ('RESIDENTIAL','RENOVATION') THEN 'PRIVATE' ELSE COALESCE($28,'INVESTMENT') END,
+        CASE WHEN $18::text IN ('RESIDENTIAL','RENOVATION') THEN 'PRIVATE' ELSE COALESCE($28::text,'INVESTMENT') END,
         COALESCE($29,'CONSTRUCTION')
       ) RETURNING *`,
       [
