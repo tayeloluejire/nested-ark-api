@@ -8954,8 +8954,8 @@ app.post('/api/tenant/onboard', async (req: Request, res: Response): Promise<any
 
 
 // ── GET /api/landlord/units — all rental units across all landlord properties ─
-// Returns every unit belonging to projects owned by the authenticated landlord,
-// with tenancy status, tenant name, project title, and advertisement state.
+// Single endpoint returning every unit across all projects owned by the landlord,
+// joined with tenancy, project title, and advertisement state.
 app.get('/api/landlord/units', authenticate, async (req: Request, res: Response): Promise<any> => {
   const landlordId = (req as any).userId;
   try {
@@ -8970,17 +8970,18 @@ app.get('/api/landlord/units', authenticate, async (req: Request, res: Response)
          ru.is_advertised, ru.advertised_at,
          ru.marketing_description, ru.cover_image, ru.photo_urls_arr,
          ru.project_id,
-         p.title  AS project_title,
+         p.title   AS project_title,
          p.location,
          p.country,
          t.tenant_name,
          t.tenant_email,
-         t.status AS tenancy_status,
-         t.id     AS tenancy_id,
+         t.status  AS tenancy_status,
+         t.id      AS tenancy_id,
          (SELECT COUNT(*) FROM legal_notices ln
-          WHERE ln.unit_id = ru.id OR ln.tenant_id = t.tenant_user_id) AS notice_count
+          WHERE ln.unit_id = ru.id
+             OR ln.tenant_id = t.tenant_user_id) AS notice_count
        FROM rental_units ru
-       JOIN projects p ON p.id = ru.project_id
+       JOIN    projects  p ON p.id  = ru.project_id
        LEFT JOIN tenancies t ON t.unit_id = ru.id AND t.status = 'ACTIVE'
        WHERE p.sponsor_id = $1
        ORDER BY p.title ASC, ru.unit_name ASC`,
