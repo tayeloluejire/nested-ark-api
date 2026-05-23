@@ -4,6 +4,8 @@ import Link from 'next/link';
 import { useRouter, usePathname } from 'next/navigation';
 import { useAuth } from '@/lib/AuthContext';
 import NapSearch from '@/components/NapSearch';
+import BrandLogo from '@/components/BrandLogo';
+import ThemeToggle from '@/components/ThemeToggle';
 import {
   LayoutDashboard, Briefcase, TrendingUp, Building2, Users,
   Home, HardHat, ShieldCheck, Gavel, Receipt, FileText,
@@ -293,13 +295,13 @@ export default function Navbar() {
     <nav className="sticky top-0 z-[200] border-b border-zinc-900 bg-[#050505]/95 backdrop-blur-md">
       <div className="max-w-7xl mx-auto px-4 md:px-6 h-14 flex items-center justify-between gap-4">
 
-        {/* ── Logo ── */}
-        <Link href={user ? '/dashboard' : '/'} className="flex items-center gap-2 shrink-0">
-          <div className="w-6 h-6 bg-teal-500 rounded-md flex items-center justify-center">
-            <span className="text-black font-black text-[9px]">NA</span>
-          </div>
-          <span className="font-black uppercase text-xs tracking-widest hidden sm:block">Nested Ark</span>
-        </Link>
+        {/* ── Logo — real brand asset ── */}
+        <BrandLogo
+          href={user ? '/dashboard' : '/'}
+          size={28}
+          showText
+          className="shrink-0"
+        />
 
         {/* ── Desktop center: Solutions + NAP Search ── */}
         <div className="hidden md:flex items-center gap-3 flex-1 justify-center max-w-2xl">
@@ -405,6 +407,9 @@ export default function Navbar() {
                   </div>
                 )}
               </div>
+
+              {/* Theme toggle */}
+              <ThemeToggle compact />
 
               {/* Mobile hamburger */}
               <button

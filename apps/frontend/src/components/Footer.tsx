@@ -1,5 +1,6 @@
 'use client';
 import Link from 'next/link';
+import BrandLogo from '@/components/BrandLogo';
 import { Globe, Twitter, Linkedin, Mail, Shield, Database, TrendingUp, Github } from 'lucide-react';
 
 export default function Footer() {
@@ -8,10 +9,8 @@ export default function Footer() {
       <div className="max-w-7xl mx-auto">
         <div className="grid grid-cols-1 md:grid-cols-4 gap-10 mb-10">
           <div className="space-y-4">
-            <div>
-              <h2 className="text-white font-black text-xl tracking-tighter uppercase">Nested Ark <span className="text-teal-500">OS</span></h2>
-              <p className="text-[10px] text-teal-500 uppercase font-bold tracking-widest mt-1">Global Infrastructure Exchange</p>
-            </div>
+            <BrandLogo size={36} showText href="/" />
+            <p className="text-[10px] text-teal-500 uppercase font-bold tracking-widest">Global Infrastructure Exchange</p>
             <p className="text-zinc-500 text-sm leading-relaxed">Transparent ledgers, AI-driven verification, and automated escrow for infrastructure investment across Africa and beyond.</p>
             <p className="text-[9px] text-zinc-600 font-mono">A product of Impressions &amp; Impacts Ltd</p>
             <div className="flex items-center gap-3 pt-1">

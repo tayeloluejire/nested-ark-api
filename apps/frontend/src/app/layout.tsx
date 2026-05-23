@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import { Inter } from 'next/font/google';
 import './globals.css';
 import { AuthProvider } from '@/lib/AuthContext';
+import MarketTicker from '@/components/MarketTicker';
 
 const inter = Inter({ subsets: ['latin'] });
 
@@ -37,6 +38,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       </head>
       <body className={inter.className}>
         <AuthProvider>
+          {/* ── MarketTicker: runs across ALL pages — global broadcast feed ── */}
+          <MarketTicker />
           {children}
         </AuthProvider>
       </body>
