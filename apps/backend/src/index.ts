@@ -8967,13 +8967,21 @@ app.get('/api/landlord/units/?', authenticate, async (req: Request, res: Respons
       `SELECT
          ru.id, ru.unit_name, ru.unit_type, ru.status,
          ru.rent_amount, ru.currency, ru.payment_frequency,
-         ru.bedrooms, ru.bathrooms,
-         ru.floor_area_sqm   AS size_sqm,
+         COALESCE(ru.bedrooms,  0)  AS bedrooms,
+         COALESCE(ru.bathrooms, 0)  AS bathrooms,
+         COALESCE(ru.floor_area_sqm, ru.size_sqm, 0) AS size_sqm,
          ru.floor_level, ru.furnished, ru.parking,
-         ru.security_deposit, ru.agency_fee, ru.caution_fee,
-         ru.service_charge,  ru.legal_fee,
-         ru.is_advertised,   ru.advertised_at,
-         ru.marketing_description, ru.cover_image, ru.photo_urls_arr,
+         COALESCE(ru.security_deposit, 0) AS security_deposit,
+         COALESCE(ru.agency_fee,       0) AS agency_fee,
+         COALESCE(ru.caution_fee,      0) AS caution_fee,
+         COALESCE(ru.service_charge,   0) AS service_charge,
+         COALESCE(ru.legal_fee,        0) AS legal_fee,
+         COALESCE(ru.is_advertised, false) AS is_advertised,
+         ru.advertised_at,
+         ru.marketing_description,
+         ru.cover_image,
+         -- photo_urls_arr may not exist on older DBs — COALESCE to empty array
+         COALESCE(ru.photo_urls_arr, ARRAY[]::text[]) AS photo_urls_arr,
          ru.project_id,
          p.title    AS project_title,
          p.location,
@@ -8982,11 +8990,15 @@ app.get('/api/landlord/units/?', authenticate, async (req: Request, res: Respons
          t.tenant_email,
          t.status   AS tenancy_status,
          t.id       AS tenancy_id,
-         (SELECT COUNT(*) FROM legal_notices ln
+         -- FIX: was ln.tenant_id (wrong column) — correct join is ln.tenancy_id = t.id
+         -- Also LEFT JOIN guard: t may be NULL (vacant unit), so use COALESCE
+         (SELECT COUNT(*)
+          FROM legal_notices ln
           WHERE ln.unit_id = ru.id
-             OR ln.tenant_id = t.tenant_user_id) AS notice_count
+             OR (t.id IS NOT NULL AND ln.tenancy_id = t.id)
+         ) AS notice_count
        FROM rental_units ru
-       JOIN     projects  p ON p.id     = ru.project_id
+       JOIN      projects  p ON p.id     = ru.project_id
        LEFT JOIN tenancies t ON t.unit_id = ru.id AND t.status = 'ACTIVE'
        WHERE p.sponsor_id = $1
        ORDER BY p.title ASC, ru.unit_name ASC`,
