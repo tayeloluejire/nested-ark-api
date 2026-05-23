@@ -47,11 +47,10 @@ const nextConfig = {
   // to stay on Vercel instead of proxying to Render.
   // API_URL is a server-side-only variable; Next.js resolves it correctly here.
   async rewrites() {
-    const apiUrl = process.env.API_URL || process.env.NEXT_PUBLIC_API_URL || '';
     return [
       {
         source: '/api/:path*',
-        destination: `${apiUrl}/api/:path*`,
+        destination: 'https://nested-ark-api-v3.onrender.com/api/:path*',
       },
     ];
   },
@@ -91,3 +90,4 @@ const nextConfig = {
 };
 
 module.exports = nextConfig;
+
