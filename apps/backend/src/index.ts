@@ -6460,7 +6460,7 @@ app.post('/api/rental/marketplace/advertise', authenticate, async (req: Request,
         amount:       LISTING_FEE_NGN * 100,
         reference:    ref,
         currency:     'NGN',
-        callback_url: `${FRONTEND}/landlord/rental-management`,
+        callback_url: `${FRONTEND}/landlord/inventory?advertised=1&ref=${ref}`,
         metadata: {
           unit_id,
           payment_type:  'MARKETING_AD_FEE',

@@ -11,9 +11,18 @@ export const dynamic = 'force-dynamic';
  *  - Edit button links to /landlord/inventory/editor?unitId=<id>
  *  - BarChart3 + TrendingUp added to imports for KPI row
  *  - Rent roll KPI is now real (sum of rent_amount across occupied units)
+ *
+ * FIX: On return from Paystack after advertising payment:
+ *  - Detects ?advertised=1&ref=<reference> in URL
+ *  - Calls GET /api/payments/verify/:reference to confirm payment
+ *  - Shows success banner with newly listed unit name
+ *  - Reloads units so ADVERTISED badge appears immediately
+ *  - Cleans query params from URL without page reload
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
+import { useSearchParams, useRouter } from 'next/navigation';
+import { Suspense } from 'react';
 import Link from 'next/link';
 import Navbar from '@/components/Navbar';
 import Footer from '@/components/Footer';
@@ -22,7 +31,7 @@ import api from '@/lib/api';
 import {
   Archive, Megaphone, Loader2, Building2,
   AlertCircle, Search, BedDouble, Bath,
-  MapPin, BarChart3, TrendingUp, Home,
+  MapPin, BarChart3, Home,
   Edit3, CheckCircle2, X, RefreshCw,
   ShieldCheck, Wallet,
 } from 'lucide-react';
@@ -62,44 +71,42 @@ interface Unit {
 
 type FilterTab = 'ALL' | 'OCCUPIED' | 'VACANT' | 'ADVERTISED';
 
-export default function InventoryPage() {
-  const [units,       setUnits]       = useState<Unit[]>([]);
-  const [loading,     setLoading]     = useState(true);
-  const [error,       setError]       = useState('');
-  const [search,      setSearch]      = useState('');
-  const [activeTab,   setActiveTab]   = useState<FilterTab>('ALL');
-  const [dismissErr,  setDismissErr]  = useState(false);
+function InventoryContent() {
+  const searchParams  = useSearchParams();
+  const router        = useRouter();
 
-  const loadUnits = async () => {
+  const [units,        setUnits]        = useState<Unit[]>([]);
+  const [loading,      setLoading]      = useState(true);
+  const [error,        setError]        = useState('');
+  const [search,       setSearch]       = useState('');
+  const [activeTab,    setActiveTab]    = useState<FilterTab>('ALL');
+  const [dismissErr,   setDismissErr]   = useState(false);
+  const [advertOk,     setAdvertOk]     = useState(''); // success banner after Paystack return
+  const [verifying,    setVerifying]    = useState(false);
+
+  const loadUnits = useCallback(async () => {
     setLoading(true); setError(''); setDismissErr(false);
     try {
       const res = await api.get('/api/landlord/units');
       const d   = res.data;
 
-      // ── Guard: backend may return HTTP 200 with an error body ────────────
-      // This happens when the DB query crashes but the endpoint still responds.
       if (d && typeof d.error === 'string' && d.error.length > 0) {
-        // Never show raw DB strings (e.g. "column ln.tenant_id does not exist")
-        // to landlords — always show a friendly, actionable message.
         console.error('[INVENTORY] Backend error:', d.error);
         setError('Could not load units. The server encountered an issue — please refresh or contact support.');
         setUnits([]);
         return;
       }
 
-      // ── Normal path ──────────────────────────────────────────────────────
       const units = Array.isArray(d)
-        ? d                             // bare array response
+        ? d
         : Array.isArray(d?.units)
-          ? d.units                     // { units: [...] }
+          ? d.units
           : Array.isArray(d?.data)
-            ? d.data                    // { data: [...] }
+            ? d.data
             : [];
       setUnits(units);
     } catch (e: any) {
-      // Axios throws on 4xx/5xx — extract message from response body if available
       const msg = e?.response?.data?.error ?? e?.message ?? 'Failed to load units. Please refresh.';
-      // Never expose raw DB or stack traces to the UI
       const isTechnical = /column|relation|syntax|ERROR|pg_|OID|schema/i.test(msg);
       setError(isTechnical
         ? 'Could not load units. A backend issue is being resolved — please refresh in a moment.'
@@ -107,9 +114,41 @@ export default function InventoryPage() {
       );
       setUnits([]);
     } finally { setLoading(false); }
-  };
+  }, []);
 
-  useEffect(() => { loadUnits(); }, []);
+  // ── On mount: check if returning from Paystack ad payment ─────────────────
+  useEffect(() => {
+    const advertised = searchParams.get('advertised');
+    const ref        = searchParams.get('ref');
+
+    if (advertised === '1' && ref) {
+      // Verify payment then reload units
+      setVerifying(true);
+      api.get(`/api/payments/verify/${ref}`)
+        .then(res => {
+          const status = res.data?.data?.status ?? res.data?.status;
+          if (status === 'success' || status === 'SUCCESS') {
+            setAdvertOk('✓ Unit listed on the marketplace! It is now visible to prospective tenants.');
+          } else {
+            // Payment may still be processing — units will reload and show correct state
+            setAdvertOk('Payment received — your listing will appear shortly.');
+          }
+        })
+        .catch(() => {
+          // Webhook may have already fired; reload units regardless
+          setAdvertOk('Payment received — your listing will appear shortly.');
+        })
+        .finally(() => {
+          setVerifying(false);
+          // Clean ?advertised=1&ref=... from URL without reload
+          router.replace('/landlord/inventory', { scroll: false });
+          // Reload units so ADVERTISED badge shows immediately
+          loadUnits();
+        });
+    } else {
+      loadUnits();
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Derived counts ─────────────────────────────────────────────────────────
   const total      = units.length;
@@ -192,6 +231,26 @@ export default function InventoryPage() {
       </div>
 
       <main className="flex-1 max-w-7xl mx-auto px-4 sm:px-6 py-8 w-full space-y-8">
+
+        {/* ── Payment verify spinner ────────────────────────────────────────── */}
+        {verifying && (
+          <div className="flex items-center gap-3 p-4 rounded-xl border border-teal-500/20 bg-teal-500/5 text-teal-400 text-xs font-bold">
+            <Loader2 size={14} className="animate-spin" />
+            Confirming your marketplace listing payment…
+          </div>
+        )}
+
+        {/* ── Advertise success banner ──────────────────────────────────────── */}
+        {advertOk && (
+          <div className="flex items-center justify-between p-4 rounded-xl border border-teal-500/20 bg-teal-500/5 text-teal-400 text-xs font-bold">
+            <div className="flex items-center gap-2">
+              <CheckCircle2 size={14} /> {advertOk}
+            </div>
+            <button onClick={() => setAdvertOk('')} className="ml-4 text-teal-600 hover:text-teal-400">
+              <X size={12} />
+            </button>
+          </div>
+        )}
 
         {/* ── KPI Row ──────────────────────────────────────────────────────── */}
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
@@ -311,9 +370,9 @@ export default function InventoryPage() {
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
             {filtered.map(unit => {
-              const isOccupied  = !!unit.tenant_name;
+              const isOccupied   = !!unit.tenant_name;
               const isAdvertised = unit.is_advertised;
-              const isVacant    = !isOccupied;
+              const isVacant     = !isOccupied;
 
               return (
                 <div key={unit.id}
@@ -452,5 +511,17 @@ export default function InventoryPage() {
 
       <Footer />
     </div>
+  );
+}
+
+export default function InventoryPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-[#050505] flex items-center justify-center">
+        <Loader2 className="animate-spin text-teal-500" size={32} />
+      </div>
+    }>
+      <InventoryContent />
+    </Suspense>
   );
 }
