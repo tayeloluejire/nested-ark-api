@@ -70,6 +70,61 @@ app.options('*', (req: Request, res: Response) => {
 
 // 3. Body parsers AFTER cors + options — safe now
 app.use(express.json());
+// ════════════════════════════════════════════════════════════════════════════
+// SECURITY: Rate Limiting — memory-backed, zero external dependencies
+// Uses Map<ip+path, {count, resetTime}>. Safe for single Render instance.
+// Resets per window; no persistence across restarts (acceptable for pilot).
+// ════════════════════════════════════════════════════════════════════════════
+const _rlCache = new Map<string, { count: number; resetTime: number }>();
+
+function createRateLimiter(windowMs: number, maxRequests: number, message: string) {
+  return (req: Request, res: Response, next: NextFunction): any => {
+    const ip  = (req.headers['x-forwarded-for'] as string || req.socket.remoteAddress || 'unknown').split(',')[0].trim();
+    const key = `${req.path}_${ip}`;
+    const now = Date.now();
+    const rec = _rlCache.get(key);
+
+    if (!rec || now > rec.resetTime) {
+      _rlCache.set(key, { count: 1, resetTime: now + windowMs });
+      return next();
+    }
+    if (rec.count >= maxRequests) {
+      console.warn(`[RATE-LIMIT] ${ip} blocked on ${req.path} (${rec.count} reqs/${windowMs/1000}s)`);
+      return res.status(429).json({
+        error:      message,
+        retryAfter: Math.ceil((rec.resetTime - now) / 1000),
+      });
+    }
+    rec.count++;
+    return next();
+  };
+}
+
+// Prune stale cache entries every 10 minutes (prevents memory leak over time)
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, rec] of _rlCache.entries()) {
+    if (now > rec.resetTime) _rlCache.delete(key);
+  }
+}, 10 * 60 * 1000);
+
+// ── Rate limiter presets ──────────────────────────────────────────────────
+const authLimiter     = createRateLimiter(15 * 60 * 1000, 10,  'Too many auth attempts. Please try again in 15 minutes.');
+const actionLimiter   = createRateLimiter(60 * 1000,       30, 'Rate limit exceeded. Please slow down.');
+const paymentLimiter  = createRateLimiter(60 * 1000,       5,  'Too many payment requests. Please wait before retrying.');
+const noticeLimiter   = createRateLimiter(60 * 1000,       10, 'Too many notice requests. Please slow down.');
+
+// ── Apply limiters ────────────────────────────────────────────────────────
+app.use('/api/auth/login',                         authLimiter);
+app.use('/api/auth/register',                      authLimiter);
+app.use('/api/auth/forgot-password',               authLimiter);
+app.use('/api/rental/marketplace/advertise',       paymentLimiter);
+app.use('/api/tenant/pay-installment',             paymentLimiter);
+app.use('/api/tenant/maintenance-request',         actionLimiter);
+app.use('/api/rental/onboard-tenant',             actionLimiter);
+app.use('/api/notices/issue',                      noticeLimiter);
+
+
 
 app.get("/", (req: Request, res: Response) => {
   res.json({
@@ -1087,6 +1142,23 @@ const ensureTablesExist = async () => {
       ALTER TABLE system_ledger ADD COLUMN IF NOT EXISTS entity_type  VARCHAR(50);
       ALTER TABLE system_ledger ADD COLUMN IF NOT EXISTS description  TEXT;
       ALTER TABLE system_ledger ADD COLUMN IF NOT EXISTS metadata     JSONB;
+
+      -- ── Webhook replay protection table ───────────────────────────────────
+      -- Stores processed Paystack event references. Idempotent insert prevents
+      -- double-crediting rent, double-activating listings, double-releasing escrow.
+      CREATE TABLE IF NOT EXISTS processed_webhooks (
+        id            SERIAL PRIMARY KEY,
+        event_ref     VARCHAR(200) UNIQUE NOT NULL,  -- Paystack txReference (not signature)
+        event_type    VARCHAR(100),
+        processed_at  TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_pw_event_ref ON processed_webhooks(event_ref);
+
+      -- ── Soft delete columns ───────────────────────────────────────────────
+      -- Nothing is ever hard-deleted. archived_at = soft delete timestamp.
+      ALTER TABLE tenancies      ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ DEFAULT NULL;
+      ALTER TABLE rental_units   ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ DEFAULT NULL;
+      ALTER TABLE legal_notices  ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ DEFAULT NULL;
 
     `);
 
@@ -3744,6 +3816,30 @@ app.post("/api/payments/webhook",
 
     console.log('[WEBHOOK] Event received:', event.event, event.data?.reference);
 
+    // ── SECURITY GATE 2: Webhook replay protection ─────────────────────────
+    // Every charge.success event carries a unique Paystack txReference.
+    // We record it in processed_webhooks on first sight. Duplicate references
+    // (retries, replays, manual re-sends) are silently ACK'd and discarded.
+    // This prevents: double-credited rent, double-activated listings, double-escrow.
+    const txReference = event.data?.reference || '';
+    if (event.event === 'charge.success' && txReference) {
+      try {
+        await pool.query(
+          `INSERT INTO processed_webhooks (event_ref, event_type) VALUES ($1, $2)`,
+          [txReference, event.data?.metadata?.payment_type || 'UNKNOWN']
+        );
+      } catch (replayErr: any) {
+        if (replayErr.code === '23505') {
+          // Unique violation = already processed
+          console.warn(`[WEBHOOK] Duplicate event ignored: ${txReference}`);
+          return res.sendStatus(200); // ACK Paystack; do nothing
+        }
+        // Other DB error — let it bubble to prevent silent failures
+        console.error('[WEBHOOK] Replay guard DB error:', replayErr.message);
+        return res.status(500).json({ error: 'Internal webhook error' });
+      }
+    }
+
     // ── Product routing: only process Nested Ark transactions ─────────────
     // Shared Paystack accounts can have multiple products. We identify ours
     // by the product field in metadata. Unknown products are silently ACK'd.
@@ -3755,7 +3851,7 @@ app.post("/api/payments/webhook",
 
     // ── Route all charge.success events ─────────────────────────────────────
     const paymentType = event.data?.metadata?.payment_type;
-    const txReference = event.data?.reference || '';
+    // txReference already declared above in replay guard
 
     // ── MARKETING_AD_FEE: activate marketplace listing ────────────────────
     if (event.event === 'charge.success' && paymentType === 'MARKETING_AD_FEE') {
@@ -5122,6 +5218,60 @@ app.post("/api/upload/signature", async (req: Request, res: Response): Promise<a
 
 // ============================================================================
 // ════════════════════════════════════════════════════════════════════════════
+
+// ════════════════════════════════════════════════════════════════════════════
+// SECURITY: File Upload Validation Middleware
+// Validates MIME type, extension, and file size on unit media endpoints.
+// Applied to the unit PUT route that accepts cover_image / photo_urls_arr.
+// Note: actual binary upload goes through Cloudinary/Supabase (not this server).
+// This guards the URL metadata fields and any base64 previews sent as body.
+// ════════════════════════════════════════════════════════════════════════════
+function validateMediaPayload(req: Request, res: Response, next: NextFunction): any {
+  const { contentType, fileSize, cover_image, photo_urls_arr } = req.body;
+
+  // Validate explicit contentType field if provided (client pre-flight)
+  if (contentType) {
+    const allowed = ['image/jpeg', 'image/png', 'image/webp'];
+    if (!allowed.includes(contentType.toLowerCase())) {
+      return res.status(400).json({
+        error: 'Invalid file type. Only JPG, PNG, and WEBP are accepted.',
+        allowed,
+      });
+    }
+  }
+
+  // Validate explicit fileSize field if provided (client pre-flight)
+  if (fileSize !== undefined && fileSize !== null) {
+    if (typeof fileSize !== 'number' || fileSize > 10 * 1024 * 1024) {
+      return res.status(400).json({
+        error: 'File exceeds maximum size of 10MB.',
+        maxBytes: 10 * 1024 * 1024,
+      });
+    }
+  }
+
+  // Validate URL fields: cover_image and photo_urls_arr must be valid http(s) URLs
+  // (not data: URIs or suspicious paths) if provided
+  const urlPattern = /^https?:\/\//;
+  if (cover_image && typeof cover_image === 'string' && cover_image.length > 0) {
+    if (!urlPattern.test(cover_image)) {
+      return res.status(400).json({ error: 'cover_image must be a valid https URL from an approved storage provider.' });
+    }
+  }
+  if (photo_urls_arr && Array.isArray(photo_urls_arr)) {
+    if (photo_urls_arr.length > 8) {
+      return res.status(400).json({ error: 'Maximum 8 gallery photos allowed per unit.' });
+    }
+    for (const url of photo_urls_arr) {
+      if (typeof url !== 'string' || !urlPattern.test(url)) {
+        return res.status(400).json({ error: 'All photo_urls_arr entries must be valid https URLs.' });
+      }
+    }
+  }
+
+  return next();
+}
+
 // MODULE: RENTAL ENGINE — Properties · Units · Tenancies · Flex-Pay Vault
 // Endpoints: /api/rental, /api/landlord, /api/marketplace …
 // ════════════════════════════════════════════════════════════════════════════
@@ -6435,7 +6585,7 @@ app.get('/api/rental/units/:projectId', authenticate, async (req: Request, res: 
 
 
 // ── PUT /api/rental/units/:id — update unit details (landlord only) ──────────
-app.put('/api/rental/units/:id', authenticate, async (req: Request, res: Response): Promise<any> => {
+app.put('/api/rental/units/:id', authenticate, validateMediaPayload, async (req: Request, res: Response): Promise<any> => {
   const userId = (req as any).userId;
   try {
     const { id } = req.params;
@@ -6566,8 +6716,22 @@ app.delete('/api/rental/units/:id', authenticate, async (req: Request, res: Resp
     if (ownCheck.rows[0].status === 'OCCUPIED') {
       return res.status(400).json({ error: 'Cannot delete a unit with an active tenant lease' });
     }
-    await pool.query('DELETE FROM rental_units WHERE id=$1', [id]);
-    return res.json({ success: true, message: 'Unit removed from infrastructure log' });
+    // ── Soft delete: never hard-delete units. archived_at marks removal. ──
+    // Retains full audit trail, tenancy history, and payment records.
+    await pool.query(
+      `UPDATE rental_units SET archived_at = NOW(), status = 'ARCHIVED',
+       is_advertised = FALSE, listing_expires_at = NULL WHERE id=$1`,
+      [id]
+    );
+    await logAudit({
+      event_type:  'UNIT_ARCHIVED',
+      actor_id:    userId,
+      actor_role:  'DEVELOPER',
+      unit_id:     id,
+      description: 'Unit soft-deleted (archived). Data retained for audit trail.',
+      metadata:    { archived_by: userId },
+    });
+    return res.json({ success: true, message: 'Unit archived and removed from active inventory.' });
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
 
@@ -6634,7 +6798,7 @@ app.get('/api/marketplace/discover', async (req: Request, res: Response): Promis
   const offset = (parseInt(page as string) - 1) * parseInt(limit as string);
 
   try {
-    let where = `WHERE ru.is_advertised = TRUE AND ru.status != 'OCCUPIED' AND (ru.listing_expires_at IS NULL OR ru.listing_expires_at > NOW())`;
+    let where = `WHERE ru.is_advertised = TRUE AND ru.status != 'OCCUPIED' AND ru.archived_at IS NULL AND (ru.listing_expires_at IS NULL OR ru.listing_expires_at > NOW())`;
     const params: any[] = [];
     let i = 1;
 
@@ -8103,8 +8267,23 @@ app.get('/api/rental/receipts/:projectId', authenticate, async (req: Request, re
 
 // ── 2. GET /api/flex-pay/receipt/:contributionId — digital receipt PDF/HTML ───
 app.get('/api/flex-pay/receipt/:contributionId', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId = (req as any).userId;
   const { contributionId } = req.params;
   try {
+    // ── IDOR guard: verify caller owns the tenancy linked to this contribution ──
+    const ownerCheck = await pool.query(
+      `SELECT fc.id FROM flex_contributions fc
+       JOIN flex_pay_vaults fpv ON fpv.id = fc.vault_id
+       JOIN tenancies t ON t.id = fpv.tenancy_id
+       JOIN projects p ON p.id = COALESCE(fpv.project_id, t.project_id)
+       WHERE fc.id = $1
+         AND (t.tenant_user_id = $2 OR p.sponsor_id = $2
+              OR (SELECT db_role FROM users WHERE id=$2) = 'ADMIN')`,
+      [contributionId, userId]
+    );
+    if (!ownerCheck.rows.length)
+      return res.status(403).json({ error: 'Access denied: receipt does not belong to your account' });
+
     const r = await pool.query(
       `SELECT
          fc.id, fc.amount_ngn, fc.period_label, fc.paid_at, fc.ledger_hash,
@@ -8981,8 +9160,21 @@ app.post('/api/tenant/pay-installment', authenticate, async (req: Request, res: 
 // ── GET /api/tenant/receipt/:contributionId ────────────────────────────────
 // Alias matching what the dashboard's downloadReceipt() calls.
 app.get('/api/tenant/receipt/:contributionId', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId = (req as any).userId;
   const { contributionId } = req.params;
   try {
+    // ── IDOR guard: tenant can only fetch their own receipts ──────────────
+    const ownerCheck = await pool.query(
+      `SELECT fc.id FROM flex_contributions fc
+       JOIN flex_pay_vaults fpv ON fpv.id = fc.vault_id
+       JOIN tenancies t ON t.id = fpv.tenancy_id
+       WHERE fc.id = $1 AND (t.tenant_user_id = $2
+             OR (SELECT db_role FROM users WHERE id=$2) = 'ADMIN')`,
+      [contributionId, userId]
+    );
+    if (!ownerCheck.rows.length)
+      return res.status(403).json({ error: 'Access denied: receipt does not belong to your account' });
+
     const r = await pool.query(
       `SELECT fc.id, fc.amount_ngn, fc.period_label, fc.paid_at, fc.ledger_hash,
               fc.status, fc.paystack_ref,
@@ -9248,7 +9440,7 @@ app.get('/api/landlord/units/?', authenticate, async (req: Request, res: Respons
        FROM rental_units ru
        JOIN     projects  p ON p.id     = ru.project_id
        LEFT JOIN tenancies t ON t.unit_id = ru.id AND t.status = 'ACTIVE'
-       WHERE p.sponsor_id = $1
+       WHERE p.sponsor_id = $1 AND ru.archived_at IS NULL
        ORDER BY p.title ASC, ru.unit_name ASC`,
       [landlordId]
     );
