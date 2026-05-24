@@ -1088,7 +1088,7 @@ const ensureTablesExist = async () => {
       ALTER TABLE system_ledger ADD COLUMN IF NOT EXISTS description  TEXT;
       ALTER TABLE system_ledger ADD COLUMN IF NOT EXISTS metadata     JSONB;
 
-    \`);
+    `);
 
     await client.query('COMMIT');
     console.log("✅ Database schema verified - All tables present");
@@ -7638,7 +7638,7 @@ app.post(['/api/notices/generate', '/api/notices/generate/'], authenticate, asyn
       actor_role:  'DEVELOPER',
       unit_id:     t.unit_id,
       tenancy_id,
-      project_id,
+      project_id:  t.project_id,
       description: `Legal notice ${noticeNumber} (${notice_type}) issued to "${t.tenant_name}" — ₦${overdue.toLocaleString()} overdue`,
       metadata:    { notice_id: noticeRes.rows[0].id, notice_number: noticeNumber, notice_type, amount_overdue: overdue, days_overdue: daysOvd, ledger_hash: h },
     });
@@ -9615,15 +9615,14 @@ function startListingExpiryCron(poolRef: typeof pool): void {
          RETURNING id, unit_name`
       );
       if (result.rows.length > 0) {
-        console.log(\`[EXPIRY-CRON] Auto-expired \${result.rows.length} marketplace listing(s):\`,
-          result.rows.map((r: any) => r.unit_name).join(', '));
+        console.log(`[EXPIRY-CRON] Auto-expired ${result.rows.length} marketplace listing(s): ${result.rows.map((r: any) => r.unit_name).join(', ')}`);
         for (const row of result.rows) {
           await logAudit({
             event_type:  'LISTING_EXPIRED',
             actor_id:    null,
             actor_role:  'SYSTEM',
             unit_id:     row.id,
-            description: \`Marketplace listing for "\${row.unit_name}" auto-expired after 30 days\`,
+            description: `Marketplace listing for "${row.unit_name}" auto-expired after 30 days`,
             metadata:    { unit_id: row.id, unit_name: row.unit_name },
           });
         }
