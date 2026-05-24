@@ -958,6 +958,7 @@ const ensureTablesExist = async () => {
       -- ── Marketplace / vacancy advertising columns ─────────────────────
       ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS is_advertised          BOOLEAN DEFAULT FALSE;
       ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS advertised_at          TIMESTAMP;
+      ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS listing_expires_at      TIMESTAMP;
       ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS marketing_description  TEXT;
       ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS cover_image            TEXT;
       ALTER TABLE rental_units ADD COLUMN IF NOT EXISTS photo_urls_arr         TEXT[] DEFAULT '{}';
@@ -3705,7 +3706,7 @@ app.post("/api/payments/webhook",
         const adHash = crypto.createHash('sha256')
           .update(`ad-fee-${txReference}-${unitId}-${Date.now()}`).digest('hex');
         await pool.query(
-          `UPDATE rental_units SET is_advertised=TRUE, advertised_at=NOW() WHERE id=$1`,
+          `UPDATE rental_units SET is_advertised=TRUE, advertised_at=NOW(), listing_expires_at=NOW()+INTERVAL '30 days' WHERE id=$1`,
           [unitId]
         ).catch(() => {});
         await pool.query(
@@ -6261,8 +6262,8 @@ app.post('/api/rental/onboard-tenant', authenticate, async (req: Request, res: R
     );
     const vault = vaultRes.rows[0];
 
-    // 7 — Mark unit as OCCUPIED
-    await pool.query(`UPDATE rental_units SET status='OCCUPIED' WHERE id=$1`, [unit_id]);
+    // 7 — Mark unit as OCCUPIED and clear marketplace listing (auto-delist on tenant assignment)
+    await pool.query(`UPDATE rental_units SET status='OCCUPIED', is_advertised=FALSE, listing_expires_at=NULL WHERE id=$1`, [unit_id]);
 
     // 8 — Log to system ledger
     await pool.query(
@@ -6462,7 +6463,7 @@ app.post('/api/rental/marketplace/advertise', authenticate, async (req: Request,
     const email   = userRes.rows[0]?.email;
 
     const ref = `ARK-ADVERT-${unit_id.slice(0,8).toUpperCase()}-${Date.now()}`;
-    const FRONTEND = process.env.FRONTEND_URL || 'https://nested-ark-api.vercel.app';
+    const FRONTEND = process.env.FRONTEND_URL || 'https://nested-ark-ic5n6890k-nested-ark.vercel.app';
 
     const psRes = await fetch('https://api.paystack.co/transaction/initialize', {
       method: 'POST',
@@ -6500,7 +6501,7 @@ app.get('/api/marketplace/discover', async (req: Request, res: Response): Promis
   const offset = (parseInt(page as string) - 1) * parseInt(limit as string);
 
   try {
-    let where = `WHERE ru.is_advertised = TRUE AND ru.status != 'OCCUPIED'`;
+    let where = `WHERE ru.is_advertised = TRUE AND ru.status != 'OCCUPIED' AND (ru.listing_expires_at IS NULL OR ru.listing_expires_at > NOW())`;
     const params: any[] = [];
     let i = 1;
 
@@ -6519,7 +6520,7 @@ app.get('/api/marketplace/discover', async (req: Request, res: Response): Promis
          ru.rent_amount, ru.currency, ru.payment_frequency,
          ru.security_deposit, ru.agency_fee, ru.caution_fee, ru.service_charge,
          ru.amenities, ru.furnished, ru.parking, ru.size_sqm, ru.floor_number,
-         ru.marketing_description, ru.cover_image, ru.photo_urls_arr, ru.advertised_at,
+         ru.marketing_description, ru.cover_image, ru.photo_urls_arr, ru.advertised_at, ru.listing_expires_at,
          ru.bank_name, ru.account_name, ru.status,
          p.id AS project_id, p.title AS project_title, p.location, p.country,
          p.project_number, p.city
@@ -6580,7 +6581,7 @@ app.post('/api/rental/tenancies', authenticate, async (req: Request, res: Respon
     if (unit.rows[0].sponsor_id !== userId)
       return res.status(403).json({ error: 'Only the project owner can create tenancies' });
 
-    await pool.query("UPDATE rental_units SET status='OCCUPIED' WHERE id=$1", [unit_id]);
+    await pool.query("UPDATE rental_units SET status='OCCUPIED', is_advertised=FALSE, listing_expires_at=NULL WHERE id=$1", [unit_id]);
 
     const r = await pool.query(
       `INSERT INTO tenancies
@@ -8735,7 +8736,7 @@ app.post('/api/tenant/pay-installment', authenticate, async (req: Request, res: 
 
     const email      = v.user_email || v.tenant_email;
     const ref        = `ARK-VAULT-${resolvedVaultId.slice(0, 8)}-${Date.now()}`;
-    const FRONTEND   = process.env.FRONTEND_URL || 'https://nested-ark-api.vercel.app';
+    const FRONTEND   = process.env.FRONTEND_URL || 'https://nested-ark-ic5n6890k-nested-ark.vercel.app';
 
     const psRes = await fetch('https://api.paystack.co/transaction/initialize', {
       method:  'POST',
@@ -8935,7 +8936,7 @@ app.post('/api/tenant/onboard', async (req: Request, res: Response): Promise<any
         ]
       );
       tenancyId = tenRes.rows[0].id;
-      await client.query(`UPDATE rental_units SET status='OCCUPIED' WHERE id=$1`, [unitId]);
+      await client.query(`UPDATE rental_units SET status='OCCUPIED', is_advertised=FALSE, listing_expires_at=NULL WHERE id=$1`, [unitId]);
     }
     // ── Auto-link tenant_user_id if a user account exists with this email ──
     // This ensures dashboard works immediately after onboarding even if user
@@ -9374,6 +9375,92 @@ const startPendingPayoutCron = (pool: any) => {
   console.log('[CRON] Pending payout retry scheduler active — every 30 minutes');
 };
 
+
+// ── GET /api/rental/units/:id/advertise-status — landlord checks listing state ─
+app.get('/api/rental/units/:id/advertise-status', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId = (req as any).userId;
+  const { id } = req.params;
+  try {
+    const r = await pool.query(
+      `SELECT ru.id, ru.unit_name, ru.is_advertised, ru.advertised_at, ru.listing_expires_at, ru.status,
+              p.sponsor_id
+       FROM rental_units ru JOIN projects p ON p.id = ru.project_id
+       WHERE ru.id = $1`,
+      [id]
+    );
+    if (!r.rows.length) return res.status(404).json({ error: 'Unit not found' });
+    if (r.rows[0].sponsor_id !== userId) return res.status(403).json({ error: 'Not your unit' });
+    const u = r.rows[0];
+    const expired = u.listing_expires_at && new Date(u.listing_expires_at) < new Date();
+    return res.json({
+      success:           true,
+      unit_id:           u.id,
+      unit_name:         u.unit_name,
+      is_advertised:     u.is_advertised && !expired,
+      advertised_at:     u.advertised_at,
+      listing_expires_at: u.listing_expires_at,
+      days_remaining:    u.listing_expires_at
+        ? Math.max(0, Math.ceil((new Date(u.listing_expires_at).getTime() - Date.now()) / 86400000))
+        : null,
+      status:            u.status,
+    });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
+// ── PATCH /api/rental/units/:id/unadvertise — landlord pulls listing manually ─
+app.patch('/api/rental/units/:id/unadvertise', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId = (req as any).userId;
+  const { id } = req.params;
+  try {
+    const own = await pool.query(
+      `SELECT ru.id FROM rental_units ru JOIN projects p ON p.id = ru.project_id
+       WHERE ru.id = $1 AND p.sponsor_id = $2`,
+      [id, userId]
+    );
+    if (!own.rows.length) return res.status(403).json({ error: 'Not your unit or unit not found' });
+
+    await pool.query(
+      `UPDATE rental_units SET is_advertised=FALSE, listing_expires_at=NULL WHERE id=$1`,
+      [id]
+    );
+    await pool.query(
+      `INSERT INTO system_ledger (event_type, actor_id, entity_id, entity_type, description)
+       VALUES ('LISTING_REMOVED', $1, $2, 'RENTAL_UNIT', 'Landlord manually removed marketplace listing')`,
+      [userId, id]
+    );
+    return res.json({ success: true, message: 'Listing removed from marketplace.' });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
+// ── Listing expiry auto-cron — runs at startup + daily via setInterval ────────
+// Finds listings past their 30-day window and clears them automatically.
+// No separate cron file needed — lightweight inline interval, append-only.
+function startListingExpiryCron(poolRef: typeof pool): void {
+  const expireListings = async () => {
+    try {
+      const result = await poolRef.query(
+        `UPDATE rental_units
+         SET is_advertised = FALSE
+         WHERE is_advertised = TRUE
+           AND listing_expires_at IS NOT NULL
+           AND listing_expires_at < NOW()
+         RETURNING id, unit_name`
+      );
+      if (result.rows.length > 0) {
+        console.log(\`[EXPIRY-CRON] Auto-expired \${result.rows.length} marketplace listing(s):\`,
+          result.rows.map((r: any) => r.unit_name).join(', '));
+      }
+    } catch (err: any) {
+      console.warn('[EXPIRY-CRON] Error:', err.message);
+    }
+  };
+  // Run once at startup to catch any missed expirations
+  expireListings();
+  // Then every 6 hours
+  setInterval(expireListings, 6 * 60 * 60 * 1000);
+  console.log('[EXPIRY-CRON] Marketplace listing expiry cron started (6h interval)');
+}
+
 // ── POST /api/admin/dedup-tenancies — one-time cleanup of duplicate tenancy rows ──
 // Keeps the most recent row per (unit_id, tenant_email) and soft-deletes older dupes.
 // Protected: ADMIN only. Safe to run multiple times (idempotent).
@@ -9457,6 +9544,9 @@ async function startServer() {
 
     // Start daily reminder & drawdown cron (08:00 WAT)
     startReminderCron(pool, getMailer);
+
+    // Start marketplace listing expiry cron (every 6 hours)
+    startListingExpiryCron(pool);
 
     // Start pending payout retry cron (every 30 mins)
     // Catches FUNDED_READY vaults where landlord had no bank account at webhook
