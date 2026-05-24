@@ -9007,7 +9007,7 @@ app.get('/api/landlord/units/?', authenticate, async (req: Request, res: Respons
          t.id       AS tenancy_id,
          (SELECT COUNT(*) FROM legal_notices ln
           WHERE ln.unit_id = ru.id
-             OR ln.tenant_id = t.tenant_user_id) AS notice_count
+             OR ln.tenancy_id = t.id) AS notice_count
        FROM rental_units ru
        JOIN     projects  p ON p.id     = ru.project_id
        LEFT JOIN tenancies t ON t.unit_id = ru.id AND t.status = 'ACTIVE'
