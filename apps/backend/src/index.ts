@@ -1057,7 +1057,38 @@ const ensureTablesExist = async () => {
         END IF;
       END $$;
 
-    `);
+      -- ── unit_audit_log: immutable per-unit event trail ─────────────────────
+      -- Purpose-built for PropTech disputes, compliance, and admin tracing.
+      -- Append-only. Never update or delete rows. SHA-256 hash per event.
+      CREATE TABLE IF NOT EXISTS unit_audit_log (
+        id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        event_type      VARCHAR(60)  NOT NULL,   -- TENANT_ASSIGNED, RENT_PAID, NOTICE_ISSUED …
+        actor_id        UUID,                     -- user who triggered (landlord, tenant, system)
+        actor_role      VARCHAR(30),              -- DEVELOPER, TENANT, ADMIN, SYSTEM
+        unit_id         UUID REFERENCES rental_units(id) ON DELETE SET NULL,
+        tenancy_id      UUID REFERENCES tenancies(id)    ON DELETE SET NULL,
+        project_id      UUID REFERENCES projects(id)     ON DELETE SET NULL,
+        description     TEXT         NOT NULL,
+        metadata        JSONB        DEFAULT '{}',
+        ledger_hash     VARCHAR(64),              -- SHA-256 of (event_type+unit_id+created_at+metadata)
+        created_at      TIMESTAMPTZ  DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_ual_unit      ON unit_audit_log(unit_id);
+      CREATE INDEX IF NOT EXISTS idx_ual_tenancy   ON unit_audit_log(tenancy_id);
+      CREATE INDEX IF NOT EXISTS idx_ual_project   ON unit_audit_log(project_id);
+      CREATE INDEX IF NOT EXISTS idx_ual_event     ON unit_audit_log(event_type);
+      CREATE INDEX IF NOT EXISTS idx_ual_created   ON unit_audit_log(created_at DESC);
+
+      -- ── Extend system_ledger with relational columns (backward-compatible) ─
+      -- Older rows keep NULL values; new rows get full context.
+      ALTER TABLE system_ledger ADD COLUMN IF NOT EXISTS event_type   VARCHAR(100);
+      ALTER TABLE system_ledger ADD COLUMN IF NOT EXISTS actor_id     UUID;
+      ALTER TABLE system_ledger ADD COLUMN IF NOT EXISTS entity_id    UUID;
+      ALTER TABLE system_ledger ADD COLUMN IF NOT EXISTS entity_type  VARCHAR(50);
+      ALTER TABLE system_ledger ADD COLUMN IF NOT EXISTS description  TEXT;
+      ALTER TABLE system_ledger ADD COLUMN IF NOT EXISTS metadata     JSONB;
+
+    \`);
 
     await client.query('COMMIT');
     console.log("✅ Database schema verified - All tables present");
@@ -3722,6 +3753,15 @@ app.post("/api/payments/webhook",
           [JSON.stringify({ unit_id: unitId, reference: txReference, amount_ngn: event.data.amount/100 }), adHash]
         ).catch(() => {});
         console.log(`[WEBHOOK] Marketplace listing ACTIVATED: unit=${unitId}`);
+        // Audit trail
+        await logAudit({
+          event_type:  'LISTING_ADVERTISED',
+          actor_id:    meta.landlord_id ?? null,
+          actor_role:  'DEVELOPER',
+          unit_id:     unitId,
+          description: `Unit listed on marketplace. Listing fee ₦${event.data.amount/100} paid. Expires in 30 days.`,
+          metadata:    { reference: txReference, amount_ngn: event.data.amount/100, landlord_id: meta.landlord_id },
+        });
       }
     }
 
@@ -3741,6 +3781,17 @@ app.post("/api/payments/webhook",
           "UPDATE rent_payments SET status='SUCCESS', amount_ngn=$1, paid_at=NOW() WHERE paystack_reference=$2",
           [amountNgn, reference]
         );
+        // Audit: rent payment received
+        await logAudit({
+          event_type:  'RENT_PAID',
+          actor_id:    meta.tenant_id ?? null,
+          actor_role:  'TENANT',
+          unit_id:     meta.unit_id ?? null,
+          tenancy_id:  meta.tenancy_id ?? null,
+          project_id:  meta.project_id ?? null,
+          description: `Rent payment of ₦${amountNgn.toLocaleString()} received for "${meta.unit_name ?? 'unit'}" — period ${meta.period_month ?? 'N/A'}`,
+          metadata:    { reference, amount_ngn: amountNgn, period_month: meta.period_month, rent_payment_id: meta.rent_payment_id },
+        });
 
         // ── Step 2: Credit the tenant's flex_pay vault ──────────────────────
         // Critical: update vault_balance so tenant sees payment on dashboard.
@@ -6063,6 +6114,25 @@ app.post('/api/rental/tenancies/lifecycle', authenticate, async (req: Request, r
         `UPDATE rental_units SET status = 'VACANT' WHERE id = $1`,
         [unitId]
       );
+      // Fetch tenancy details for audit
+      const termTenancy = await pool.query(
+        `SELECT t.tenant_name, t.tenant_email, ru.unit_name, ru.project_id
+         FROM tenancies t JOIN rental_units ru ON ru.id = t.unit_id WHERE t.id = $1`,
+        [tenancy_id]
+      );
+      if (termTenancy.rows.length) {
+        const tt = termTenancy.rows[0];
+        await logAudit({
+          event_type:  'TENANT_TERMINATED',
+          actor_id:    landlordId,
+          actor_role:  'DEVELOPER',
+          unit_id:     unitId,
+          tenancy_id,
+          project_id:  tt.project_id,
+          description: `Tenancy for "${tt.tenant_name}" (${tt.tenant_email}) terminated on unit "${tt.unit_name}"`,
+          metadata:    { terminated_by: landlordId, tenant_email: tt.tenant_email },
+        });
+      }
       return res.json({ success: true, message: 'Tenant terminated. Unit reset to VACANT.' });
     }
 
@@ -6153,10 +6223,20 @@ app.post('/api/rental/consume-invite', authenticate, async (req: Request, res: R
 
     // Log
     await pool.query(
-      `INSERT INTO system_ledger (event_type, actor_id, entity_id, entity_type, description, metadata)
-       VALUES ('INVITE_CONSUMED',$1,$2,'TENANCY',$3,$4)`,
-      [userId, tenancy_id, `Tenant ${user.email} activated tenancy`, JSON.stringify({ tenancy_id, userId })]
+      `INSERT INTO system_ledger (transaction_type, event_type, actor_id, entity_id, entity_type, description, payload, immutable_hash)
+       VALUES ('INVITE_CONSUMED','INVITE_CONSUMED',$1,$2,'TENANCY',$3,$4,$5)`,
+      [userId, tenancy_id, `Tenant ${user.email} activated tenancy`,
+       JSON.stringify({ tenancy_id, userId }),
+       crypto.createHash('sha256').update(`INVITE_CONSUMED-${tenancy_id}-${Date.now()}`).digest('hex')]
     ).catch(() => {});
+    await logAudit({
+      event_type:  'TENANT_PORTAL_ACTIVATED',
+      actor_id:    userId,
+      actor_role:  'TENANT',
+      tenancy_id,
+      description: `Tenant "${user.email}" activated self-service portal via invite link`,
+      metadata:    { tenancy_id, user_email: user.email },
+    });
 
     return res.json({ success: true, message: 'Tenancy activated. Welcome to Nested Ark!' });
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
@@ -6265,16 +6345,28 @@ app.post('/api/rental/onboard-tenant', authenticate, async (req: Request, res: R
     // 7 — Mark unit as OCCUPIED and clear marketplace listing (auto-delist on tenant assignment)
     await pool.query(`UPDATE rental_units SET status='OCCUPIED', is_advertised=FALSE, listing_expires_at=NULL WHERE id=$1`, [unit_id]);
 
-    // 8 — Log to system ledger
+    // 8 — Log to system ledger + unit_audit_log
     await pool.query(
-      `INSERT INTO system_ledger (event_type, actor_id, entity_id, entity_type, description, metadata)
-       VALUES ('TENANT_ONBOARDED',$1,$2,'TENANCY',$3,$4)`,
+      `INSERT INTO system_ledger (transaction_type, event_type, actor_id, entity_id, entity_type, description, metadata, payload, immutable_hash)
+       VALUES ('TENANT_ONBOARDED','TENANT_ONBOARDED',$1,$2,'TENANCY',$3,$4,$5,$6)`,
       [
         landlordId, tenancy.id,
         `${tenant_name} onboarded into ${unit.unit_name} (${unit.project_title})`,
         JSON.stringify({ tenancy_id: tenancy.id, vault_id: vault.id, unit_id, freq, installmentAmount }),
+        JSON.stringify({ tenancy_id: tenancy.id, unit_id }),
+        crypto.createHash('sha256').update(`TENANT_ONBOARDED-${tenancy.id}-${Date.now()}`).digest('hex'),
       ]
-    ).catch(() => {}); // non-fatal
+    ).catch(() => {});
+    await logAudit({
+      event_type:  'TENANT_ASSIGNED',
+      actor_id:    landlordId,
+      actor_role:  'DEVELOPER',
+      unit_id,
+      tenancy_id:  tenancy.id,
+      project_id:  unit.project_id,
+      description: `Tenant "${tenant_name}" (${tenant_email}) assigned to unit "${unit.unit_name}"`,
+      metadata:    { tenant_email, payment_frequency: freq, installment_amount: installmentAmount, vault_id: vault.id },
+    });
 
     // 9 — Build invite link → PUBLIC page, no auth required
     const FRONTEND = process.env.FRONTEND_URL || 'https://nested-ark-ic5n6890k-nested-ark.vercel.app';
@@ -6388,6 +6480,15 @@ app.put('/api/rental/units/:id', authenticate, async (req: Request, res: Respons
         photo_urls_arr        ? (Array.isArray(photo_urls_arr) ? photo_urls_arr : [photo_urls_arr]) : null,
       ]
     );
+    await logAudit({
+      event_type:  'UNIT_EDITED',
+      actor_id:    userId,
+      actor_role:  'DEVELOPER',
+      unit_id:     id,
+      project_id:  r.rows[0].project_id,
+      description: `Unit "${r.rows[0].unit_name}" details updated`,
+      metadata:    { fields_updated: Object.keys(req.body).filter(k => req.body[k] !== undefined && req.body[k] !== null) },
+    });
     return res.json({ success: true, unit: r.rows[0] });
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
@@ -7531,6 +7632,16 @@ app.post(['/api/notices/generate', '/api/notices/generate/'], authenticate, asyn
     const pdfBuffer = await generateNoticePDF(noticeHtml);
     const noticeRes = await pool.query(`INSERT INTO legal_notices (tenancy_id, unit_id, project_id, notice_type, notice_number, amount_overdue, days_overdue, response_deadline, pdf_url, ledger_hash, generated_by, notes) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NULL,$9,$10,$11) RETURNING *`, [tenancy_id, t.unit_id, t.project_id, notice_type, noticeNumber, overdue, daysOvd, deadline.toISOString().split('T')[0], h, userId, notes || null]);
     await pool.query(`INSERT INTO system_ledger (transaction_type, payload, immutable_hash) VALUES ($1,$2,$3)`, ['LEGAL_NOTICE_ISSUED', JSON.stringify({ notice_id: noticeRes.rows[0].id, notice_number: noticeNumber, notice_type, tenancy_id, amount_overdue: overdue, days_overdue: daysOvd }), h]);
+    await logAudit({
+      event_type:  'NOTICE_ISSUED',
+      actor_id:    (req as any).userId,
+      actor_role:  'DEVELOPER',
+      unit_id:     t.unit_id,
+      tenancy_id,
+      project_id,
+      description: `Legal notice ${noticeNumber} (${notice_type}) issued to "${t.tenant_name}" — ₦${overdue.toLocaleString()} overdue`,
+      metadata:    { notice_id: noticeRes.rows[0].id, notice_number: noticeNumber, notice_type, amount_overdue: overdue, days_overdue: daysOvd, ledger_hash: h },
+    });
     try {
       const mailer = getMailer();
       const emailHtml = arkEmail(`${noticeNumber} — Formal Notice`, `<p style="color:#a1a1aa;font-size:13px;line-height:1.7;">Dear <strong style="color:white">${t.tenant_name}</strong>,<br><br>Please find attached a formal legal notice for <strong style="color:#14b8a6">${t.unit_name}</strong>, ${t.project_title}.<br><strong style="color:#ef4444">Arrears: ₦${overdue.toLocaleString()}</strong> · <strong style="color:#f97316">Deadline: ${deadlineStr}</strong></p>`, { label: 'Resolve via Ark Portal', url: `${process.env.FRONTEND_URL}/tenant/notices/${noticeRes.rows[0].id}` });
@@ -7637,6 +7748,53 @@ interface DualChannelPayload {
   pdfBuffer?: Buffer | null;
   pdfFilename?: string;
   actionUrl?: string;
+}
+
+
+// ════════════════════════════════════════════════════════════════════════════
+// AUDIT TRAIL — logAudit()
+// Append-only write to unit_audit_log. Never throws (non-fatal by design).
+// Call with .catch(()=>{}) removed — errors are swallowed internally.
+// Usage: await logAudit({ event_type, actor_id, actor_role, unit_id,
+//                         tenancy_id, project_id, description, metadata })
+// ════════════════════════════════════════════════════════════════════════════
+interface AuditEntry {
+  event_type:   string;
+  actor_id?:    string | null;
+  actor_role?:  string | null;
+  unit_id?:     string | null;
+  tenancy_id?:  string | null;
+  project_id?:  string | null;
+  description:  string;
+  metadata?:    Record<string, any>;
+}
+
+async function logAudit(entry: AuditEntry): Promise<void> {
+  try {
+    const meta = entry.metadata ?? {};
+    const hashInput = `${entry.event_type}|${entry.unit_id ?? ''}|${entry.tenancy_id ?? ''}|${Date.now()}|${JSON.stringify(meta)}`;
+    const ledger_hash = crypto.createHash('sha256').update(hashInput).digest('hex');
+    await pool.query(
+      `INSERT INTO unit_audit_log
+         (event_type, actor_id, actor_role, unit_id, tenancy_id, project_id,
+          description, metadata, ledger_hash)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      [
+        entry.event_type,
+        entry.actor_id   ?? null,
+        entry.actor_role ?? 'SYSTEM',
+        entry.unit_id    ?? null,
+        entry.tenancy_id ?? null,
+        entry.project_id ?? null,
+        entry.description,
+        JSON.stringify(meta),
+        ledger_hash,
+      ]
+    );
+  } catch (auditErr: any) {
+    // Non-fatal: audit failure must never break the primary workflow
+    console.warn('[AUDIT] Write failed:', auditErr.message);
+  }
 }
 
 // ── UTILITY: Email format validation ─────────────────────────────────────────
@@ -9424,10 +9582,20 @@ app.patch('/api/rental/units/:id/unadvertise', authenticate, async (req: Request
       [id]
     );
     await pool.query(
-      `INSERT INTO system_ledger (event_type, actor_id, entity_id, entity_type, description)
-       VALUES ('LISTING_REMOVED', $1, $2, 'RENTAL_UNIT', 'Landlord manually removed marketplace listing')`,
-      [userId, id]
+      `INSERT INTO system_ledger (transaction_type, event_type, actor_id, entity_id, entity_type, description, payload, immutable_hash)
+       VALUES ('LISTING_REMOVED','LISTING_REMOVED',$1,$2,'RENTAL_UNIT','Landlord manually removed marketplace listing',$3,$4)`,
+      [userId, id,
+       JSON.stringify({ unit_id: id, landlord_id: userId }),
+       crypto.createHash('sha256').update(`LISTING_REMOVED-${id}-${Date.now()}`).digest('hex')]
     );
+    await logAudit({
+      event_type:  'LISTING_REMOVED',
+      actor_id:    userId,
+      actor_role:  'DEVELOPER',
+      unit_id:     id,
+      description: 'Landlord manually removed unit from marketplace',
+      metadata:    { removed_by: userId },
+    });
     return res.json({ success: true, message: 'Listing removed from marketplace.' });
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
@@ -9449,6 +9617,16 @@ function startListingExpiryCron(poolRef: typeof pool): void {
       if (result.rows.length > 0) {
         console.log(\`[EXPIRY-CRON] Auto-expired \${result.rows.length} marketplace listing(s):\`,
           result.rows.map((r: any) => r.unit_name).join(', '));
+        for (const row of result.rows) {
+          await logAudit({
+            event_type:  'LISTING_EXPIRED',
+            actor_id:    null,
+            actor_role:  'SYSTEM',
+            unit_id:     row.id,
+            description: \`Marketplace listing for "\${row.unit_name}" auto-expired after 30 days\`,
+            metadata:    { unit_id: row.id, unit_name: row.unit_name },
+          });
+        }
       }
     } catch (err: any) {
       console.warn('[EXPIRY-CRON] Error:', err.message);
@@ -9460,6 +9638,103 @@ function startListingExpiryCron(poolRef: typeof pool): void {
   setInterval(expireListings, 6 * 60 * 60 * 1000);
   console.log('[EXPIRY-CRON] Marketplace listing expiry cron started (6h interval)');
 }
+
+
+// ════════════════════════════════════════════════════════════════════════════
+// AUDIT TRAIL QUERY ENDPOINTS
+// ════════════════════════════════════════════════════════════════════════════
+
+// ── GET /api/audit/unit/:unitId — full event history for one unit ──────────
+// Auth required. Landlord must own the unit (or ADMIN).
+app.get('/api/audit/unit/:unitId', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId  = (req as any).userId;
+  const { unitId } = req.params;
+  const limit = Math.min(parseInt(req.query.limit as string || '50'), 200);
+  const offset = parseInt(req.query.offset as string || '0');
+  try {
+    // Ownership check (or ADMIN)
+    const own = await pool.query(
+      `SELECT ru.id FROM rental_units ru
+       JOIN projects p ON p.id = ru.project_id
+       WHERE ru.id = $1 AND (p.sponsor_id = $2 OR (SELECT db_role FROM users WHERE id=$2) = 'ADMIN')`,
+      [unitId, userId]
+    );
+    if (!own.rows.length) return res.status(403).json({ error: 'Unit not found or access denied' });
+
+    const logs = await pool.query(
+      `SELECT id, event_type, actor_id, actor_role, description, metadata, ledger_hash, created_at
+       FROM unit_audit_log
+       WHERE unit_id = $1
+       ORDER BY created_at DESC
+       LIMIT $2 OFFSET $3`,
+      [unitId, limit, offset]
+    );
+    const total = await pool.query(`SELECT COUNT(*) FROM unit_audit_log WHERE unit_id=$1`, [unitId]);
+    return res.json({ success: true, unit_id: unitId, logs: logs.rows, total: parseInt(total.rows[0].count), limit, offset });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
+// ── GET /api/audit/project/:projectId — all events across a project ────────
+app.get('/api/audit/project/:projectId', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId = (req as any).userId;
+  const { projectId } = req.params;
+  const limit  = Math.min(parseInt(req.query.limit as string || '100'), 500);
+  const offset = parseInt(req.query.offset as string || '0');
+  const event_type = req.query.event_type as string | undefined;
+  try {
+    const own = await pool.query(
+      `SELECT id FROM projects WHERE id=$1 AND (sponsor_id=$2 OR (SELECT db_role FROM users WHERE id=$2)='ADMIN')`,
+      [projectId, userId]
+    );
+    if (!own.rows.length) return res.status(403).json({ error: 'Project not found or access denied' });
+
+    let where = `WHERE project_id = $1`;
+    const params: any[] = [projectId];
+    if (event_type) { where += ` AND event_type = $2`; params.push(event_type); }
+
+    const logs = await pool.query(
+      `SELECT ual.id, ual.event_type, ual.actor_id, ual.actor_role, ual.unit_id,
+              ual.tenancy_id, ual.description, ual.metadata, ual.ledger_hash, ual.created_at,
+              ru.unit_name
+       FROM unit_audit_log ual
+       LEFT JOIN rental_units ru ON ru.id = ual.unit_id
+       ${where}
+       ORDER BY ual.created_at DESC
+       LIMIT ${limit} OFFSET ${offset}`,
+      params
+    );
+    const total = await pool.query(`SELECT COUNT(*) FROM unit_audit_log ${where}`, params);
+    return res.json({ success: true, project_id: projectId, logs: logs.rows, total: parseInt(total.rows[0].count), limit, offset });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
+// ── GET /api/audit/tenancy/:tenancyId — full event history for one tenancy ─
+app.get('/api/audit/tenancy/:tenancyId', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId = (req as any).userId;
+  const { tenancyId } = req.params;
+  try {
+    // Verify caller owns the project this tenancy belongs to (or is ADMIN or is the tenant)
+    const access = await pool.query(
+      `SELECT t.id FROM tenancies t
+       JOIN rental_units ru ON ru.id = t.unit_id
+       JOIN projects p ON p.id = ru.project_id
+       WHERE t.id = $1
+         AND (p.sponsor_id = $2 OR t.tenant_user_id = $2
+              OR (SELECT db_role FROM users WHERE id=$2) = 'ADMIN')`,
+      [tenancyId, userId]
+    );
+    if (!access.rows.length) return res.status(403).json({ error: 'Tenancy not found or access denied' });
+
+    const logs = await pool.query(
+      `SELECT id, event_type, actor_role, description, metadata, ledger_hash, created_at
+       FROM unit_audit_log
+       WHERE tenancy_id = $1
+       ORDER BY created_at DESC`,
+      [tenancyId]
+    );
+    return res.json({ success: true, tenancy_id: tenancyId, logs: logs.rows });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
 
 // ── POST /api/admin/dedup-tenancies — one-time cleanup of duplicate tenancy rows ──
 // Keeps the most recent row per (unit_id, tenant_email) and soft-deletes older dupes.
