@@ -42,13 +42,14 @@ const corsOptions: cors.CorsOptions = {
 };
 
 // 0. Normalise trailing slashes BEFORE CORS so preflight OPTIONS on /api/foo/
-//    also matches cleanly.  Strips the trailing slash from the URL path so that
-//    every Express route defined without a trailing slash will match regardless
-//    of whether the client (or Next.js trailingSlash:true) appended one.
+//    also matches cleanly.  Collapses ALL trailing slashes (e.g. /units// → /units)
+//    so that Next.js trailingSlash:true + proxy rewrites never cause a double-slash
+//    that defeats the single-character slice used previously.
 app.use((req: Request, _res: Response, next: NextFunction) => {
   if (req.path.length > 1 && req.path.endsWith('/')) {
-    const query = req.url.slice(req.path.length); // preserve ?query&string
-    req.url = req.path.slice(0, -1) + query;
+    const cleanPath = req.path.replace(/\/+$/, ''); // strip all trailing slashes
+    const query = req.url.slice(req.path.length);   // preserve ?query&string
+    req.url = cleanPath + query;
   }
   next();
 });
