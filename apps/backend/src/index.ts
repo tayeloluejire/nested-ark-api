@@ -6294,9 +6294,13 @@ app.put('/api/rental/units/:id', authenticate, async (req: Request, res: Respons
       floor_level, furnished, parking,
       rent_amount, currency, service_charge, security_deposit,
       description, amenities,
-      photo_urls,  // string[] — array of image URLs
+      photo_urls,            // JSONB array of image URLs (legacy)
       available_from,
-      status,      // ACTIVE | VACANT | SOLD | MAINTENANCE — lifecycle state
+      status,                // ACTIVE | VACANT | SOLD | MAINTENANCE
+      // ── Marketing / marketplace listing fields ───────────────────────────
+      marketing_description, // Rich description shown on marketplace listing
+      cover_image,           // Primary photo URL (Cloudinary)
+      photo_urls_arr,        // TEXT[] of additional photo URLs
     } = req.body;
 
     // Verify ownership via projects join
@@ -6311,45 +6315,51 @@ app.put('/api/rental/units/:id', authenticate, async (req: Request, res: Respons
 
     const r = await pool.query(
       `UPDATE rental_units SET
-        unit_name        = COALESCE($1,  unit_name),
-        unit_type        = COALESCE($2,  unit_type),
-        bedrooms         = COALESCE($3,  bedrooms),
-        bathrooms        = COALESCE($4,  bathrooms),
-        floor_area_sqm   = COALESCE($5,  floor_area_sqm),
-        floor_level      = COALESCE($6,  floor_level),
-        furnished        = COALESCE($7,  furnished),
-        parking          = COALESCE($8,  parking),
-        rent_amount      = COALESCE($9,  rent_amount),
-        currency         = COALESCE($10, currency),
-        service_charge   = COALESCE($11, service_charge),
-        security_deposit = COALESCE($12, security_deposit),
-        description      = COALESCE($13, description),
-        amenities        = COALESCE($14, amenities),
-        photo_urls       = COALESCE($15, photo_urls),
-        available_from   = COALESCE($16, available_from),
-        status           = COALESCE($18, status),
-        updated_at       = NOW()
+        unit_name            = COALESCE($1,  unit_name),
+        unit_type            = COALESCE($2,  unit_type),
+        bedrooms             = COALESCE($3,  bedrooms),
+        bathrooms            = COALESCE($4,  bathrooms),
+        floor_area_sqm       = COALESCE($5,  floor_area_sqm),
+        floor_level          = COALESCE($6,  floor_level),
+        furnished            = COALESCE($7,  furnished),
+        parking              = COALESCE($8,  parking),
+        rent_amount          = COALESCE($9,  rent_amount),
+        currency             = COALESCE($10, currency),
+        service_charge       = COALESCE($11, service_charge),
+        security_deposit     = COALESCE($12, security_deposit),
+        description          = COALESCE($13, description),
+        amenities            = COALESCE($14, amenities),
+        photo_urls           = COALESCE($15, photo_urls),
+        available_from       = COALESCE($16, available_from),
+        status               = COALESCE($18, status),
+        marketing_description= COALESCE($19, marketing_description),
+        cover_image          = COALESCE($20, cover_image),
+        photo_urls_arr       = COALESCE($21, photo_urls_arr),
+        updated_at           = NOW()
       WHERE id=$17
       RETURNING *`,
       [
-        unit_name       ?? null,
-        unit_type       ?? null,
-        bedrooms        ?? null,
-        bathrooms       ?? null,
-        floor_area_sqm  ?? null,
-        floor_level     ?? null,
-        furnished       ?? null,
-        parking         ?? null,
-        rent_amount     ?? null,
-        currency        ?? null,
-        service_charge  ?? null,
-        security_deposit ?? null,
-        description     ?? null,
-        amenities       ? JSON.stringify(amenities) : null,
-        photo_urls      ? JSON.stringify(photo_urls) : null,
-        available_from  ?? null,
+        unit_name            ?? null,
+        unit_type            ?? null,
+        bedrooms             ?? null,
+        bathrooms            ?? null,
+        floor_area_sqm       ?? null,
+        floor_level          ?? null,
+        furnished            ?? null,
+        parking              ?? null,
+        rent_amount          ?? null,
+        currency             ?? null,
+        service_charge       ?? null,
+        security_deposit     ?? null,
+        description          ?? null,
+        amenities            ? JSON.stringify(amenities) : null,
+        photo_urls           ? JSON.stringify(photo_urls) : null,
+        available_from       ?? null,
         id,
-        status          ?? null,
+        status               ?? null,
+        marketing_description ?? null,
+        cover_image           ?? null,
+        photo_urls_arr        ? (Array.isArray(photo_urls_arr) ? photo_urls_arr : [photo_urls_arr]) : null,
       ]
     );
     return res.json({ success: true, unit: r.rows[0] });
@@ -8967,21 +8977,13 @@ app.get('/api/landlord/units/?', authenticate, async (req: Request, res: Respons
       `SELECT
          ru.id, ru.unit_name, ru.unit_type, ru.status,
          ru.rent_amount, ru.currency, ru.payment_frequency,
-         COALESCE(ru.bedrooms,  0)  AS bedrooms,
-         COALESCE(ru.bathrooms, 0)  AS bathrooms,
-         COALESCE(ru.floor_area_sqm, ru.size_sqm, 0) AS size_sqm,
+         ru.bedrooms, ru.bathrooms,
+         ru.floor_area_sqm   AS size_sqm,
          ru.floor_level, ru.furnished, ru.parking,
-         COALESCE(ru.security_deposit, 0) AS security_deposit,
-         COALESCE(ru.agency_fee,       0) AS agency_fee,
-         COALESCE(ru.caution_fee,      0) AS caution_fee,
-         COALESCE(ru.service_charge,   0) AS service_charge,
-         COALESCE(ru.legal_fee,        0) AS legal_fee,
-         COALESCE(ru.is_advertised, false) AS is_advertised,
-         ru.advertised_at,
-         ru.marketing_description,
-         ru.cover_image,
-         -- photo_urls_arr may not exist on older DBs — COALESCE to empty array
-         COALESCE(ru.photo_urls_arr, ARRAY[]::text[]) AS photo_urls_arr,
+         ru.security_deposit, ru.agency_fee, ru.caution_fee,
+         ru.service_charge,  ru.legal_fee,
+         ru.is_advertised,   ru.advertised_at,
+         ru.marketing_description, ru.cover_image, ru.photo_urls_arr,
          ru.project_id,
          p.title    AS project_title,
          p.location,
@@ -8990,15 +8992,11 @@ app.get('/api/landlord/units/?', authenticate, async (req: Request, res: Respons
          t.tenant_email,
          t.status   AS tenancy_status,
          t.id       AS tenancy_id,
-         -- FIX: was ln.tenant_id (wrong column) — correct join is ln.tenancy_id = t.id
-         -- Also LEFT JOIN guard: t may be NULL (vacant unit), so use COALESCE
-         (SELECT COUNT(*)
-          FROM legal_notices ln
+         (SELECT COUNT(*) FROM legal_notices ln
           WHERE ln.unit_id = ru.id
-             OR (t.id IS NOT NULL AND ln.tenancy_id = t.id)
-         ) AS notice_count
+             OR ln.tenant_id = t.tenant_user_id) AS notice_count
        FROM rental_units ru
-       JOIN      projects  p ON p.id     = ru.project_id
+       JOIN     projects  p ON p.id     = ru.project_id
        LEFT JOIN tenancies t ON t.unit_id = ru.id AND t.status = 'ACTIVE'
        WHERE p.sponsor_id = $1
        ORDER BY p.title ASC, ru.unit_name ASC`,
