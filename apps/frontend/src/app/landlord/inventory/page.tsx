@@ -74,9 +74,38 @@ export default function InventoryPage() {
     setLoading(true); setError(''); setDismissErr(false);
     try {
       const res = await api.get('/api/landlord/units');
-      setUnits(res.data?.units ?? []);
+      const d   = res.data;
+
+      // ── Guard: backend may return HTTP 200 with an error body ────────────
+      // This happens when the DB query crashes but the endpoint still responds.
+      if (d && typeof d.error === 'string' && d.error.length > 0) {
+        // Never show raw DB strings (e.g. "column ln.tenant_id does not exist")
+        // to landlords — always show a friendly, actionable message.
+        console.error('[INVENTORY] Backend error:', d.error);
+        setError('Could not load units. The server encountered an issue — please refresh or contact support.');
+        setUnits([]);
+        return;
+      }
+
+      // ── Normal path ──────────────────────────────────────────────────────
+      const units = Array.isArray(d)
+        ? d                             // bare array response
+        : Array.isArray(d?.units)
+          ? d.units                     // { units: [...] }
+          : Array.isArray(d?.data)
+            ? d.data                    // { data: [...] }
+            : [];
+      setUnits(units);
     } catch (e: any) {
-      setError(e?.response?.data?.error ?? 'Failed to load units. Please refresh.');
+      // Axios throws on 4xx/5xx — extract message from response body if available
+      const msg = e?.response?.data?.error ?? e?.message ?? 'Failed to load units. Please refresh.';
+      // Never expose raw DB or stack traces to the UI
+      const isTechnical = /column|relation|syntax|ERROR|pg_|OID|schema/i.test(msg);
+      setError(isTechnical
+        ? 'Could not load units. A backend issue is being resolved — please refresh in a moment.'
+        : msg
+      );
+      setUnits([]);
     } finally { setLoading(false); }
   };
 
