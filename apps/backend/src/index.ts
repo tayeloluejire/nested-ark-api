@@ -1121,6 +1121,10 @@ const authenticate = (req: Request, res: Response, next: NextFunction) => {
 };
 
 // ============================================================================
+// ════════════════════════════════════════════════════════════════════════════
+// MODULE: AUTH — Registration · Login · Email Verification · Password Reset
+// Endpoints: /api/auth/register, /login, /verify-email, /forgot-password …
+// ════════════════════════════════════════════════════════════════════════════
 // ENDPOINT 1-3: AUTH MODULE (3 endpoints)
 // ============================================================================
 
@@ -1445,6 +1449,10 @@ app.post("/api/auth/reset-password", async (req: Request, res: Response): Promis
 // All recovery endpoints are handled inline above (forgot-password, verify-reset-token, reset-password)
 
 // ============================================================================
+// ════════════════════════════════════════════════════════════════════════════
+// MODULE: PROJECTS — NAP Ledger · Document Management · Geo-Tagging
+// Endpoints: /api/projects …
+// ════════════════════════════════════════════════════════════════════════════
 // ENDPOINT 4-9: PROJECT MODULE (6 endpoints)
 // ============================================================================
 
@@ -2257,6 +2265,10 @@ app.post("/api/supplier/commission", authenticate, async (req: Request, res: Res
 });
 
 // ============================================================================
+// ════════════════════════════════════════════════════════════════════════════
+// MODULE: CONTRACTORS — Profiles · Bids · Tri-Layer Verification
+// Endpoints: /api/contractors …
+// ════════════════════════════════════════════════════════════════════════════
 // ENDPOINT 10-16: CONTRACTOR MODULE (7 endpoints)
 // ============================================================================
 
@@ -2421,6 +2433,10 @@ app.get("/api/contractors/:contractorId/stats", async (req: Request, res: Respon
 });
 
 // ============================================================================
+// ════════════════════════════════════════════════════════════════════════════
+// MODULE: MILESTONES — Escrow Release · Progress · AI+Human+Drone Audit
+// Endpoints: /api/milestones …
+// ════════════════════════════════════════════════════════════════════════════
 // ENDPOINT 17-24: MILESTONE MODULE (8 endpoints)
 // ============================================================================
 
@@ -2586,6 +2602,10 @@ app.post("/api/milestones/:milestoneId/approve", authenticate, async (req: Reque
 });
 
 // ============================================================================
+// ════════════════════════════════════════════════════════════════════════════
+// MODULE: ESCROW — Wallet · Paystack · Multi-Sig Release · Payout
+// Endpoints: /api/escrow …
+// ════════════════════════════════════════════════════════════════════════════
 // ENDPOINT 25-34: ESCROW MODULE (10 endpoints)
 // ============================================================================
 
@@ -2825,6 +2845,10 @@ app.post("/api/escrow/settle", authenticate, async (req: Request, res: Response)
 });
 
 // ============================================================================
+// ════════════════════════════════════════════════════════════════════════════
+// MODULE: GOVERNANCE & TRANSPARENCY — Global Ledger · Verification · KYC
+// Endpoints: /api/gov, /api/ledger, /api/kyc …
+// ════════════════════════════════════════════════════════════════════════════
 // ENDPOINT 35-37: GOV + TRANSPARENCY MODULE (3 endpoints)
 // ============================================================================
 
@@ -3013,6 +3037,10 @@ app.post("/api/milestones/approve-and-release", authenticate, async (req: Reques
 });
 
 // ============================================================================
+// ════════════════════════════════════════════════════════════════════════════
+// MODULE: INVESTMENTS — NAP Portfolio · Investor Contributions · Yield
+// Endpoints: /api/investments …
+// ════════════════════════════════════════════════════════════════════════════
 // ENDPOINT 38-39: INVESTMENT MODULE (2 endpoints)
 // ============================================================================
 
@@ -5093,6 +5121,10 @@ app.post("/api/upload/signature", async (req: Request, res: Response): Promise<a
 
 
 // ============================================================================
+// ════════════════════════════════════════════════════════════════════════════
+// MODULE: RENTAL ENGINE — Properties · Units · Tenancies · Flex-Pay Vault
+// Endpoints: /api/rental, /api/landlord, /api/marketplace …
+// ════════════════════════════════════════════════════════════════════════════
 // RENTAL & YIELD ENGINE
 // ============================================================================
 
@@ -7175,6 +7207,10 @@ app.get('/api/admin/overview', authenticate, async (req: Request, res: Response)
 
 
 // ============================================================================
+// ════════════════════════════════════════════════════════════════════════════
+// MODULE: ASSET MANAGEMENT — Rent Reminders · Legal Notices · Receipts
+// Endpoints: /api/notices, /api/reminders, /api/receipts …
+// ════════════════════════════════════════════════════════════════════════════
 // POWERHOUSE ASSET MANAGEMENT ROUTES
 // Flex-Pay Vaults · Mobilization Escrow · Reminders · Notice Generator · Dashboard
 // ============================================================================
@@ -7716,6 +7752,10 @@ app.get('/api/rental/management/:projectId', authenticate, async (req: Request, 
 
 
 // ============================================================================
+// ════════════════════════════════════════════════════════════════════════════
+// MODULE: TENANT PORTAL — Dashboard · Vault · Notices · Contributions · Pay
+// Endpoints: /api/tenant …
+// ════════════════════════════════════════════════════════════════════════════
 // NESTED ARK — DUAL-CHANNEL MESSAGING + RECEIPT ENGINE + TENANT ENDPOINTS
 // File: backend/dual-channel.routes.ts
 //
@@ -9639,8 +9679,370 @@ function startListingExpiryCron(poolRef: typeof pool): void {
 }
 
 
+
+
 // ════════════════════════════════════════════════════════════════════════════
-// AUDIT TRAIL QUERY ENDPOINTS
+// MODULE: TENANT SELF-SERVICE PORTAL — Session 3
+// All routes self-resolve tenancy from JWT. Tenant never passes tenancy_id.
+// Fallback: tenant_user_id → tenant_email → auto-link for legacy rows.
+// ════════════════════════════════════════════════════════════════════════════
+
+// ── SHARED HELPER: resolve tenancy from authenticated userId ──────────────
+// Used by all tenant portal routes. Returns tenancy row or null.
+// Automatically links tenant_user_id if found by email fallback.
+async function resolveTenancy(userId: string): Promise<any | null> {
+  // Primary: linked user
+  const byId = await pool.query(
+    `SELECT t.*, ru.unit_name, ru.unit_type, ru.rent_amount AS unit_rent,
+            ru.currency, ru.project_id AS unit_project_id,
+            p.title AS project_title, p.project_number, p.location, p.sponsor_id AS landlord_id
+     FROM tenancies t
+     JOIN rental_units ru ON ru.id = t.unit_id
+     LEFT JOIN projects p ON p.id = t.project_id
+     WHERE t.tenant_user_id = $1 AND t.status = 'ACTIVE'
+     ORDER BY t.created_at DESC LIMIT 1`,
+    [userId]
+  );
+  if (byId.rows.length) return byId.rows[0];
+
+  // Fallback: match by email
+  const uRes = await pool.query('SELECT email FROM users WHERE id = $1', [userId]);
+  if (!uRes.rows.length) return null;
+
+  const byEmail = await pool.query(
+    `SELECT t.*, ru.unit_name, ru.unit_type, ru.rent_amount AS unit_rent,
+            ru.currency, ru.project_id AS unit_project_id,
+            p.title AS project_title, p.project_number, p.location, p.sponsor_id AS landlord_id
+     FROM tenancies t
+     JOIN rental_units ru ON ru.id = t.unit_id
+     LEFT JOIN projects p ON p.id = t.project_id
+     WHERE t.tenant_email = $1 AND t.status = 'ACTIVE'
+     ORDER BY t.created_at DESC LIMIT 1`,
+    [uRes.rows[0].email]
+  );
+  if (!byEmail.rows.length) return null;
+
+  // Auto-link for future fast lookups
+  pool.query(
+    `UPDATE tenancies SET tenant_user_id = $1 WHERE id = $2 AND tenant_user_id IS NULL`,
+    [userId, byEmail.rows[0].id]
+  ).catch(() => {});
+
+  return byEmail.rows[0];
+}
+
+// ── GET /api/tenant/dashboard — aggregated portal summary ─────────────────
+// Single call that powers the tenant dashboard page.
+// Returns: tenancy info + vault state + next due + recent payments + notice count.
+app.get('/api/tenant/dashboard', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId = (req as any).userId;
+  try {
+    const tenancy = await resolveTenancy(userId);
+    if (!tenancy) return res.status(404).json({ error: 'No active tenancy found for this account' });
+
+    const tenancyId = tenancy.id;
+
+    // Vault state
+    const vaultRes = await pool.query(
+      `SELECT fpv.id, fpv.vault_balance, fpv.target_amount, fpv.status,
+              fpv.frequency, fpv.installment_amount, fpv.cashout_mode,
+              COALESCE((SELECT SUM(fc.amount_ngn) FROM flex_contributions fc
+                        WHERE fc.vault_id = fpv.id AND fc.status = 'SUCCESS'), 0) AS total_contributed
+       FROM flex_pay_vaults fpv
+       WHERE fpv.tenancy_id = $1
+       ORDER BY fpv.created_at DESC LIMIT 1`,
+      [tenancyId]
+    );
+
+    // Recent rent payments (last 5)
+    const paymentsRes = await pool.query(
+      `SELECT id, amount_ngn, status, period_month, paid_at, paystack_reference
+       FROM rent_payments
+       WHERE tenancy_id = $1
+       ORDER BY created_at DESC LIMIT 5`,
+      [tenancyId]
+    );
+
+    // Active notice count
+    const noticeRes = await pool.query(
+      `SELECT COUNT(*) AS count FROM legal_notices
+       WHERE tenancy_id = $1 AND status NOT IN ('RESOLVED','WITHDRAWN')`,
+      [tenancyId]
+    );
+
+    // Maintenance requests (last 3)
+    const maintRes = await pool.query(
+      `SELECT id, title, category, severity, status, created_at
+       FROM maintenance_logs
+       WHERE unit_id = $1
+       ORDER BY created_at DESC LIMIT 3`,
+      [tenancy.unit_id]
+    );
+
+    // Next due date: latest successful rent payment + frequency interval
+    const lastPaidRes = await pool.query(
+      `SELECT paid_at FROM rent_payments
+       WHERE tenancy_id = $1 AND status = 'SUCCESS'
+       ORDER BY paid_at DESC LIMIT 1`,
+      [tenancyId]
+    );
+
+    let next_due_date: string | null = null;
+    if (lastPaidRes.rows.length && lastPaidRes.rows[0].paid_at) {
+      const lastPaid = new Date(lastPaidRes.rows[0].paid_at);
+      const freq = (tenancy.payment_frequency || 'MONTHLY').toUpperCase();
+      const daysMap: Record<string,number> = {
+        WEEKLY: 7, BIWEEKLY: 14, MONTHLY: 30,
+        QUARTERLY: 91, BIANNUAL: 183, ANNUAL: 365
+      };
+      lastPaid.setDate(lastPaid.getDate() + (daysMap[freq] || 30));
+      next_due_date = lastPaid.toISOString().split('T')[0];
+    } else if (tenancy.lease_start) {
+      next_due_date = tenancy.lease_start;
+    }
+
+    const vault = vaultRes.rows[0] || null;
+    return res.json({
+      success:           true,
+      tenancy: {
+        id:               tenancyId,
+        tenant_name:      tenancy.tenant_name,
+        tenant_email:     tenancy.tenant_email,
+        unit_name:        tenancy.unit_name,
+        unit_type:        tenancy.unit_type,
+        project_title:    tenancy.project_title,
+        project_number:   tenancy.project_number,
+        location:         tenancy.location,
+        lease_start:      tenancy.lease_start,
+        lease_end:        tenancy.lease_end,
+        rent_amount:      tenancy.unit_rent,
+        currency:         tenancy.currency,
+        payment_frequency: tenancy.payment_frequency,
+        status:           tenancy.status,
+      },
+      vault: vault ? {
+        id:                vault.id,
+        vault_balance:     parseFloat(vault.vault_balance) || 0,
+        target_amount:     parseFloat(vault.target_amount) || 0,
+        installment_amount: parseFloat(vault.installment_amount) || 0,
+        funded_pct:        Math.min(Math.round(
+                             (parseFloat(vault.vault_balance) /
+                              (parseFloat(vault.target_amount) || 1)) * 100), 100),
+        status:            vault.status,
+        frequency:         vault.frequency,
+        total_contributed: parseFloat(vault.total_contributed) || 0,
+      } : null,
+      next_due_date,
+      active_notice_count: parseInt(noticeRes.rows[0]?.count || '0'),
+      recent_payments:     paymentsRes.rows,
+      recent_maintenance:  maintRes.rows,
+    });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
+// ── GET /api/tenant/rent-history — full rent_payments ledger for tenant ───
+// Returns all rent payments across all time, newest first.
+// Used by /tenant/vault and /tenant/contributions pages.
+app.get('/api/tenant/rent-history', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId = (req as any).userId;
+  const limit  = Math.min(parseInt((req.query.limit as string) || '50'), 200);
+  const offset = parseInt((req.query.offset as string) || '0');
+  try {
+    const tenancy = await resolveTenancy(userId);
+    if (!tenancy) return res.status(404).json({ error: 'No active tenancy found' });
+
+    const payments = await pool.query(
+      `SELECT id, amount_ngn, status, period_month, paid_at,
+              paystack_reference, created_at
+       FROM rent_payments
+       WHERE tenancy_id = $1
+       ORDER BY created_at DESC
+       LIMIT $2 OFFSET $3`,
+      [tenancy.id, limit, offset]
+    );
+    const total = await pool.query(
+      `SELECT COUNT(*) AS count,
+              COALESCE(SUM(CASE WHEN status='SUCCESS' THEN amount_ngn END),0) AS total_paid
+       FROM rent_payments WHERE tenancy_id = $1`,
+      [tenancy.id]
+    );
+
+    return res.json({
+      success:     true,
+      tenancy_id:  tenancy.id,
+      payments:    payments.rows,
+      total_count: parseInt(total.rows[0].count),
+      total_paid:  parseFloat(total.rows[0].total_paid),
+      limit,
+      offset,
+    });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
+// ── GET /api/tenant/receipt/:paymentId — receipt for a rent_payment ───────
+// Distinct from /api/tenant/receipt/:contributionId (flex_contributions).
+// This covers direct rent payments made via Pay Now flow.
+app.get('/api/tenant/rent-receipt/:paymentId', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId = (req as any).userId;
+  const { paymentId } = req.params;
+  try {
+    const tenancy = await resolveTenancy(userId);
+    if (!tenancy) return res.status(404).json({ error: 'No active tenancy found' });
+
+    const r = await pool.query(
+      `SELECT rp.*, t.tenant_name, t.tenant_email, t.tenant_phone,
+              ru.unit_name, ru.unit_type, ru.rent_amount,
+              p.title AS project_title, p.project_number, p.location
+       FROM rent_payments rp
+       JOIN tenancies t    ON t.id   = rp.tenancy_id
+       JOIN rental_units ru ON ru.id = rp.unit_id
+       LEFT JOIN projects p ON p.id  = rp.project_id
+       WHERE rp.id = $1 AND rp.tenancy_id = $2`,
+      [paymentId, tenancy.id]
+    );
+
+    if (!r.rows.length) return res.status(404).json({ error: 'Payment not found or does not belong to your tenancy' });
+
+    const pmt = r.rows[0];
+    const receiptNo = `ARK-RCPT-${pmt.paystack_reference?.slice(-8)?.toUpperCase() || paymentId.slice(0,8).toUpperCase()}`;
+
+    return res.json({
+      success:        true,
+      receipt_number: receiptNo,
+      payment: {
+        id:                pmt.id,
+        amount_ngn:        parseFloat(pmt.amount_ngn),
+        status:            pmt.status,
+        period_month:      pmt.period_month,
+        paid_at:           pmt.paid_at,
+        paystack_reference: pmt.paystack_reference,
+      },
+      tenant: {
+        name:  pmt.tenant_name,
+        email: pmt.tenant_email,
+        phone: pmt.tenant_phone,
+      },
+      property: {
+        unit_name:      pmt.unit_name,
+        unit_type:      pmt.unit_type,
+        project_title:  pmt.project_title,
+        project_number: pmt.project_number,
+        location:       pmt.location,
+      },
+      generated_at: new Date().toISOString(),
+    });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
+// ── POST /api/tenant/maintenance-request — tenant logs a maintenance issue ─
+// Tenant-facing wrapper around maintenance_logs. Auto-resolves project_id.
+// Tenant only provides: title, description, category, severity.
+app.post('/api/tenant/maintenance-request', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId = (req as any).userId;
+  try {
+    const tenancy = await resolveTenancy(userId);
+    if (!tenancy) return res.status(404).json({ error: 'No active tenancy found' });
+
+    const { title, description, category, severity } = req.body;
+    if (!title) return res.status(400).json({ error: 'title is required' });
+
+    const VALID_CATEGORIES = ['GENERAL','ELECTRICAL','PLUMBING','STRUCTURAL','COSMETIC','SAFETY'];
+    const VALID_SEVERITIES  = ['LOW','MEDIUM','HIGH','CRITICAL'];
+    const cat = VALID_CATEGORIES.includes((category||'').toUpperCase()) ? category.toUpperCase() : 'GENERAL';
+    const sev = VALID_SEVERITIES.includes((severity||'').toUpperCase())  ? severity.toUpperCase()  : 'LOW';
+
+    const r = await pool.query(
+      `INSERT INTO maintenance_logs
+         (project_id, unit_id, title, description, category, severity, reported_by, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'OPEN')
+       RETURNING *`,
+      [tenancy.project_id, tenancy.unit_id, title, description || null, cat, sev, userId]
+    );
+
+    await logAudit({
+      event_type:  'MAINTENANCE_REQUESTED',
+      actor_id:    userId,
+      actor_role:  'TENANT',
+      unit_id:     tenancy.unit_id,
+      tenancy_id:  tenancy.id,
+      project_id:  tenancy.project_id,
+      description: `Tenant "${tenancy.tenant_name}" submitted maintenance request: "${title}" [${cat} / ${sev}]`,
+      metadata:    { log_id: r.rows[0].id, category: cat, severity: sev },
+    });
+
+    return res.status(201).json({ success: true, request: r.rows[0] });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
+// ── GET /api/tenant/maintenance-requests — tenant views their own requests ─
+app.get('/api/tenant/maintenance-requests', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId = (req as any).userId;
+  try {
+    const tenancy = await resolveTenancy(userId);
+    if (!tenancy) return res.status(404).json({ error: 'No active tenancy found' });
+
+    const r = await pool.query(
+      `SELECT id, title, description, category, severity, status,
+              resolved_at, created_at
+       FROM maintenance_logs
+       WHERE unit_id = $1 AND reported_by = $2
+       ORDER BY created_at DESC`,
+      [tenancy.unit_id, userId]
+    );
+    return res.json({ success: true, requests: r.rows, unit_name: tenancy.unit_name });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
+// ── PATCH /api/tenant/profile — tenant updates their own contact details ──
+// Allowed fields: tenant_name, tenant_phone only. Email is immutable.
+app.patch('/api/tenant/profile', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId = (req as any).userId;
+  try {
+    const tenancy = await resolveTenancy(userId);
+    if (!tenancy) return res.status(404).json({ error: 'No active tenancy found' });
+
+    const { tenant_name, tenant_phone } = req.body;
+    if (!tenant_name && !tenant_phone)
+      return res.status(400).json({ error: 'Provide at least tenant_name or tenant_phone to update' });
+
+    const normalizedPhone = tenant_phone ? normalizeNigerianPhone(tenant_phone) : null;
+
+    const r = await pool.query(
+      `UPDATE tenancies
+       SET tenant_name  = COALESCE($1, tenant_name),
+           tenant_phone = COALESCE($2, tenant_phone),
+           updated_at   = NOW()
+       WHERE id = $3
+       RETURNING tenant_name, tenant_email, tenant_phone`,
+      [tenant_name || null, normalizedPhone, tenancy.id]
+    );
+
+    // Also update users table name if provided
+    if (tenant_name) {
+      await pool.query(
+        `UPDATE users SET full_name = $1 WHERE id = $2`,
+        [tenant_name, userId]
+      ).catch(() => {});
+    }
+
+    await logAudit({
+      event_type:  'TENANT_PROFILE_UPDATED',
+      actor_id:    userId,
+      actor_role:  'TENANT',
+      unit_id:     tenancy.unit_id,
+      tenancy_id:  tenancy.id,
+      project_id:  tenancy.project_id,
+      description: `Tenant "${tenancy.tenant_name}" updated their profile`,
+      metadata:    { fields: Object.keys(req.body).filter(k => req.body[k]) },
+    });
+
+    return res.json({ success: true, profile: r.rows[0] });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// MODULE: AUDIT & COMPLIANCE — Immutable Event Log · SHA-256 Hash Chain
+// Endpoints: /api/audit/unit, /api/audit/project, /api/audit/tenancy
 // ════════════════════════════════════════════════════════════════════════════
 
 // ── GET /api/audit/unit/:unitId — full event history for one unit ──────────
@@ -9735,6 +10137,10 @@ app.get('/api/audit/tenancy/:tenancyId', authenticate, async (req: Request, res:
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
 
+// ════════════════════════════════════════════════════════════════════════════
+// MODULE: ADMIN UTILITIES — Dedup · System Maintenance · Override Tools
+// Endpoints: /api/admin …
+// ════════════════════════════════════════════════════════════════════════════
 // ── POST /api/admin/dedup-tenancies — one-time cleanup of duplicate tenancy rows ──
 // Keeps the most recent row per (unit_id, tenant_email) and soft-deletes older dupes.
 // Protected: ADMIN only. Safe to run multiple times (idempotent).
@@ -9828,7 +10234,7 @@ async function startServer() {
     startPendingPayoutCron(pool);
 
     app.listen(PORT, "0.0.0.0", () => {
-
+      console.log("[BOOT] All modules initialized successfully");
       console.log(`
 ============================================
 🚀 Nested Ark Infrastructure API
