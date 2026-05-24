@@ -6023,6 +6023,11 @@ app.post('/api/rental/tenancies/lifecycle', authenticate, async (req: Request, r
 
     // ── UPDATE_PARTICULARS: edit name, email, phone, rent, frequency ─────────
     if (action === 'UPDATE_PARTICULARS') {
+      // Validate email if being updated
+      if (tenant_email && !isValidEmail(tenant_email))
+        return res.status(400).json({ error: `Invalid email address: "${tenant_email}". Please check and try again.` });
+      // Normalize phone if being updated
+      const updatedPhone = tenant_phone ? normalizeNigerianPhone(tenant_phone) : null;
       const updated = await pool.query(
         `UPDATE tenancies SET
            tenant_name       = COALESCE($1, tenant_name),
@@ -6035,7 +6040,7 @@ app.post('/api/rental/tenancies/lifecycle', authenticate, async (req: Request, r
         [
           tenant_name      || null,
           tenant_email     || null,
-          tenant_phone     || null,
+          updatedPhone,
           rent_override    ? Number(rent_override) : null,
           payment_frequency || null,
           tenancy_id,
@@ -6170,6 +6175,13 @@ app.post('/api/rental/onboard-tenant', authenticate, async (req: Request, res: R
     if (!unit_id || !tenant_name || !tenant_email || !move_in_date)
       return res.status(400).json({ error: 'unit_id, tenant_name, tenant_email, move_in_date are required' });
 
+    // — Validate email format (catches mercyblessing#gmail.com, gmail.cm typos)
+    if (!isValidEmail(tenant_email))
+      return res.status(400).json({ error: `Invalid email address: "${tenant_email}". Please check and try again.` });
+
+    // — Normalize phone to +234XXXXXXXXXX before storing
+    const normalizedPhone = normalizeNigerianPhone(tenant_phone);
+
     // 1 — Verify unit exists and belongs to this landlord
     const uRes = await pool.query(
       `SELECT ru.*, p.id AS project_id, p.sponsor_id, p.title AS project_title
@@ -6225,7 +6237,7 @@ app.post('/api/rental/onboard-tenant', authenticate, async (req: Request, res: R
          updated_at   = NOW()
        RETURNING *`,
       [
-        unit_id, unit.project_id, tenant_name, tenant_email, tenant_phone || null,
+        unit_id, unit.project_id, tenant_name, tenant_email, normalizedPhone,
         leaseStart.toISOString().split('T')[0],
         leaseEnd.toISOString().split('T')[0],
         unit.rent_amount, unit.currency || 'NGN', paymentDay,
@@ -7624,6 +7636,32 @@ interface DualChannelPayload {
   pdfBuffer?: Buffer | null;
   pdfFilename?: string;
   actionUrl?: string;
+}
+
+// ── UTILITY: Email format validation ─────────────────────────────────────────
+// Basic RFC-compliant check — catches mercyblessing#gmail.com, gmail.cm typos etc.
+function isValidEmail(email: string): boolean {
+  if (!email || typeof email !== 'string') return false;
+  const EMAIL_REGEX = /^[^\s@#]+@[^\s@#]+\.[a-zA-Z]{2,}$/;
+  return EMAIL_REGEX.test(email.trim());
+}
+
+// ── UTILITY: Normalize Nigerian phone numbers to +234XXXXXXXXXX ───────────────
+// Handles: 0802..., 234802..., +234802..., +2348...  → always +234XXXXXXXXXX
+function normalizeNigerianPhone(phone: string | null | undefined): string | null {
+  if (!phone) return null;
+  const digits = phone.replace(/\D/g, '');
+  if (digits.length === 0) return null;
+  let normalized = digits;
+  if (digits.startsWith('234') && digits.length >= 13) {
+    normalized = digits; // already 234XXXXXXXXXX
+  } else if (digits.startsWith('0') && digits.length === 11) {
+    normalized = '234' + digits.slice(1); // 080X → 2348...
+  } else if (digits.length === 10 && !digits.startsWith('0')) {
+    normalized = '234' + digits; // 80XXXXXXXX (no leading 0)
+  }
+  // Return with + prefix only if we have a valid 13-digit Nigerian number
+  return normalized.length >= 13 ? '+' + normalized : '+' + digits;
 }
 
 async function dispatchDualChannel(payload: DualChannelPayload): Promise<{ emailOk: boolean; whatsappUrl: string }> {
@@ -9335,6 +9373,61 @@ const startPendingPayoutCron = (pool: any) => {
   setInterval(retryPendingPayouts, THIRTY_MINS);
   console.log('[CRON] Pending payout retry scheduler active — every 30 minutes');
 };
+
+// ── POST /api/admin/dedup-tenancies — one-time cleanup of duplicate tenancy rows ──
+// Keeps the most recent row per (unit_id, tenant_email) and soft-deletes older dupes.
+// Protected: ADMIN only. Safe to run multiple times (idempotent).
+app.post('/api/admin/dedup-tenancies', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId = (req as any).userId;
+  try {
+    // Verify caller is ADMIN
+    const userRes = await pool.query(`SELECT db_role FROM users WHERE id = $1`, [userId]);
+    if (!userRes.rows.length || userRes.rows[0].db_role !== 'ADMIN')
+      return res.status(403).json({ error: 'ADMIN only.' });
+
+    // Find duplicate (unit_id, tenant_email) groups — keep the latest id, soft-delete the rest
+    const dupRes = await pool.query(`
+      SELECT unit_id, tenant_email, COUNT(*) AS cnt,
+             MAX(id) AS keep_id,
+             ARRAY_AGG(id ORDER BY id ASC) AS all_ids
+      FROM tenancies
+      WHERE status != 'TERMINATED'
+      GROUP BY unit_id, tenant_email
+      HAVING COUNT(*) > 1
+    `);
+
+    if (!dupRes.rows.length)
+      return res.json({ message: 'No duplicate tenancies found. Database is clean.', removed: 0 });
+
+    let removed = 0;
+    for (const row of dupRes.rows) {
+      const dupIds = (row.all_ids as string[]).filter((id: string) => id !== row.keep_id);
+      if (dupIds.length) {
+        await pool.query(
+          `UPDATE tenancies SET status = 'TERMINATED', updated_at = NOW()
+           WHERE id = ANY($1::uuid[])`,
+          [dupIds]
+        );
+        removed += dupIds.length;
+      }
+    }
+
+    return res.json({
+      message: `Dedup complete. ${removed} duplicate tenancy record(s) soft-terminated.`,
+      removed,
+      groups: dupRes.rows.map(r => ({
+        unit_id: r.unit_id,
+        tenant_email: r.tenant_email,
+        kept: r.keep_id,
+        removed_count: (r.all_ids as string[]).length - 1,
+      })),
+    });
+  } catch (err: any) {
+    console.error('[DEDUP] Error:', err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 
 async function startServer() {
   try {
