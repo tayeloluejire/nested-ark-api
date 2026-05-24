@@ -41,6 +41,18 @@ const corsOptions: cors.CorsOptions = {
   optionsSuccessStatus: 200, // Some legacy browsers choke on 204
 };
 
+// 0. Normalise trailing slashes BEFORE CORS so preflight OPTIONS on /api/foo/
+//    also matches cleanly.  Strips the trailing slash from the URL path so that
+//    every Express route defined without a trailing slash will match regardless
+//    of whether the client (or Next.js trailingSlash:true) appended one.
+app.use((req: Request, _res: Response, next: NextFunction) => {
+  if (req.path.length > 1 && req.path.endsWith('/')) {
+    const query = req.url.slice(req.path.length); // preserve ?query&string
+    req.url = req.path.slice(0, -1) + query;
+  }
+  next();
+});
+
 // 1. Apply CORS middleware first
 app.use(cors(corsOptions));
 
@@ -4550,7 +4562,7 @@ app.get("/api/rates", async (req: Request, res: Response): Promise<any> => {
 // (convert route moved before :projectId)
 
 // GET /api/ticker — live market ticker feed (investments + ledger + ads)
-app.get("/api/ticker", async (req: Request, res: Response): Promise<any> => {
+app.get("/api/ticker/?", async (req: Request, res: Response): Promise<any> => {
   try {
     // Recent investments
     const recentInvestments = await pool.query(`
