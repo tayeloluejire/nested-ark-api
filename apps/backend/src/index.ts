@@ -989,7 +989,8 @@ const ensureTablesExist = async () => {
         bank_code        VARCHAR(20)  NOT NULL,
         bank_name        VARCHAR(255) NOT NULL,
         currency         VARCHAR(10)  DEFAULT 'NGN',
-        paystack_recipient_code VARCHAR(100),
+        paystack_recipient_code  VARCHAR(100),
+        paystack_subaccount_code VARCHAR(100),
         is_verified      BOOLEAN DEFAULT false,
         is_default       BOOLEAN DEFAULT false,
         created_at       TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -1084,6 +1085,7 @@ const ensureTablesExist = async () => {
 
       -- ── landlord_bank_accounts: ensure paystack_recipient_code column exists ──
       ALTER TABLE landlord_bank_accounts ADD COLUMN IF NOT EXISTS paystack_recipient_code VARCHAR(100);
+      ALTER TABLE landlord_bank_accounts ADD COLUMN IF NOT EXISTS paystack_subaccount_code VARCHAR(100);
       ALTER TABLE landlord_bank_accounts ADD COLUMN IF NOT EXISTS is_verified BOOLEAN DEFAULT true;
       ALTER TABLE landlord_bank_accounts ADD COLUMN IF NOT EXISTS currency    VARCHAR(10) DEFAULT 'NGN';
       -- ── Dedup: keep only the row with recipient_code (or latest) per user+account ──
@@ -5556,6 +5558,8 @@ app.get('/api/landlord/payout-status', authenticate, async (req: Request, res: R
       `SELECT id, account_name, account_number, bank_name, currency, is_default,
               CASE WHEN paystack_recipient_code IS NOT NULL THEN true ELSE false END AS payout_ready,
               paystack_recipient_code,
+              paystack_subaccount_code,
+              CASE WHEN paystack_subaccount_code IS NOT NULL THEN true ELSE false END AS split_pay_ready,
               created_at
        FROM landlord_bank_accounts
        WHERE user_id=$1
@@ -5585,9 +5589,11 @@ app.get('/api/landlord/bank-accounts', authenticate, async (req: Request, res: R
     const r = await pool.query(
       `SELECT id, user_id, project_id, account_name, account_number, bank_code,
               bank_name, currency, is_default, is_verified,
-              paystack_recipient_code, created_at, updated_at,
+              paystack_recipient_code, paystack_subaccount_code, created_at, updated_at,
               CASE WHEN paystack_recipient_code IS NOT NULL AND paystack_recipient_code <> ''
-                   THEN true ELSE false END AS payout_ready
+                   THEN true ELSE false END AS payout_ready,
+              CASE WHEN paystack_subaccount_code IS NOT NULL AND paystack_subaccount_code <> ''
+                   THEN true ELSE false END AS split_pay_ready
        FROM landlord_bank_accounts
        WHERE user_id=$1
        ORDER BY is_default DESC, created_at DESC`,
@@ -5605,7 +5611,7 @@ app.post('/api/landlord/bank-accounts', authenticate, async (req: Request, res: 
     if (!account_name || !account_number || !bank_code || !bank_name)
       return res.status(400).json({ error: 'account_name, account_number, bank_code, bank_name required' });
 
-    // Create Paystack Transfer Recipient for instant payouts
+    // ── Step 1: Create Paystack Transfer Recipient (for manual payout fallback) ──
     let recipientCode: string | null = null;
     if (PAYSTACK_SECRET) {
       try {
@@ -5629,6 +5635,43 @@ app.post('/api/landlord/bank-accounts', authenticate, async (req: Request, res: 
       }
     }
 
+    // ── Step 2: Auto-create Paystack Subaccount for automatic rent split ──────
+    // This enables Paystack to auto-split at payment time:
+    // 98% → landlord bank account, 2% → platform (Impressions & Impacts Ltd)
+    // No manual payout cron needed for rent once subaccount is set.
+    let subaccountCode: string | null = null;
+    if (PAYSTACK_SECRET) {
+      try {
+        // Fetch landlord profile for contact details
+        const landlordRes = await pool.query(
+          `SELECT full_name, email, phone FROM users WHERE id=$1`, [userId]
+        );
+        const landlord = landlordRes.rows[0];
+        const saRes = await fetch(`${PAYSTACK_BASE}/subaccount`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${PAYSTACK_SECRET}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            business_name:         account_name,
+            settlement_bank:       bank_code,
+            account_number:        account_number,
+            percentage_charge:     2,           // Platform retains 2%
+            primary_contact_email: landlord?.email  || null,
+            primary_contact_name:  landlord?.full_name || account_name,
+            primary_contact_phone: landlord?.phone || null,
+          }),
+        });
+        const saData = await saRes.json() as any;
+        if (saData.status && saData.data?.subaccount_code) {
+          subaccountCode = saData.data.subaccount_code;
+          console.log(`[PAYSTACK] Subaccount created for landlord ${userId}: ${subaccountCode}`);
+        } else {
+          console.warn('[PAYSTACK] Subaccount creation failed:', saData.message || saData);
+        }
+      } catch (saErr) {
+        console.warn('[PAYSTACK] Could not create subaccount:', saErr);
+      }
+    }
+
     // If this is the first account or set_as_default, unset other defaults
     if (set_as_default) {
       await pool.query(
@@ -5641,19 +5684,20 @@ app.post('/api/landlord/bank-accounts', authenticate, async (req: Request, res: 
     const r = await pool.query(
       `INSERT INTO landlord_bank_accounts
          (user_id, project_id, account_name, account_number, bank_code, bank_name, currency,
-          paystack_recipient_code, is_verified, is_default)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,true,$9)
+          paystack_recipient_code, paystack_subaccount_code, is_verified, is_default)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true,$10)
        ON CONFLICT (user_id, account_number)
        DO UPDATE SET
-         bank_code               = EXCLUDED.bank_code,
-         bank_name               = EXCLUDED.bank_name,
-         paystack_recipient_code = COALESCE(EXCLUDED.paystack_recipient_code, landlord_bank_accounts.paystack_recipient_code),
-         is_default              = EXCLUDED.is_default,
-         is_verified             = true,
-         updated_at              = NOW()
+         bank_code                = EXCLUDED.bank_code,
+         bank_name                = EXCLUDED.bank_name,
+         paystack_recipient_code  = COALESCE(EXCLUDED.paystack_recipient_code,  landlord_bank_accounts.paystack_recipient_code),
+         paystack_subaccount_code = COALESCE(EXCLUDED.paystack_subaccount_code, landlord_bank_accounts.paystack_subaccount_code),
+         is_default               = EXCLUDED.is_default,
+         is_verified              = true,
+         updated_at               = NOW()
        RETURNING *`,
       [userId, project_id || null, account_name, account_number, bank_code, bank_name,
-       currency || 'NGN', recipientCode, set_as_default ?? true]
+       currency || 'NGN', recipientCode, subaccountCode, set_as_default ?? true]
     );
     return res.status(201).json({ success: true, account: r.rows[0] });
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
@@ -5688,44 +5732,89 @@ app.post('/api/landlord/bank-accounts/:id/create-recipient', authenticate, async
       await pool.query(`UPDATE landlord_bank_accounts SET bank_code=$1 WHERE id=$2`, [resolvedBankCode, id]);
     }
 
-    if (acct.paystack_recipient_code) {
-      // Recipient already set — return success so the frontend can mark it ready
+    if (acct.paystack_recipient_code && acct.paystack_subaccount_code) {
+      // Both codes already set — account is fully split-pay ready
       return res.json({
-        success:        true,
-        message:        'Account is already payout-ready.',
-        recipient_code: acct.paystack_recipient_code,
-        already_set:    true,
+        success:          true,
+        message:          'Account is already payout-ready with auto-split enabled.',
+        recipient_code:   acct.paystack_recipient_code,
+        subaccount_code:  acct.paystack_subaccount_code,
+        already_set:      true,
       });
     }
 
     if (!PAYSTACK_SECRET) return res.status(503).json({ error: 'Payment gateway not configured' });
 
-    const prRes = await fetch(`${PAYSTACK_BASE}/transferrecipient`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${PAYSTACK_SECRET}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        type:           'nuban',
-        name:           acct.account_name,
-        account_number: acct.account_number,
-        bank_code:      resolvedBankCode,
-        currency:       acct.currency || 'NGN',
-      }),
-    });
-    const prData = await prRes.json() as any;
+    // ── Create Transfer Recipient (if missing) ───────────────────────────
+    let recipientCode = acct.paystack_recipient_code;
+    if (!recipientCode) {
+      const prRes = await fetch(`${PAYSTACK_BASE}/transferrecipient`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${PAYSTACK_SECRET}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type:           'nuban',
+          name:           acct.account_name,
+          account_number: acct.account_number,
+          bank_code:      resolvedBankCode,
+          currency:       acct.currency || 'NGN',
+        }),
+      });
+      const prData = await prRes.json() as any;
 
-    if (!prData.status || !prData.data?.recipient_code) {
-      return res.status(400).json({ error: prData.message || 'Paystack could not create recipient. Check account details.' });
+      if (!prData.status || !prData.data?.recipient_code) {
+        return res.status(400).json({ error: prData.message || 'Paystack could not create recipient. Check account details.' });
+      }
+      recipientCode = prData.data.recipient_code;
+    }
+
+    // ── Auto-create Paystack Subaccount (if missing) ─────────────────────
+    // This enables automatic 98/2 split at rent payment time.
+    let subaccountCode = acct.paystack_subaccount_code;
+    if (!subaccountCode) {
+      try {
+        const landlordRes = await pool.query(
+          `SELECT full_name, email, phone FROM users WHERE id=$1`, [acct.user_id]
+        );
+        const landlord = landlordRes.rows[0];
+        const saRes = await fetch(`${PAYSTACK_BASE}/subaccount`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${PAYSTACK_SECRET}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            business_name:         acct.account_name,
+            settlement_bank:       resolvedBankCode,
+            account_number:        acct.account_number,
+            percentage_charge:     2,
+            primary_contact_email: landlord?.email  || null,
+            primary_contact_name:  landlord?.full_name || acct.account_name,
+            primary_contact_phone: landlord?.phone || null,
+          }),
+        });
+        const saData = await saRes.json() as any;
+        if (saData.status && saData.data?.subaccount_code) {
+          subaccountCode = saData.data.subaccount_code;
+          console.log(`[PAYSTACK] Backfill subaccount created for landlord ${acct.user_id}: ${subaccountCode}`);
+        } else {
+          console.warn('[PAYSTACK] Backfill subaccount creation failed:', saData.message || saData);
+        }
+      } catch (saErr) {
+        console.warn('[PAYSTACK] Could not create backfill subaccount:', saErr);
+      }
     }
 
     await pool.query(
-      `UPDATE landlord_bank_accounts SET paystack_recipient_code=$1, bank_code=$2 WHERE id=$3`,
-      [prData.data.recipient_code, resolvedBankCode, id]
+      `UPDATE landlord_bank_accounts
+       SET paystack_recipient_code=$1, paystack_subaccount_code=$2, bank_code=$3
+       WHERE id=$4`,
+      [recipientCode, subaccountCode || null, resolvedBankCode, id]
     );
 
     return res.json({
-      success:        true,
-      recipient_code: prData.data.recipient_code,
-      message:        'Recipient code created. This account can now receive automatic payouts.',
+      success:          true,
+      recipient_code:   recipientCode,
+      subaccount_code:  subaccountCode,
+      message:          subaccountCode
+        ? 'Recipient and subaccount created. Rent payments will now auto-split 98% landlord / 2% platform.'
+        : 'Recipient code created. Subaccount creation failed — manual payout fallback active.',
     });
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
@@ -6943,7 +7032,8 @@ app.post('/api/rental/payments/initialize', async (req: Request, res: Response):
     if (!tenancy_id) return res.status(400).json({ error: 'tenancy_id required' });
 
     const ten = await pool.query(
-      `SELECT t.*, ru.unit_name, ru.project_id, p.title AS project_title
+      `SELECT t.*, ru.unit_name, ru.project_id, ru.landlord_bank_account_id,
+              p.title AS project_title, p.sponsor_id
        FROM tenancies t
        JOIN rental_units ru ON t.unit_id=ru.id
        JOIN projects p ON ru.project_id=p.id
@@ -6966,30 +7056,78 @@ app.post('/api/rental/payments/initialize', async (req: Request, res: Response):
 
     if (!PAYSTACK_SECRET) return res.status(503).json({ error: 'Payment gateway not configured' });
 
+    // ── Resolve landlord subaccount for automatic 98/2 rent split ──────────
+    // Priority: unit-linked bank account → landlord's default → any verified account
+    let landlordSubaccountCode: string | null = null;
+    try {
+      const bankQuery = `
+        SELECT lba.paystack_subaccount_code
+        FROM landlord_bank_accounts lba
+        WHERE lba.paystack_subaccount_code IS NOT NULL
+          AND lba.user_id = $1
+          AND (
+            lba.id = $2
+            OR lba.is_default = true
+            OR TRUE
+          )
+        ORDER BY
+          CASE WHEN lba.id = $2          THEN 0
+               WHEN lba.is_default        THEN 1
+               ELSE 2 END
+        LIMIT 1`;
+      const bankRes = await pool.query(bankQuery, [t.sponsor_id, t.landlord_bank_account_id || '00000000-0000-0000-0000-000000000000']);
+      if (bankRes.rows.length && bankRes.rows[0].paystack_subaccount_code) {
+        landlordSubaccountCode = bankRes.rows[0].paystack_subaccount_code;
+      }
+    } catch (bankErr) {
+      console.warn('[RENT-PAY] Could not resolve landlord subaccount:', bankErr);
+    }
+
+    // Platform fee: 2% of rent amount in kobo
+    const platformFeeKobo = Math.round(amountKobo * 0.02);
+
+    // Build Paystack payload — inject subaccount split when available
+    const psPayload: Record<string, any> = {
+      email: t.tenant_email,
+      amount: amountKobo,
+      reference,
+      currency: t.currency || 'NGN',
+      callback_url: `${process.env.FRONTEND_URL || 'https://nested-ark-ic5n6890k-nested-ark.vercel.app'}/tenant/pay/success?reference=${reference}`,
+      metadata: {
+        product:         'nestedark',
+        payment_type:    'RENT',
+        tenancy_id,
+        unit_id:         t.unit_id,
+        unit_name:       t.unit_name,
+        project_id:      t.project_id,
+        rent_payment_id: rp.rows[0].id,
+        project_title:   t.project_title,
+        period_month:    month,
+        tenant_email:    t.tenant_email,
+        tenant_id:       t.tenant_user_id ?? null,
+        landlord_id:     t.sponsor_id,
+        split_mode:      landlordSubaccountCode ? 'AUTO_SPLIT' : 'MANUAL_PAYOUT',
+      },
+      channels: ['card','bank','ussd','mobile_money','bank_transfer'],
+    };
+
+    if (landlordSubaccountCode) {
+      // Auto-split: landlord gets 98%, platform keeps 2%
+      // bearer: "account" means the platform covers Paystack's own transaction fee
+      psPayload.subaccount          = landlordSubaccountCode;
+      psPayload.bearer              = 'account';
+      psPayload.transaction_charge  = platformFeeKobo;  // platform retains this amount
+      console.log(`[RENT-PAY] Auto-split enabled — subaccount=${landlordSubaccountCode}, platform_fee_kobo=${platformFeeKobo}`);
+    } else {
+      // Fallback: full amount lands in platform, manual payout cron handles landlord settlement
+      psPayload.bearer = 'account';
+      console.log(`[RENT-PAY] No subaccount found for landlord ${t.sponsor_id} — falling back to manual payout flow`);
+    }
+
     const psRes = await fetch(`${PAYSTACK_BASE}/transaction/initialize`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${PAYSTACK_SECRET}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        email: t.tenant_email,
-        amount: amountKobo,
-        reference,
-        currency: t.currency || 'NGN',
-        callback_url: `${process.env.FRONTEND_URL || 'https://nested-ark-ic5n6890k-nested-ark.vercel.app'}/tenant/pay/success?reference=${reference}`,
-        metadata: {
-          product:         'nestedark',
-          payment_type:    'RENT',
-          tenancy_id,
-          unit_id:         t.unit_id,
-          unit_name:       t.unit_name,
-          project_id:      t.project_id,
-          rent_payment_id: rp.rows[0].id,
-          project_title:   t.project_title,
-          period_month:    month,
-          tenant_email:    t.tenant_email,
-          tenant_id:       t.tenant_user_id ?? null,
-        },
-        channels: ['card','bank','ussd','mobile_money','bank_transfer'],
-      }),
+      body: JSON.stringify(psPayload),
     });
 
     const psData = await psRes.json() as any;
@@ -9211,10 +9349,14 @@ app.post('/api/tenant/pay-installment', authenticate, async (req: Request, res: 
 
     // Fetch vault + user email for Paystack
     const vaultRes = await pool.query(
-      `SELECT fpv.*, t.tenant_email, t.tenant_name, t.id AS tenancy_id, u.email AS user_email
+      `SELECT fpv.*, t.tenant_email, t.tenant_name, t.id AS tenancy_id,
+              u.email AS user_email, p.sponsor_id,
+              ru.landlord_bank_account_id
        FROM flex_pay_vaults fpv
        JOIN tenancies t ON t.id = fpv.tenancy_id
        LEFT JOIN users u ON u.id = $2
+       LEFT JOIN projects p ON p.id = COALESCE(fpv.project_id, t.project_id)
+       LEFT JOIN rental_units ru ON ru.id = fpv.unit_id
        WHERE fpv.id = $1`,
       [resolvedVaultId, userId]
     );
@@ -9240,29 +9382,65 @@ app.post('/api/tenant/pay-installment', authenticate, async (req: Request, res: 
     const ref        = `ARK-VAULT-${resolvedVaultId.slice(0, 8)}-${Date.now()}`;
     const FRONTEND   = process.env.FRONTEND_URL || 'https://nested-ark-ic5n6890k-nested-ark.vercel.app';
 
+    // ── Resolve landlord subaccount for auto 98/2 split ──────────────────
+    let vaultSubaccountCode: string | null = null;
+    if (v.sponsor_id) {
+      try {
+        const bankRes = await pool.query(
+          `SELECT paystack_subaccount_code
+           FROM landlord_bank_accounts
+           WHERE user_id = $1
+             AND paystack_subaccount_code IS NOT NULL
+           ORDER BY
+             CASE WHEN id = $2 THEN 0
+                  WHEN is_default THEN 1
+                  ELSE 2 END
+           LIMIT 1`,
+          [v.sponsor_id, v.landlord_bank_account_id || '00000000-0000-0000-0000-000000000000']
+        );
+        if (bankRes.rows.length) vaultSubaccountCode = bankRes.rows[0].paystack_subaccount_code;
+      } catch (bankErr) {
+        console.warn('[FLEX-PAY] Could not resolve landlord subaccount:', bankErr);
+      }
+    }
+
+    const platformFeeKobo = Math.round(amountKobo * 0.02);
+
+    const vaultPsPayload: Record<string, any> = {
+      email,
+      amount:       amountKobo,
+      reference:    ref,
+      currency:     'NGN',
+      bearer:       'account',  // Platform covers Paystack fee — tenant pays exact installment
+      callback_url: `${FRONTEND}/tenant/pay/success?reference=${ref}`,
+      metadata:  {
+        payment_type:       'RENT_INSTALLMENT',
+        vault_id:           resolvedVaultId,
+        tenancy_id:         v.tenancy_id,
+        tenant_name:        v.tenant_name,
+        base_naira_amount:  baseAmountNaira,
+        processing_fee_ngn: 0,  // platform absorbs Paystack fee
+        landlord_id:        v.sponsor_id ?? null,
+        split_mode:         vaultSubaccountCode ? 'AUTO_SPLIT' : 'MANUAL_PAYOUT',
+        custom_fields: [
+          { display_name: 'Vault ID',  variable_name: 'vault_id',    value: resolvedVaultId },
+          { display_name: 'Tenant',    variable_name: 'tenant_name', value: v.tenant_name   },
+        ],
+      },
+    };
+
+    if (vaultSubaccountCode) {
+      vaultPsPayload.subaccount         = vaultSubaccountCode;
+      vaultPsPayload.transaction_charge = platformFeeKobo;
+      console.log(`[FLEX-PAY] Auto-split enabled — subaccount=${vaultSubaccountCode}, platform_fee_kobo=${platformFeeKobo}`);
+    } else {
+      console.log(`[FLEX-PAY] No subaccount for landlord ${v.sponsor_id ?? 'unknown'} — manual payout fallback`);
+    }
+
     const psRes = await fetch('https://api.paystack.co/transaction/initialize', {
       method:  'POST',
       headers: { Authorization: `Bearer ${PAYSTACK_SECRET}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        email,
-        amount:       amountKobo,
-        reference:    ref,
-        currency:     'NGN',
-        bearer:       'account',  // Platform covers Paystack fee — tenant pays exact installment
-        callback_url: `${FRONTEND}/tenant/pay/success?reference=${ref}`,
-        metadata:  {
-          payment_type:       'RENT_INSTALLMENT',
-          vault_id:           resolvedVaultId,
-          tenancy_id:         v.tenancy_id,
-          tenant_name:        v.tenant_name,
-          base_naira_amount:  baseAmountNaira,
-          processing_fee_ngn: 0,  // platform absorbs
-          custom_fields: [
-            { display_name: 'Vault ID',  variable_name: 'vault_id',    value: resolvedVaultId },
-            { display_name: 'Tenant',    variable_name: 'tenant_name', value: v.tenant_name   },
-          ],
-        },
-      }),
+      body: JSON.stringify(vaultPsPayload),
     });
 
     const psData: any = await psRes.json();
