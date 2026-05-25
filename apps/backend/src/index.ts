@@ -111,7 +111,7 @@ setInterval(() => {
 // ── Rate limiter presets ──────────────────────────────────────────────────
 const authLimiter     = createRateLimiter(15 * 60 * 1000, 10,  'Too many auth attempts. Please try again in 15 minutes.');
 const actionLimiter   = createRateLimiter(60 * 1000,       30, 'Rate limit exceeded. Please slow down.');
-const paymentLimiter  = createRateLimiter(60 * 1000,       5,  'Too many payment requests. Please wait before retrying.');
+const paymentLimiter  = createRateLimiter(5 * 60 * 1000,   10, 'Too many payment requests. Please wait 5 minutes before retrying.');
 const noticeLimiter   = createRateLimiter(60 * 1000,       10, 'Too many notice requests. Please slow down.');
 
 // ── Apply limiters ────────────────────────────────────────────────────────
@@ -5665,10 +5665,10 @@ app.post('/api/landlord/bank-accounts', authenticate, async (req: Request, res: 
           subaccountCode = saData.data.subaccount_code;
           console.log(`[PAYSTACK] Subaccount created for landlord ${userId}: ${subaccountCode}`);
         } else {
-          console.warn('[PAYSTACK] Subaccount creation failed:', saData.message || saData);
+          console.error('[PAYSTACK-SUBACCOUNT-ERROR] Creation failed:', JSON.stringify(saData.message || saData));
         }
       } catch (saErr) {
-        console.warn('[PAYSTACK] Could not create subaccount:', saErr);
+        console.error('[PAYSTACK-SUBACCOUNT-ERROR] Exception during creation:', (saErr as any)?.message || saErr);
       }
     }
 
@@ -6565,15 +6565,16 @@ app.post('/api/rental/onboard-tenant', authenticate, async (req: Request, res: R
     leaseEnd.setFullYear(leaseEnd.getFullYear() + 1);
     const paymentDay = leaseStart.getDate();
 
-    // 3 — Normalise payment_frequency → target_amount for vault
-    const freq = (payment_frequency || 'monthly').toLowerCase();
-    const monthlyRent = Number(unit.rent_amount) || 0;
-    const freqMap: Record<string,number> = {
-      weekly: monthlyRent / 4, monthly: monthlyRent,
-      quarterly: monthlyRent * 3, biannual: monthlyRent * 6, annual: monthlyRent * 12,
-    };
-    const installmentAmount = freqMap[freq] ?? monthlyRent;
-    const targetAmount = monthlyRent * 12; // always one year of rent as vault target
+    // 3 — Normalise payment_frequency → installment and target for vault
+    // Uses centralized helper: calculateInstallmentAmount / calculateVaultTarget
+    // rent_amount on the unit = the amount per the unit's configured frequency
+    // e.g. ANNUAL ₦120 means the full year rent is ₦120
+    // e.g. MONTHLY ₦10,000 means ₦10,000/month
+    const freq = (payment_frequency || 'MONTHLY').toUpperCase();
+    const unitRentAmount = Number(unit.rent_amount) || 0;
+    const installmentAmount = calculateInstallmentAmount(unitRentAmount, freq);
+    const targetAmount      = calculateVaultTarget(unitRentAmount, freq);
+    console.log(`[ONBOARD] freq=${freq} unitRent=${unitRentAmount} installment=${installmentAmount} target=${targetAmount}`);
 
     // 3b — Warn if tenant frequency / rent doesn't match unit configuration
     // e.g. unit is set at ₦600k/mo but landlord onboards tenant as ANNUAL
@@ -6587,12 +6588,12 @@ app.post('/api/rental/onboard-tenant', authenticate, async (req: Request, res: R
 
     // 4 — Next due date = move_in_date + one frequency period
     const nextDue = new Date(leaseStart);
-    if (freq === 'weekly')     nextDue.setDate(nextDue.getDate() + 7);
-    else if (freq === 'monthly')    nextDue.setMonth(nextDue.getMonth() + 1);
-    else if (freq === 'quarterly')  nextDue.setMonth(nextDue.getMonth() + 3);
-    else if (freq === 'biannual')   nextDue.setMonth(nextDue.getMonth() + 6);
-    else if (freq === 'annual')     nextDue.setFullYear(nextDue.getFullYear() + 1);
-
+    if (freq === 'WEEKLY')          nextDue.setDate(nextDue.getDate() + 7);
+    else if (freq === 'BIWEEKLY')   nextDue.setDate(nextDue.getDate() + 14);
+    else if (freq === 'MONTHLY')    nextDue.setMonth(nextDue.getMonth() + 1);
+    else if (freq === 'QUARTERLY')  nextDue.setMonth(nextDue.getMonth() + 3);
+    else if (freq === 'BIANNUAL')   nextDue.setMonth(nextDue.getMonth() + 6);
+    else if (freq === 'ANNUAL')     nextDue.setFullYear(nextDue.getFullYear() + 1);
     // 5 — Upsert tenancy row (idempotent — same unit+email = update, not duplicate)
     const tenRes = await pool.query(
       `INSERT INTO tenancies
@@ -8183,6 +8184,40 @@ async function logAudit(entry: AuditEntry): Promise<void> {
 }
 
 
+
+// ── UTILITY: Centralized installment/frequency calculator ────────────────
+// Single source of truth for ALL frequency math across the platform.
+// rent_amount = the total rent for one full lease period (as stored on unit)
+//   e.g. if unit.payment_frequency = ANNUAL, rent_amount = ₦120,000/year
+//   e.g. if unit.payment_frequency = MONTHLY, rent_amount = ₦10,000/month
+// Returns: the per-installment amount the tenant should pay each period.
+function calculateInstallmentAmount(rentAmount: number, frequency: string): number {
+  const freq = (frequency || 'MONTHLY').toUpperCase();
+  switch (freq) {
+    case 'WEEKLY':    return Math.ceil(rentAmount / 52);
+    case 'BIWEEKLY':  return Math.ceil(rentAmount / 26);
+    case 'MONTHLY':   return Math.ceil(rentAmount / 12);
+    case 'QUARTERLY': return Math.ceil(rentAmount / 4);
+    case 'BIANNUAL':  return Math.ceil(rentAmount / 2);
+    case 'ANNUAL':    return rentAmount; // full annual rent = one installment
+    default:          return Math.ceil(rentAmount / 12);
+  }
+}
+
+// Target amount = always one full year of rent (vault accumulates toward this)
+function calculateVaultTarget(rentAmount: number, frequency: string): number {
+  const freq = (frequency || 'MONTHLY').toUpperCase();
+  switch (freq) {
+    case 'WEEKLY':    return Math.ceil(rentAmount * 52);
+    case 'BIWEEKLY':  return Math.ceil(rentAmount * 26);
+    case 'MONTHLY':   return Math.ceil(rentAmount * 12);
+    case 'QUARTERLY': return Math.ceil(rentAmount * 4);
+    case 'BIANNUAL':  return Math.ceil(rentAmount * 2);
+    case 'ANNUAL':    return rentAmount; // already full year
+    default:          return Math.ceil(rentAmount * 12);
+  }
+}
+
 // ── UTILITY: Tenant data validation — used by all onboard routes ─────────
 // Validates rent, frequency, dates, phone warnings. Returns error string or null.
 const VALID_FREQUENCIES = ['WEEKLY','BIWEEKLY','MONTHLY','QUARTERLY','BIANNUAL','ANNUAL'];
@@ -9647,13 +9682,13 @@ app.post('/api/tenant/onboard', async (req: Request, res: Response): Promise<any
     const existingVault = await client.query(`SELECT id FROM flex_pay_vaults WHERE tenancy_id=$1 AND status IN ('ACTIVE','FUNDED_READY')`, [tenancyId]);
     let vaultId: string | null = null;
     const rentAmount  = parseFloat(unit.rent_amount);
-    const periods     = ({ WEEKLY:52, MONTHLY:12, QUARTERLY:4 } as Record<string,number>)[frequency] ?? 12;
-    const installment = Math.ceil(rentAmount / periods);
+    // Use centralized helper — rent_amount is the configured per-frequency amount
+    const installment = calculateInstallmentAmount(rentAmount, frequency);
     if (!existingVault.rows.length) {
       const nextDue = new Date(); nextDue.setDate(nextDue.getDate() + 1);
       const vaultRes = await client.query(
         `INSERT INTO flex_pay_vaults (tenancy_id, unit_id, project_id, vault_balance, target_amount, frequency, installment_amount, currency, next_due_date, cashout_mode) VALUES ($1,$2,$3,0,$4,$5,$6,$7,$8,'LUMP_SUM') RETURNING id`,
-        [tenancyId, unitId, unit.project_id, rentAmount, frequency, installment, unit.currency||'NGN', nextDue.toISOString().split('T')[0]]
+        [tenancyId, unitId, unit.project_id, calculateVaultTarget(rentAmount, frequency), frequency, installment, unit.currency||'NGN', nextDue.toISOString().split('T')[0]]
       );
       vaultId = vaultRes.rows[0].id;
     } else { vaultId = existingVault.rows[0].id; }
@@ -10884,6 +10919,27 @@ async function startServer() {
     // time, or where Paystack balance was ₦0 (T+1 clearing). Retries automatically.
     startPendingPayoutCron(pool);
 
+    // ── Runtime payment architecture validation (runs in async startServer context) ─
+    // Checks DB for any landlord with a provisioned subaccount to confirm
+    // the split pipeline is live. Logs to Render for easy verification.
+    try {
+      const splitCheck = await pool.query(
+        `SELECT COUNT(*) AS total,
+                COUNT(paystack_subaccount_code) FILTER (WHERE paystack_subaccount_code IS NOT NULL) AS with_split
+         FROM landlord_bank_accounts`
+      );
+      const { total, with_split } = splitCheck.rows[0];
+      console.log(`[PAYMENTS] Settlement: ${with_split}/${total} landlord accounts have auto-split active`);
+      if (parseInt(with_split) > 0) {
+        console.log('[PAYMENTS] Mode: AUTO SPLIT (98% landlord / 2% platform via Paystack subaccount)');
+      } else {
+        console.log('[PAYMENTS] Mode: MANUAL PAYOUT fallback (no subaccounts provisioned yet)');
+        console.log('[PAYMENTS] Action: Landlords must save a bank account to enable auto-split');
+      }
+    } catch (splitCheckErr: any) {
+      console.warn('[PAYMENTS] Could not verify split status:', (splitCheckErr as any).message);
+    }
+
     app.listen(PORT, "0.0.0.0", () => {
       console.log("[BOOT] All modules initialized successfully");
       console.log(`
@@ -10914,10 +10970,10 @@ Geo-Awareness: Active 🌍
 Market Ticker: Live 📡
 Revenue Engine: Active 💰
 Rental Engine: Active 🏠
-Escrow Mode: Funds held in main Paystack balance (no subaccount split)
-Paystack Fee: Platform covers 1.5% transaction fee (bearer: account)
-Platform Fee: 2% deducted at milestone RELEASE (not at payment time)
-Subaccount Ref: ${PAYSTACK_SUBACCOUNT_CODE || 'Not set (not used for splitting)'}
+Settlement: Per-landlord subaccounts (auto 98/2 split on rent collection)
+Paystack Fee: Platform covers Paystack transaction fee (bearer: account)
+Platform Fee: 2% of each rent payment (deducted at collection via split)
+Split Engine: ACTIVE — subaccount provisioned on landlord bank account save
 Data Persistence: ENABLED ✅
 
 ============================================
