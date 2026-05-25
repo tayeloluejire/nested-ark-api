@@ -1156,6 +1156,9 @@ const ensureTablesExist = async () => {
 
       -- ── Soft delete columns ───────────────────────────────────────────────
       -- Nothing is ever hard-deleted. archived_at = soft delete timestamp.
+      ALTER TABLE flex_pay_vaults ADD COLUMN IF NOT EXISTS payout_failed_at     TIMESTAMPTZ DEFAULT NULL;
+      ALTER TABLE flex_pay_vaults ADD COLUMN IF NOT EXISTS payout_failure_reason TEXT        DEFAULT NULL;
+      ALTER TABLE flex_pay_vaults ADD COLUMN IF NOT EXISTS payout_attempt_count  INTEGER     DEFAULT 0;
       ALTER TABLE tenancies      ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ DEFAULT NULL;
       ALTER TABLE rental_units   ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ DEFAULT NULL;
       ALTER TABLE legal_notices  ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ DEFAULT NULL;
@@ -6438,12 +6441,21 @@ app.post('/api/rental/onboard-tenant', authenticate, async (req: Request, res: R
     if (!unit_id || !tenant_name || !tenant_email || !move_in_date)
       return res.status(400).json({ error: 'unit_id, tenant_name, tenant_email, move_in_date are required' });
 
-    // — Validate email format (catches mercyblessing#gmail.com, gmail.cm typos)
-    if (!isValidEmail(tenant_email))
-      return res.status(400).json({ error: `Invalid email address: "${tenant_email}". Please check and try again.` });
+    // — Comprehensive tenant data validation (email, rent, frequency, dates)
+    const validationError = validateTenantData({
+      tenant_email,
+      tenant_phone,
+      rent_amount:       undefined,   // unit rent used — not overridden here
+      payment_frequency,
+      move_in_date,
+    });
+    if (validationError) return res.status(400).json({ error: validationError });
 
     // — Normalize phone to +234XXXXXXXXXX before storing
     const normalizedPhone = normalizeNigerianPhone(tenant_phone);
+
+    // — Phone duplicate warning (non-blocking — returns warning in response)
+    const phoneWarning = normalizedPhone ? await checkPhoneDuplicate(normalizedPhone) : null;
 
     // 1 — Verify unit exists and belongs to this landlord
     const uRes = await pool.query(
@@ -6473,6 +6485,16 @@ app.post('/api/rental/onboard-tenant', authenticate, async (req: Request, res: R
     };
     const installmentAmount = freqMap[freq] ?? monthlyRent;
     const targetAmount = monthlyRent * 12; // always one year of rent as vault target
+
+    // 3b — Warn if tenant frequency / rent doesn't match unit configuration
+    // e.g. unit is set at ₦600k/mo but landlord onboards tenant as ANNUAL
+    // This is informational only — landlord may intentionally override.
+    const unitFreq = (unit.payment_frequency || 'MONTHLY').toUpperCase();
+    const tenFreq  = freq.toUpperCase();
+    const frequencyMismatch =
+      unitFreq !== tenFreq
+        ? `Note: unit is configured as ${unitFreq} payments but you are onboarding this tenant as ${tenFreq}. The tenant's vault will use ${tenFreq}. Update the unit settings if this is unintended.`
+        : null;
 
     // 4 — Next due date = move_in_date + one frequency period
     const nextDue = new Date(leaseStart);
@@ -6560,6 +6582,8 @@ app.post('/api/rental/onboard-tenant', authenticate, async (req: Request, res: R
       tenancy,
       vault,
       invite_link,
+      ...(phoneWarning      ? { phone_warning:       phoneWarning      } : {}),
+      ...(frequencyMismatch ? { frequency_warning: frequencyMismatch } : {}),
     });
 
   } catch (e: any) {
@@ -6866,9 +6890,24 @@ app.post('/api/rental/tenancies', authenticate, async (req: Request, res: Respon
   const userId = (req as any).userId;
   try {
     const { unit_id, tenant_name, tenant_email, tenant_phone,
-            lease_start, lease_end, rent_amount, currency, payment_day, notes } = req.body;
+            lease_start, lease_end, rent_amount, currency, payment_day,
+            payment_frequency: srFreq, notes } = req.body;
     if (!unit_id || !tenant_name || !tenant_email || !lease_start || !rent_amount)
       return res.status(400).json({ error: 'unit_id, tenant_name, tenant_email, lease_start, rent_amount required' });
+
+    // — Full data validation (email, rent, frequency, dates)
+    const selfRegValidErr = validateTenantData({
+      tenant_email, tenant_phone, rent_amount,
+      payment_frequency: srFreq,
+      lease_start, lease_end,
+    });
+    if (selfRegValidErr) return res.status(400).json({ error: selfRegValidErr });
+
+    // — Normalize phone
+    const normalizedPhoneSR = normalizeNigerianPhone(tenant_phone);
+
+    // — Phone duplicate warning
+    const phoneWarningSR = normalizedPhoneSR ? await checkPhoneDuplicate(normalizedPhoneSR) : null;
 
     const unit = await pool.query(
       `SELECT ru.*, p.sponsor_id FROM rental_units ru
@@ -6886,10 +6925,14 @@ app.post('/api/rental/tenancies', authenticate, async (req: Request, res: Respon
           lease_start,lease_end,rent_amount,currency,payment_day,notes)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
       [unit_id, unit.rows[0].project_id, tenant_name, tenant_email,
-       tenant_phone||null, lease_start, lease_end||null,
+       normalizedPhoneSR||null, lease_start, lease_end||null,
        rent_amount, currency||'NGN', payment_day||1, notes||null]
     );
-    return res.status(201).json({ success: true, tenancy: r.rows[0] });
+    return res.status(201).json({
+      success: true,
+      tenancy: r.rows[0],
+      ...(phoneWarningSR ? { phone_warning: phoneWarningSR } : {}),
+    });
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
 
@@ -7999,6 +8042,88 @@ async function logAudit(entry: AuditEntry): Promise<void> {
     // Non-fatal: audit failure must never break the primary workflow
     console.warn('[AUDIT] Write failed:', auditErr.message);
   }
+}
+
+
+// ── UTILITY: Tenant data validation — used by all onboard routes ─────────
+// Validates rent, frequency, dates, phone warnings. Returns error string or null.
+const VALID_FREQUENCIES = ['WEEKLY','BIWEEKLY','MONTHLY','QUARTERLY','BIANNUAL','ANNUAL'];
+
+interface TenantDataInput {
+  tenant_email?:      string;
+  tenant_phone?:      string;
+  rent_amount?:       any;
+  payment_frequency?: string;
+  move_in_date?:      string;
+  lease_start?:       string;
+  lease_end?:         string;
+}
+
+function validateTenantData(data: TenantDataInput): string | null {
+  const { tenant_email, tenant_phone, rent_amount, payment_frequency, move_in_date, lease_start, lease_end } = data;
+
+  // Email
+  if (tenant_email && !isValidEmail(tenant_email))
+    return `Invalid email address: "${tenant_email}". Check for typos (e.g. # instead of @, .cm instead of .com).`;
+
+  // Rent amount
+  const rent = Number(rent_amount);
+  if (rent_amount !== undefined && rent_amount !== null) {
+    if (isNaN(rent) || rent <= 0)
+      return 'rent_amount must be a positive number greater than zero.';
+    if (rent < 100)
+      return `rent_amount of ₦${rent} seems too low. Minimum is ₦100. Please verify.`;
+    if (rent > 100_000_000)
+      return `rent_amount of ₦${rent.toLocaleString()} exceeds ₦100M. Please verify — this may be a data entry error.`;
+  }
+
+  // Payment frequency
+  if (payment_frequency) {
+    const freq = payment_frequency.toUpperCase();
+    if (!VALID_FREQUENCIES.includes(freq))
+      return `Invalid payment_frequency "${payment_frequency}". Must be one of: ${VALID_FREQUENCIES.join(', ')}.`;
+  }
+
+  // Move-in / lease_start date
+  const startStr = move_in_date || lease_start;
+  if (startStr) {
+    const start = new Date(startStr);
+    if (isNaN(start.getTime()))
+      return `Invalid date: "${startStr}". Use YYYY-MM-DD format.`;
+    const ninetyDaysAgo = new Date();
+    ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
+    if (start < ninetyDaysAgo)
+      return `move_in_date "${startStr}" is more than 90 days in the past. Please verify — this may be a data entry error.`;
+
+    // lease_end must be after lease_start
+    if (lease_end) {
+      const end = new Date(lease_end);
+      if (isNaN(end.getTime()))
+        return `Invalid lease_end: "${lease_end}". Use YYYY-MM-DD format.`;
+      if (end <= start)
+        return `lease_end (${lease_end}) must be after lease_start (${startStr}).`;
+    }
+  }
+
+  return null; // all good
+}
+
+// ── UTILITY: Phone duplicate warning check ───────────────────────────────
+// Not a hard block — returns warning string if phone already used.
+// Landlord can still proceed, but is alerted.
+async function checkPhoneDuplicate(phone: string, excludeTenancyId?: string): Promise<string | null> {
+  if (!phone) return null;
+  const normalized = normalizeNigerianPhone(phone);
+  if (!normalized) return null;
+  const q = excludeTenancyId
+    ? `SELECT tenant_name, tenant_email FROM tenancies WHERE tenant_phone=$1 AND id!=$2 AND status='ACTIVE' LIMIT 1`
+    : `SELECT tenant_name, tenant_email FROM tenancies WHERE tenant_phone=$1 AND status='ACTIVE' LIMIT 1`;
+  const params = excludeTenancyId ? [normalized, excludeTenancyId] : [normalized];
+  const r = await pool.query(q, params);
+  if (r.rows.length) {
+    return `Warning: phone number ${normalized} is already registered to active tenant "${r.rows[0].tenant_name}" (${r.rows[0].tenant_email}). Verify this is not a data entry error.`;
+  }
+  return null;
 }
 
 // ── UTILITY: Email format validation ─────────────────────────────────────────
@@ -9744,12 +9869,40 @@ const startPendingPayoutCron = (pool: any) => {
 
           if (tData.status) {
             await pool.query(
-              `UPDATE flex_pay_vaults SET status='ACTIVE', vault_balance=0, updated_at=NOW() WHERE id=$1`,
+              `UPDATE flex_pay_vaults
+               SET status='ACTIVE', vault_balance=0, updated_at=NOW(),
+                   payout_failed_at=NULL, payout_failure_reason=NULL
+               WHERE id=$1`,
               [v.vault_id]
             );
             console.log(`[PAYOUT-CRON] ✅ Sent → ${acct.account_name} | ${acct.bank_name} | ₦${netKobo/100} | ref=${payRef}`);
+            await logAudit({
+              event_type:  'PAYOUT_RELEASED',
+              actor_id:    v.sponsor_id,
+              actor_role:  'SYSTEM',
+              unit_id:     null,
+              description: `Rent payout of ₦${netKobo/100} released to ${acct.account_name} (${acct.bank_name}) — ref: ${payRef}`,
+              metadata:    { reference: payRef, amount_ngn: netKobo/100, vault_id: v.vault_id, source: 'RETRY_CRON' },
+            });
           } else {
+            // Mark vault with failure state for landlord visibility
+            await pool.query(
+              `UPDATE flex_pay_vaults
+               SET payout_failed_at = NOW(),
+                   payout_failure_reason = $1,
+                   payout_attempt_count = COALESCE(payout_attempt_count, 0) + 1
+               WHERE id=$2`,
+              [tData.message || 'Paystack transfer rejected', v.vault_id]
+            );
             console.warn(`[PAYOUT-CRON] ⚠ Failed for vault ${v.vault_id}: ${tData.message}`);
+            await logAudit({
+              event_type:  'PAYOUT_FAILED',
+              actor_id:    v.sponsor_id,
+              actor_role:  'SYSTEM',
+              unit_id:     null,
+              description: `Rent payout FAILED for landlord — Paystack error: ${tData.message || 'Unknown error'}`,
+              metadata:    { reference: payRef, vault_id: v.vault_id, error: tData.message, attempt: (v.payout_attempt_count || 0) + 1 },
+            });
           }
         } catch (vaultErr: any) {
           console.warn(`[PAYOUT-CRON] Vault ${v.vault_id} error:`, vaultErr.message);
@@ -10326,6 +10479,134 @@ app.get('/api/audit/tenancy/:tenancyId', authenticate, async (req: Request, res:
       [tenancyId]
     );
     return res.json({ success: true, tenancy_id: tenancyId, logs: logs.rows });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
+
+// ════════════════════════════════════════════════════════════════════════════
+// MODULE: PAYOUT DISPUTE MANAGEMENT
+// Gives landlords visibility into failed payouts.
+// Gives admin a manual trigger for stuck vaults.
+// ════════════════════════════════════════════════════════════════════════════
+
+// ── GET /api/landlord/payout-failures — vaults with failed payout state ──
+// Shows landlord every vault that failed payout, with reason + attempt count.
+// Frontend can show a "Payout Failed — Contact Support" badge.
+app.get('/api/landlord/payout-failures', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId = (req as any).userId;
+  try {
+    const r = await pool.query(
+      `SELECT fpv.id AS vault_id, fpv.vault_balance, fpv.payout_failed_at,
+              fpv.payout_failure_reason, fpv.payout_attempt_count,
+              fpv.currency, fpv.status,
+              t.tenant_name, t.tenant_email,
+              ru.unit_name, p.title AS project_title, p.project_number
+       FROM flex_pay_vaults fpv
+       JOIN tenancies t      ON t.id    = fpv.tenancy_id
+       JOIN rental_units ru  ON ru.id   = t.unit_id
+       JOIN projects p       ON p.id    = COALESCE(fpv.project_id, t.project_id)
+       WHERE p.sponsor_id = $1
+         AND fpv.payout_failed_at IS NOT NULL
+       ORDER BY fpv.payout_failed_at DESC`,
+      [userId]
+    );
+    return res.json({
+      success:        true,
+      failed_payouts: r.rows,
+      count:          r.rows.length,
+      message:        r.rows.length
+        ? `${r.rows.length} payout(s) require attention. Contact support or verify your bank account details.`
+        : 'No payout failures. All transfers are healthy.',
+    });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
+// ── POST /api/admin/trigger-payout/:vaultId — manual payout retry ─────────
+// ADMIN-only. Forces immediate payout attempt for a stuck vault.
+// Used when: wrong bank details were fixed, Paystack was down, manual dispute.
+app.post('/api/admin/trigger-payout/:vaultId', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId = (req as any).userId;
+  const { vaultId } = req.params;
+  const { dispute_note } = req.body;
+  try {
+    // ADMIN only
+    const uRes = await pool.query(`SELECT db_role FROM users WHERE id=$1`, [userId]);
+    if (!uRes.rows.length || uRes.rows[0].db_role !== 'ADMIN')
+      return res.status(403).json({ error: 'ADMIN only.' });
+
+    // Load vault + landlord bank account
+    const vRes = await pool.query(
+      `SELECT fpv.*, p.sponsor_id, ru.unit_id,
+              t.tenant_name, t.tenant_email, ru.unit_name
+       FROM flex_pay_vaults fpv
+       JOIN tenancies t      ON t.id    = fpv.tenancy_id
+       JOIN rental_units ru  ON ru.id   = t.unit_id
+       JOIN projects p       ON p.id    = COALESCE(fpv.project_id, t.project_id)
+       WHERE fpv.id = $1`,
+      [vaultId]
+    );
+    if (!vRes.rows.length) return res.status(404).json({ error: 'Vault not found' });
+    const v = vRes.rows[0];
+
+    const bankRes = await pool.query(
+      `SELECT * FROM landlord_bank_accounts
+       WHERE user_id=$1 AND is_default=true AND paystack_recipient_code IS NOT NULL LIMIT 1`,
+      [v.sponsor_id]
+    );
+    if (!bankRes.rows.length)
+      return res.status(400).json({ error: 'Landlord has no verified default bank account. Fix that first.' });
+
+    const acct = bankRes.rows[0];
+    const rentAmount  = parseFloat(v.vault_balance) || parseFloat(v.rent_amount) || 0;
+    if (rentAmount <= 0)
+      return res.status(400).json({ error: 'Vault balance is zero — nothing to pay out.' });
+
+    const platformFee = Math.round(rentAmount * 0.02 * 100) / 100;
+    const netKobo     = Math.round((rentAmount - platformFee) * 100);
+    const payRef      = `MANUAL-PAYOUT-${crypto.randomUUID().split('-')[0].toUpperCase()}-${Date.now()}`;
+
+    const tRes = await fetch(`${process.env.PAYSTACK_BASE || 'https://api.paystack.co'}/transfer`, {
+      method:  'POST',
+      headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY || process.env.PAYSTACK_SECRET}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        source:    'balance',
+        amount:    netKobo,
+        recipient: acct.paystack_recipient_code,
+        reason:    `Nested Ark manual payout — Admin trigger${dispute_note ? ': ' + dispute_note : ''}`,
+        reference: payRef,
+        currency:  v.currency || 'NGN',
+      }),
+    });
+    const tData = await tRes.json() as any;
+
+    if (tData.status) {
+      await pool.query(
+        `UPDATE flex_pay_vaults
+         SET status='ACTIVE', vault_balance=0, updated_at=NOW(),
+             payout_failed_at=NULL, payout_failure_reason=NULL
+         WHERE id=$1`,
+        [vaultId]
+      );
+      await logAudit({
+        event_type:  'PAYOUT_MANUAL_TRIGGER',
+        actor_id:    userId,
+        actor_role:  'ADMIN',
+        unit_id:     v.unit_id,
+        description: `Admin manually triggered payout of ₦${netKobo/100} for tenant "${v.tenant_name}" unit "${v.unit_name}"${dispute_note ? ' — Note: ' + dispute_note : ''}`,
+        metadata:    { reference: payRef, amount_ngn: netKobo/100, vault_id: vaultId, dispute_note: dispute_note || null },
+      });
+      return res.json({ success: true, message: `Payout of ₦${netKobo/100} initiated. Ref: ${payRef}`, reference: payRef });
+    } else {
+      await logAudit({
+        event_type:  'PAYOUT_MANUAL_FAILED',
+        actor_id:    userId,
+        actor_role:  'ADMIN',
+        unit_id:     v.unit_id,
+        description: `Admin-triggered payout FAILED: ${tData.message || 'Unknown error'}`,
+        metadata:    { reference: payRef, error: tData.message, vault_id: vaultId },
+      });
+      return res.status(502).json({ error: `Paystack rejected transfer: ${tData.message}`, reference: payRef });
+    }
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
 
