@@ -16,6 +16,7 @@ import { Loader2, AlertCircle, ShieldCheck, Home, Info } from 'lucide-react';
 
 import { useAuth } from '@/lib/AuthContext';
 import api from '@/lib/api';
+import BrandLogo from '@/components/BrandLogo';
 
 const ROLES = [
   {
@@ -92,9 +93,9 @@ function RegisterContent() {
 
   // Invite params
   const inviteToken = searchParams.get('token') ?? '';
-  const inviteUnit = searchParams.get('unit') ?? '';
+  const inviteUnit  = searchParams.get('unit')  ?? '';
   const inviteEmail = searchParams.get('email') ?? '';
-  const forceRole = searchParams.get('role') ?? '';
+  const forceRole   = searchParams.get('role')  ?? '';
 
   const isTenantInvite = forceRole === 'TENANT' && !!inviteToken;
 
@@ -102,14 +103,14 @@ function RegisterContent() {
 
   const [form, setForm] = useState({
     full_name: '',
-    email: inviteEmail,
-    phone: '',
-    password: '',
+    email:     inviteEmail,
+    phone:     '',
+    password:  '',
   });
 
-  const [loadingInvite, setLoadingInvite] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState('');
+  const [loadingInvite,  setLoadingInvite]  = useState(false);
+  const [submitting,     setSubmitting]     = useState(false);
+  const [error,          setError]          = useState('');
   const [successMessage, setSuccessMessage] = useState('');
 
   // Pre-fill invite email
@@ -148,7 +149,6 @@ function RegisterContent() {
       return;
     }
 
-    // Role check logic
     const activeRole = isTenantInvite ? 'TENANT' : selectedRole?.id;
 
     if (!activeRole) {
@@ -156,7 +156,6 @@ function RegisterContent() {
       return;
     }
 
-    // Block manual Tenant registration without invite link
     if (activeRole === 'TENANT' && !isTenantInvite) {
       setError('Tenant accounts require an invite link from your landlord to be properly linked.');
       return;
@@ -167,17 +166,17 @@ function RegisterContent() {
 
       if (isTenantInvite) {
         await register({
-          full_name: form.full_name.trim(),
-          email: form.email.trim().toLowerCase(),
-          phone: form.phone.trim() || undefined,
-          password: form.password,
-          role: 'TENANT',
+          full_name:   form.full_name.trim(),
+          email:       form.email.trim().toLowerCase(),
+          phone:       form.phone.trim() || undefined,
+          password:    form.password,
+          role:        'TENANT',
           accountType: 'TENANT',
         });
 
         await api.post('/api/rental/consume-invite', {
           tenancy_id: inviteToken,
-          unit_id: inviteUnit,
+          unit_id:    inviteUnit,
         });
 
         setSuccessMessage('Tenant account activated successfully. Redirecting...');
@@ -185,14 +184,13 @@ function RegisterContent() {
         return;
       }
 
-      // Normal Flow
       const role = selectedRole!;
       await register({
-        full_name: form.full_name.trim(),
-        email: form.email.trim().toLowerCase(),
-        phone: form.phone.trim() || undefined,
-        password: form.password,
-        role: role.dbRole as any,
+        full_name:   form.full_name.trim(),
+        email:       form.email.trim().toLowerCase(),
+        phone:       form.phone.trim() || undefined,
+        password:    form.password,
+        role:        role.dbRole as any,
         accountType: role.accountType as any,
       });
     } catch (e: any) {
@@ -212,32 +210,47 @@ function RegisterContent() {
 
   return (
     <div className="min-h-screen bg-[#050505] text-white flex flex-col">
+
+      {/* ── Top nav bar ───────────────────────────────────────────────────── */}
       <div className="border-b border-zinc-900 bg-black/80 px-6 py-3 flex items-center gap-3">
-        <div className="w-6 h-6 rounded-md bg-teal-500 flex items-center justify-center">
-          <span className="text-black text-[9px] font-black">NA</span>
-        </div>
-        <span className="font-black uppercase text-xs tracking-widest">Nested Ark</span>
-        <Link href="/login" className="ml-auto text-[10px] text-zinc-500 hover:text-white uppercase font-bold tracking-widest">Sign In</Link>
+        <BrandLogo size={28} href="/" />
+        <Link
+          href="/login"
+          className="ml-auto text-[10px] text-zinc-500 hover:text-white uppercase font-bold tracking-widest"
+        >
+          Sign In
+        </Link>
       </div>
 
       <main className="flex-1 max-w-xl mx-auto px-6 py-12 w-full space-y-8">
-        <div className="text-center space-y-2">
+
+        {/* ── Page header ───────────────────────────────────────────────── */}
+        <div className="text-center space-y-3">
           <div className="w-14 h-14 rounded-2xl border border-teal-500/30 bg-teal-500/10 flex items-center justify-center mx-auto">
-            {isTenantInvite ? <Home size={24} className="text-teal-400" /> : <ShieldCheck size={24} className="text-teal-400" />}
+            {isTenantInvite
+              ? <Home size={24} className="text-teal-400" />
+              : <ShieldCheck size={24} className="text-teal-400" />
+            }
           </div>
           <h1 className="text-2xl font-black uppercase tracking-tight">Create Account</h1>
           <p className="text-zinc-500 text-sm">
-            {isTenantInvite ? "Complete your tenant onboarding to activate your tenancy." : "Select your account type to continue."}
+            {isTenantInvite
+              ? 'Complete your tenant onboarding to activate your tenancy.'
+              : 'Select your account type to continue.'
+            }
           </p>
         </div>
 
         {isTenantInvite && (
           <div className="p-4 rounded-xl border border-teal-500/20 bg-teal-500/5">
             <p className="text-xs font-black text-teal-400 uppercase tracking-widest">Tenant Invite</p>
-            <p className="text-zinc-500 text-[10px] mt-1">Your tenancy will automatically connect after registration.</p>
+            <p className="text-zinc-500 text-[10px] mt-1">
+              Your tenancy will automatically connect after registration.
+            </p>
           </div>
         )}
 
+        {/* ── Role selector ─────────────────────────────────────────────── */}
         {!isTenantInvite && (
           <div className="space-y-3">
             <p className="text-[10px] text-zinc-500 uppercase font-black tracking-widest">Select Account Type</p>
@@ -247,7 +260,9 @@ function RegisterContent() {
                 type="button"
                 onClick={() => setSelectedRole(role)}
                 className={`w-full p-4 rounded-xl border text-left transition-all ${
-                  selectedRole?.id === role.id ? 'border-teal-500/60 bg-teal-500/10' : 'border-zinc-800 bg-zinc-900/20 hover:border-zinc-700'
+                  selectedRole?.id === role.id
+                    ? 'border-teal-500/60 bg-teal-500/10'
+                    : 'border-zinc-800 bg-zinc-900/20 hover:border-zinc-700'
                 }`}
               >
                 <p className="font-black text-sm">{role.label}</p>
@@ -258,23 +273,52 @@ function RegisterContent() {
           </div>
         )}
 
-        {/* Form Fields */}
+        {/* ── Form fields ───────────────────────────────────────────────── */}
         <div className="space-y-4">
           <div>
             <label className="block text-[10px] text-zinc-400 uppercase font-black tracking-widest mb-2">Full Name *</label>
-            <input name="full_name" value={form.full_name} onChange={handleChange} placeholder="e.g. Amaka Okonkwo" className="w-full bg-zinc-900 border border-zinc-800 px-4 py-3.5 rounded-xl text-sm outline-none focus:border-teal-500" />
+            <input
+              name="full_name"
+              value={form.full_name}
+              onChange={handleChange}
+              placeholder="e.g. Amaka Okonkwo"
+              className="w-full bg-zinc-900 border border-zinc-800 px-4 py-3.5 rounded-xl text-sm outline-none focus:border-teal-500"
+            />
           </div>
           <div>
             <label className="block text-[10px] text-zinc-400 uppercase font-black tracking-widest mb-2">Email *</label>
-            <input name="email" type="email" value={form.email} onChange={handleChange} readOnly={isTenantInvite} placeholder="you@email.com" className={`w-full bg-zinc-900 border border-zinc-800 px-4 py-3.5 rounded-xl text-sm outline-none focus:border-teal-500 ${isTenantInvite ? 'opacity-60 cursor-not-allowed' : ''}`} />
+            <input
+              name="email"
+              type="email"
+              value={form.email}
+              onChange={handleChange}
+              readOnly={isTenantInvite}
+              placeholder="you@email.com"
+              className={`w-full bg-zinc-900 border border-zinc-800 px-4 py-3.5 rounded-xl text-sm outline-none focus:border-teal-500 ${
+                isTenantInvite ? 'opacity-60 cursor-not-allowed' : ''
+              }`}
+            />
           </div>
           <div>
             <label className="block text-[10px] text-zinc-400 uppercase font-black tracking-widest mb-2">Phone</label>
-            <input name="phone" value={form.phone} onChange={handleChange} placeholder="+234 801 234 5678" className="w-full bg-zinc-900 border border-zinc-800 px-4 py-3.5 rounded-xl text-sm outline-none focus:border-teal-500" />
+            <input
+              name="phone"
+              value={form.phone}
+              onChange={handleChange}
+              placeholder="+234 801 234 5678"
+              className="w-full bg-zinc-900 border border-zinc-800 px-4 py-3.5 rounded-xl text-sm outline-none focus:border-teal-500"
+            />
           </div>
           <div>
             <label className="block text-[10px] text-zinc-400 uppercase font-black tracking-widest mb-2">Password *</label>
-            <input name="password" type="password" value={form.password} onChange={handleChange} placeholder="••••••••" className="w-full bg-zinc-900 border border-zinc-800 px-4 py-3.5 rounded-xl text-sm outline-none focus:border-teal-500" />
+            <input
+              name="password"
+              type="password"
+              value={form.password}
+              onChange={handleChange}
+              placeholder="••••••••"
+              className="w-full bg-zinc-900 border border-zinc-800 px-4 py-3.5 rounded-xl text-sm outline-none focus:border-teal-500"
+            />
           </div>
         </div>
 
@@ -286,13 +330,18 @@ function RegisterContent() {
 
         {selectedRole?.id === 'TENANT' && !isTenantInvite && (
           <div className="p-4 rounded-xl border border-teal-500/20 bg-teal-500/5 text-teal-400 text-[10px] flex gap-3">
-             <Info size={16} className="shrink-0" />
-             <span>Note: Tenants usually register via a direct invite link from their landlord to link their unit automatically. Manual registration may require manual verification.</span>
+            <Info size={16} className="shrink-0" />
+            <span>
+              Note: Tenants usually register via a direct invite link from their landlord to link
+              their unit automatically. Manual registration may require manual verification.
+            </span>
           </div>
         )}
 
         {successMessage && (
-          <div className="p-4 rounded-xl border border-teal-500/20 bg-teal-500/5 text-teal-400 text-sm font-bold">{successMessage}</div>
+          <div className="p-4 rounded-xl border border-teal-500/20 bg-teal-500/5 text-teal-400 text-sm font-bold">
+            {successMessage}
+          </div>
         )}
 
         <button
@@ -300,12 +349,25 @@ function RegisterContent() {
           disabled={submitting || (!isTenantInvite && !selectedRole)}
           className="w-full py-4 bg-teal-500 text-black font-black uppercase tracking-widest rounded-xl hover:bg-teal-400 transition-all disabled:opacity-50"
         >
-          {submitting ? <span className="flex items-center justify-center gap-2"><Loader2 size={16} className="animate-spin" /> Creating Account...</span> : 'Create Account'}
+          {submitting
+            ? <span className="flex items-center justify-center gap-2"><Loader2 size={16} className="animate-spin" /> Creating Account...</span>
+            : 'Create Account'
+          }
         </button>
 
         <p className="text-center text-zinc-600 text-xs">
-          Already have an account? <Link href="/login" className="text-teal-500 hover:underline font-bold">Sign In</Link>
+          Already have an account?{' '}
+          <Link href="/login" className="text-teal-500 hover:underline font-bold">Sign In</Link>
         </p>
+
+        {/* ── Footer brand mark ─────────────────────────────────────────── */}
+        <div className="pt-4 border-t border-zinc-900 flex flex-col items-center gap-1">
+          <BrandLogo size={16} href="/" noLink className="opacity-30 justify-center" />
+          <p className="text-[9px] text-zinc-700 font-mono tracking-widest text-center">
+            © 2026 Impressions &amp; Impacts Ltd · All rights reserved
+          </p>
+        </div>
+
       </main>
     </div>
   );
@@ -313,7 +375,11 @@ function RegisterContent() {
 
 export default function RegisterPage() {
   return (
-    <Suspense fallback={<div className="min-h-screen bg-[#050505] flex items-center justify-center"><Loader2 className="animate-spin text-teal-500" size={32} /></div>}>
+    <Suspense fallback={
+      <div className="min-h-screen bg-[#050505] flex items-center justify-center">
+        <Loader2 className="animate-spin text-teal-500" size={32} />
+      </div>
+    }>
       <RegisterContent />
     </Suspense>
   );
