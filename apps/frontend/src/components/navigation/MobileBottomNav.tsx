@@ -22,11 +22,11 @@ function useNavItems(dbRole?: string, accountType?: string) {
 
   if (isTenant) {
     return [
-      { label: 'Home',         icon: Home,      href: '/tenant/dashboard' },
-      { label: 'Vault',        icon: Wallet,    href: '/tenant/vault'     },
-      { label: 'Market',       icon: Store,     href: '/marketplace'      },
-      { label: 'Notices',      icon: Bell,      href: '/tenant/notices'   },
-      { label: 'Account',      icon: User,      href: '/dashboard'        },
+      { label: 'Home',    icon: Home,      href: '/tenant/dashboard' },
+      { label: 'Vault',   icon: Wallet,    href: '/tenant/vault'     },
+      { label: 'Market',  icon: Store,     href: '/marketplace'      },
+      { label: 'Notices', icon: Bell,      href: '/tenant/notices'   },
+      { label: 'Account', icon: User,      href: '/dashboard'        },
     ];
   }
   if (isLandlord) {
@@ -40,11 +40,11 @@ function useNavItems(dbRole?: string, accountType?: string) {
   }
   // Public / unauthenticated
   return [
-    { label: 'Home',       icon: Home,      href: '/'                    },
-    { label: 'Market',     icon: Store,     href: '/marketplace'         },
-    { label: 'Invest',     icon: Wallet,    href: '/register?role=investor' },
-    { label: 'Build',      icon: Bell,      href: '/projects/submit'     },
-    { label: 'Sign In',    icon: User,      href: '/login'               },
+    { label: 'Home',    icon: Home,      href: '/'                       },
+    { label: 'Market',  icon: Store,     href: '/marketplace'            },
+    { label: 'Invest',  icon: Wallet,    href: '/register?role=investor' },
+    { label: 'Build',   icon: Bell,      href: '/projects/submit'        },
+    { label: 'Sign In', icon: User,      href: '/login'                  },
   ];
 }
 
