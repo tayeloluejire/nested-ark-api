@@ -8,17 +8,22 @@ export const dynamic = 'force-dynamic';
  */
 import { useState, useEffect, Suspense } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import api from '@/lib/api';
 import Navbar from '@/components/Navbar';
 import Footer from '@/components/Footer';
+import { useAuth } from '@/lib/AuthContext';
 import {
   Search, Home, ShieldCheck, MapPin, Loader2,
   BedDouble, Bath, Building2, DollarSign, ChevronRight, Filter, X,
+  Wallet, Star, ArrowRight,
 } from 'lucide-react';
 
 const safeF = (v: any) => Number(v ?? 0).toLocaleString();
 
 function MarketplaceContent() {
+  const { user } = useAuth() as any;
+  const router   = useRouter();
   const [listings,  setListings]  = useState<any[]>([]);
   const [loading,   setLoading]   = useState(true);
   const [total,     setTotal]     = useState(0);
@@ -266,16 +271,23 @@ function MarketplaceContent() {
 
                   {/* Footer */}
                   <div className="px-5 pb-5">
-                    <div className="flex items-center justify-between pt-4 border-t border-zinc-800">
+                    <div className="flex items-center justify-between pt-4 border-t border-zinc-800 gap-2 flex-wrap">
                       <div>
                         <p className="text-[8px] text-zinc-600 uppercase font-bold">Annual Rent</p>
                         <p className="font-mono font-black text-teal-400 text-base">{unit.currency || 'NGN'} {safeF(unit.rent_amount)}</p>
                       </div>
-                      <Link
-                        href={`/marketplace/${unit.id}`}
-                        className="flex items-center gap-1.5 px-5 py-2.5 bg-white text-black text-[10px] font-black uppercase rounded-xl hover:bg-teal-500 transition-all">
-                        View Details <ChevronRight size={12} />
-                      </Link>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => user ? router.push(`/tenant/pay?unit_id=${unit.id}`) : router.push(`/register?intent=vault&unit_id=${unit.id}`)}
+                          className="flex items-center gap-1.5 px-4 py-2 bg-teal-500/10 border border-teal-500/30 text-teal-400 text-[9px] font-black uppercase rounded-xl hover:bg-teal-500/20 transition-all">
+                          <Wallet size={11} /> Vault
+                        </button>
+                        <Link
+                          href={`/marketplace/${unit.id}`}
+                          className="flex items-center gap-1.5 px-5 py-2.5 bg-white text-black text-[10px] font-black uppercase rounded-xl hover:bg-teal-500 transition-all">
+                          View <ChevronRight size={12} />
+                        </Link>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -284,6 +296,40 @@ function MarketplaceContent() {
           </>
         )}
       </main>
+
+      {/* Tenant stakeholder CTA strip */}
+      <div className="border-t border-zinc-900 bg-zinc-950/60 px-6 py-10">
+        <div className="max-w-4xl mx-auto text-center space-y-4">
+          <p className="text-[9px] text-teal-500 uppercase font-black tracking-widest">Tenants Are First-Class Stakeholders</p>
+          <h2 className="text-2xl font-black uppercase tracking-tight">Save Toward Your Next Home</h2>
+          <p className="text-zinc-500 text-xs max-w-xl mx-auto leading-relaxed">
+            Set a rental target, choose your payment rhythm, and let Nested Ark auto-disburse to your landlord when the vault is fully funded. No lump-sum pressure. Just disciplined saving.
+          </p>
+          <div className="flex flex-wrap justify-center gap-3 mt-6 text-[9px]">
+            {[
+              { icon: '🔒', label: 'Escrow-protected savings' },
+              { icon: '📅', label: 'Weekly or monthly rhythm' },
+              { icon: '⚡', label: 'Auto-disburse on target' },
+              { icon: '🧾', label: 'SHA-256 receipt per payment' },
+              { icon: '📊', label: 'Build your tenant score' },
+            ].map(f => (
+              <span key={f.label} className="flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-zinc-800 bg-zinc-900/40 text-zinc-400 font-bold uppercase tracking-widest">
+                <span>{f.icon}</span>{f.label}
+              </span>
+            ))}
+          </div>
+          <div className="flex justify-center gap-4 mt-6 flex-wrap">
+            <Link href={user ? '/tenant/dashboard' : '/register?intent=tenant'}
+              className="flex items-center gap-2 px-6 py-3 bg-teal-500 text-black text-[10px] font-black uppercase rounded-xl hover:bg-teal-400 transition-all tracking-widest">
+              <Wallet size={13} /> {user ? 'My Vault' : 'Create Tenant Account'}
+            </Link>
+            <Link href="/marketplace"
+              className="flex items-center gap-2 px-6 py-3 border border-zinc-700 text-zinc-300 text-[10px] font-black uppercase rounded-xl hover:border-teal-500/40 transition-all tracking-widest">
+              Browse Properties <ArrowRight size={12} />
+            </Link>
+          </div>
+        </div>
+      </div>
 
       {/* Footer strip */}
       <div className="border-t border-zinc-900 px-6 py-6 text-center">

@@ -16,11 +16,129 @@ import api from '@/lib/api';
 import {
   Home, DollarSign, Calendar, ShieldCheck, Loader2,
   AlertCircle, TrendingUp, ArrowRight, Bell, CheckCircle2,
-  Star, FileText, Building2, Gavel,
+  Star, FileText, Building2, Gavel, Wallet, Lock,
 } from 'lucide-react';
 
 const safeN = (v:any) => { const n=Number(v); return(v==null||isNaN(n))?0:n; };
 const safeF = (v:any) => safeN(v).toLocaleString();
+
+// ── Escrow progress ring — SVG circle ────────────────────────────────────────
+function EscrowRing({ pct, balance, target, currency }: {
+  pct: number; balance: number; target: number; currency: string;
+}) {
+  const r = 52;
+  const circ = 2 * Math.PI * r;
+  const dash = circ * (pct / 100);
+  const color = pct >= 80 ? '#14b8a6' : pct >= 50 ? '#f59e0b' : '#ef4444';
+
+  return (
+    <div className="flex flex-col items-center gap-3">
+      <div className="relative w-[140px] h-[140px]">
+        <svg viewBox="0 0 120 120" className="w-full h-full -rotate-90">
+          {/* Track */}
+          <circle cx="60" cy="60" r={r} fill="none" stroke="#18181b" strokeWidth="8" />
+          {/* Progress */}
+          <circle
+            cx="60" cy="60" r={r} fill="none"
+            stroke={color} strokeWidth="8"
+            strokeLinecap="round"
+            strokeDasharray={`${dash} ${circ}`}
+            style={{ transition: 'stroke-dasharray 1s ease' }}
+          />
+        </svg>
+        <div className="absolute inset-0 flex flex-col items-center justify-center">
+          <span className="text-2xl font-black font-mono" style={{ color }}>{pct}%</span>
+          <span className="text-[8px] text-zinc-600 uppercase font-bold tracking-widest">funded</span>
+        </div>
+      </div>
+      <div className="text-center">
+        <p className="text-teal-400 font-black font-mono text-lg">{currency} {safeF(balance)}</p>
+        <p className="text-[9px] text-zinc-600 font-bold">of {currency} {safeF(target)} target</p>
+      </div>
+    </div>
+  );
+}
+
+// ── Escrow seal badge ─────────────────────────────────────────────────────────
+function EscrowSeal({ status }: { status: string }) {
+  const ready = status === 'FUNDED_READY';
+  return (
+    <div className={`flex items-start gap-3 p-4 rounded-2xl border ${
+      ready
+        ? 'border-teal-500/30 bg-teal-500/5'
+        : 'border-zinc-700/60 bg-zinc-900/30'
+    }`}>
+      <div className={`w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 ${
+        ready ? 'bg-teal-500/20' : 'bg-zinc-800'
+      }`}>
+        <Lock size={14} className={ready ? 'text-teal-400' : 'text-zinc-500'} />
+      </div>
+      <div>
+        <p className="text-[9px] font-black uppercase tracking-widest text-zinc-300">
+          {ready ? '🔓 Escrow Release Pending' : '🔒 Nest Vault Escrow Active'}
+        </p>
+        <p className="text-[10px] text-zinc-500 mt-0.5 leading-relaxed">
+          {ready
+            ? 'Your vault is fully funded. Funds will be automatically disbursed to your landlord via Paystack within 24 hours.'
+            : 'Funds are locked in platform escrow custody and will be automatically disbursed to your landlord via Paystack once your vault reaches 100%.'}
+        </p>
+        <div className="flex items-center gap-1.5 mt-2">
+          <ShieldCheck size={9} className="text-teal-500" />
+          <span className="text-[8px] text-teal-500 font-bold uppercase tracking-widest">Paystack-secured · SHA-256 receipts · Court-admissible</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Rhythm card — installment schedule ───────────────────────────────────────
+function RhythmCard({ vault }: { vault: any }) {
+  const nextDue = vault.next_due_date ? vault.next_due_date.split('T')[0] : null;
+  const daysLeft = nextDue
+    ? Math.max(0, Math.ceil((new Date(nextDue).getTime() - Date.now()) / 86400000))
+    : null;
+  const urgency = daysLeft != null && daysLeft <= 3;
+
+  return (
+    <div className="p-5 rounded-2xl border border-zinc-800 bg-zinc-900/20 space-y-4">
+      <p className="text-[9px] text-zinc-500 uppercase font-black tracking-widest">Payment Rhythm</p>
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <p className="text-[8px] text-zinc-600 uppercase font-bold mb-1">Frequency</p>
+          <p className="text-sm font-black uppercase text-white">{vault.frequency || '—'}</p>
+        </div>
+        <div>
+          <p className="text-[8px] text-zinc-600 uppercase font-bold mb-1">Installment</p>
+          <p className="text-sm font-black font-mono text-teal-400">{vault.currency || 'NGN'} {safeF(vault.installment_amount)}</p>
+        </div>
+      </div>
+      {nextDue && (
+        <div className={`flex items-center justify-between p-3 rounded-xl border ${urgency ? 'border-red-500/30 bg-red-500/5' : 'border-zinc-800 bg-zinc-900/40'}`}>
+          <div className="flex items-center gap-2">
+            <Calendar size={13} className={urgency ? 'text-red-400' : 'text-zinc-500'} />
+            <div>
+              <p className="text-[8px] text-zinc-500 uppercase font-bold">Next Due</p>
+              <p className={`text-xs font-black font-mono ${urgency ? 'text-red-400' : 'text-white'}`}>{nextDue}</p>
+            </div>
+          </div>
+          {daysLeft != null && (
+            <span className={`text-[9px] font-black uppercase px-2.5 py-1 rounded-lg border ${
+              daysLeft === 0 ? 'border-red-500/40 text-red-400 bg-red-500/10'
+              : urgency ? 'border-amber-500/40 text-amber-400 bg-amber-500/10'
+              : 'border-zinc-700 text-zinc-400 bg-zinc-900/40'
+            }`}>
+              {daysLeft === 0 ? 'Due Today' : `${daysLeft}d left`}
+            </span>
+          )}
+        </div>
+      )}
+      <Link href="/tenant/pay"
+        className="flex items-center justify-center gap-2 w-full py-3 bg-teal-500 text-black text-[10px] font-black uppercase rounded-xl hover:bg-teal-400 transition-all tracking-widest">
+        <DollarSign size={13} /> Pay This Installment
+      </Link>
+    </div>
+  );
+}
 
 function TenantDashboardContent() {
   const { user } = useAuth();
@@ -126,31 +244,59 @@ function TenantDashboardContent() {
           </div>
         </div>
 
-        {/* Vault strip */}
+        {/* Vault section — ring + seal + rhythm */}
         {vault && (
-          <div className="p-5 rounded-2xl border border-zinc-800 bg-zinc-900/20 space-y-3">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest">Flex-Pay Vault</p>
-                <p className="text-2xl font-black font-mono text-teal-400 mt-1">
-                  {vault.currency || 'NGN'} {safeF(vault.vault_balance)}
-                </p>
+          <div className="space-y-4">
+            {/* Ring + balance — hero visual */}
+            <div className="p-6 rounded-2xl border border-zinc-800 bg-zinc-900/20">
+              <p className="text-[9px] text-zinc-500 uppercase font-black tracking-widest mb-5">Flex-Pay Vault</p>
+              <div className="flex flex-col md:flex-row items-center gap-8">
+                {/* Escrow ring */}
+                <EscrowRing
+                  pct={fundedPct}
+                  balance={safeN(vault.vault_balance)}
+                  target={safeN(vault.target_amount)}
+                  currency={vault.currency || 'NGN'}
+                />
+                {/* Progress bar + stats */}
+                <div className="flex-1 w-full space-y-4">
+                  <div className="h-3 bg-zinc-800 rounded-full overflow-hidden">
+                    <div
+                      className={`h-full rounded-full transition-all duration-1000 ${fundedPct >= 80 ? 'bg-teal-500' : fundedPct >= 50 ? 'bg-amber-500' : 'bg-red-500'}`}
+                      style={{ width: `${fundedPct}%` }}
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-3 text-[10px]">
+                    <div className="p-3 rounded-xl bg-zinc-900 border border-zinc-800">
+                      <p className="text-zinc-600 uppercase font-bold text-[8px] mb-0.5">Vault Balance</p>
+                      <p className="font-black font-mono text-teal-400">{vault.currency || 'NGN'} {safeF(vault.vault_balance)}</p>
+                    </div>
+                    <div className="p-3 rounded-xl bg-zinc-900 border border-zinc-800">
+                      <p className="text-zinc-600 uppercase font-bold text-[8px] mb-0.5">Annual Target</p>
+                      <p className="font-black font-mono text-white">{vault.currency || 'NGN'} {safeF(vault.target_amount)}</p>
+                    </div>
+                    <div className="p-3 rounded-xl bg-zinc-900 border border-zinc-800">
+                      <p className="text-zinc-600 uppercase font-bold text-[8px] mb-0.5">Remaining</p>
+                      <p className="font-black font-mono text-zinc-300">
+                        {vault.currency || 'NGN'} {safeF(Math.max(0, safeN(vault.target_amount) - safeN(vault.vault_balance)))}
+                      </p>
+                    </div>
+                    <div className="p-3 rounded-xl bg-zinc-900 border border-zinc-800">
+                      <p className="text-zinc-600 uppercase font-bold text-[8px] mb-0.5">Vault Status</p>
+                      <p className={`font-black uppercase text-[10px] ${vault.status === 'FUNDED_READY' ? 'text-teal-400' : vault.status === 'OVERDUE' ? 'text-red-400' : 'text-zinc-300'}`}>
+                        {vault.status || 'ACTIVE'}
+                      </p>
+                    </div>
+                  </div>
+                </div>
               </div>
-              <div className="text-right">
-                <p className="text-3xl font-black text-white">{fundedPct}%</p>
-                <p className="text-[9px] text-zinc-600 uppercase font-bold">funded</p>
-              </div>
             </div>
-            <div className="h-3 bg-zinc-800 rounded-full overflow-hidden">
-              <div
-                className={`h-full rounded-full transition-all ${fundedPct >= 80 ? 'bg-teal-500' : fundedPct >= 50 ? 'bg-amber-500' : 'bg-red-500'}`}
-                style={{ width: `${fundedPct}%` }}
-              />
-            </div>
-            <div className="flex items-center justify-between text-[9px] text-zinc-500">
-              <span>Target: {vault.currency || 'NGN'} {safeF(vault.target_amount)}</span>
-              <span>Installment: {vault.currency || 'NGN'} {safeF(vault.installment_amount)} ({vault.frequency})</span>
-            </div>
+
+            {/* Escrow seal */}
+            <EscrowSeal status={vault.status} />
+
+            {/* Rhythm card */}
+            <RhythmCard vault={vault} />
           </div>
         )}
 

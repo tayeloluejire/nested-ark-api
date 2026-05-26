@@ -10,7 +10,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useAuth } from '@/lib/AuthContext';
-import { Home, Wallet, Building2, Bell, User } from 'lucide-react';
+import { Home, Wallet, Building2, Bell, User, Store } from 'lucide-react';
 
 // ── Role-aware nav items ──────────────────────────────────────────────────────
 // Non-authenticated users see public items.
@@ -24,7 +24,7 @@ function useNavItems(dbRole?: string, accountType?: string) {
     return [
       { label: 'Home',         icon: Home,      href: '/tenant/dashboard' },
       { label: 'Vault',        icon: Wallet,    href: '/tenant/vault'     },
-      { label: 'Pay',          icon: Building2, href: '/tenant/pay'       },
+      { label: 'Market',       icon: Store,     href: '/marketplace'      },
       { label: 'Notices',      icon: Bell,      href: '/tenant/notices'   },
       { label: 'Account',      icon: User,      href: '/dashboard'        },
     ];
@@ -41,7 +41,7 @@ function useNavItems(dbRole?: string, accountType?: string) {
   // Public / unauthenticated
   return [
     { label: 'Home',       icon: Home,      href: '/'                    },
-    { label: 'Explore',    icon: Building2, href: '/explore'             },
+    { label: 'Market',     icon: Store,     href: '/marketplace'         },
     { label: 'Invest',     icon: Wallet,    href: '/register?role=investor' },
     { label: 'Build',      icon: Bell,      href: '/projects/submit'     },
     { label: 'Sign In',    icon: User,      href: '/login'               },
