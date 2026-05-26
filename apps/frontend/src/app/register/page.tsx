@@ -142,14 +142,18 @@ function RegisterContent() {
     }
   }, [urlIntent, forceRole]);
 
-  // Fetch available banks list for Landlord verification options
+  // Fetch available banks list cleanly for independent targeted configuration routes
   useEffect(() => {
-    if (selectedRole?.id === 'TENANT' && !isTenantInvite) {
-      api.get('/api/payouts/banks')
-        .then(res => setBanks(res.data?.banks || []))
-        .catch(() => {});
-    }
-  }, [selectedRole, isTenantInvite]);
+    api.get('/api/payouts/banks')
+      .then(res => {
+        if (res.data?.banks) {
+          setBanks(res.data.banks);
+        } else if (Array.isArray(res.data)) {
+          setBanks(res.data);
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   // Pre-fill fields from route parameters securely
   useEffect(() => {
