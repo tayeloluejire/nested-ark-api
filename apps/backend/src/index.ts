@@ -111,7 +111,7 @@ setInterval(() => {
 // ── Rate limiter presets ──────────────────────────────────────────────────
 const authLimiter     = createRateLimiter(15 * 60 * 1000, 10,  'Too many auth attempts. Please try again in 15 minutes.');
 const actionLimiter   = createRateLimiter(60 * 1000,       30, 'Rate limit exceeded. Please slow down.');
-const paymentLimiter  = createRateLimiter(5 * 60 * 1000,   10, 'Too many payment requests. Please wait 5 minutes before retrying.');
+const paymentLimiter  = createRateLimiter(60 * 1000,       5,  'Too many payment requests. Please wait before retrying.');
 const noticeLimiter   = createRateLimiter(60 * 1000,       10, 'Too many notice requests. Please slow down.');
 
 // ── Apply limiters ────────────────────────────────────────────────────────
@@ -4003,7 +4003,17 @@ app.post("/api/payments/webhook",
                       console.warn(`[WEBHOOK] Auto-payout skipped — cannot resolve project for vault ${v.id}`);
                       return;
                     }
-                    const { sponsor_id, rent_amount, currency } = projRes.rows[0];
+                    const { sponsor_id, currency } = projRes.rows[0];
+
+                    // ── Fetch actual vault_balance (the real accumulated escrow amount) ──
+                    // Using vault_balance — NOT rent_amount from rental_units.
+                    // vault_balance = total tenant contributions held in platform escrow.
+                    const vaultBal = await pool.query(
+                      `SELECT vault_balance, unit_id FROM flex_pay_vaults WHERE id = $1`,
+                      [v.id]
+                    );
+                    const vaultEscrowAmount = parseFloat(vaultBal.rows[0]?.vault_balance || '0');
+                    const vaultUnitId       = vaultBal.rows[0]?.unit_id ?? meta.unit_id ?? null;
 
                     // ── Prefer the bank account linked to this specific unit (Option 1) ──
                     // Falls back to landlord's default account if unit has no specific link.
@@ -4025,19 +4035,21 @@ app.post("/api/payments/webhook",
                                              WHERE id = COALESCE($2, '00000000-0000-0000-0000-000000000000'::uuid)
                                              LIMIT 1) THEN 0 ELSE 1 END
                        LIMIT 1`,
-                      [sponsor_id, meta.unit_id ?? null]
+                      [sponsor_id, vaultUnitId]
                     );
                     if (!bankRes.rows.length) {
-                      console.log(`[WEBHOOK] No payout-ready bank account for landlord ${sponsor_id} — payout skipped`);
+                      console.log(`[WEBHOOK] No payout-ready bank account for landlord ${sponsor_id} — payout deferred to retry cron`);
                       return;
                     }
                     const acct = bankRes.rows[0];
 
-                    // Deduct 2% platform fee, convert to kobo
-                    const platformFee = Math.round(parseFloat(rent_amount) * 0.02 * 100) / 100;
-                    const netKobo     = Math.round((parseFloat(rent_amount) - platformFee) * 100);
+                    // Deduct 2% platform fee from actual escrow balance, convert to kobo
+                    const platformFee = Math.round(vaultEscrowAmount * 0.02 * 100) / 100;
+                    const netKobo     = Math.round((vaultEscrowAmount - platformFee) * 100);
+                    console.log(`[WEBHOOK] Escrow release → vault=₦${vaultEscrowAmount} platformFee=₦${platformFee} landlord=₦${netKobo/100}`);
                     const payRef      = `AUTO-PAYOUT-${crypto.randomUUID().split('-')[0].toUpperCase()}-${Date.now()}`;
 
+                    const payRef = `ESCROW-RELEASE-${crypto.randomUUID().split('-')[0].toUpperCase()}-${Date.now()}`;
                     const tRes = await fetch(`${PAYSTACK_BASE}/transfer`, {
                       method: 'POST',
                       headers: { Authorization: `Bearer ${PAYSTACK_SECRET}`, 'Content-Type': 'application/json' },
@@ -4045,7 +4057,7 @@ app.post("/api/payments/webhook",
                         source:    'balance',
                         amount:    netKobo,
                         recipient: acct.paystack_recipient_code,
-                        reason:    `Nested Ark rent payout — ${periodLabel}`,
+                        reason:    `Nested Ark escrow release — vault fully funded — ${periodLabel}`,
                         reference: payRef,
                         currency:  currency || 'NGN',
                       }),
@@ -4053,21 +4065,41 @@ app.post("/api/payments/webhook",
                     const tData = await tRes.json() as any;
 
                     const ph = crypto.createHash('sha256')
-                      .update(`auto-payout-${payRef}-${sponsor_id}-${netKobo}-${Date.now()}`)
+                      .update(`escrow-release-${payRef}-${sponsor_id}-${netKobo}-${Date.now()}`)
                       .digest('hex');
                     await pool.query(
                       `INSERT INTO system_ledger (transaction_type, payload, immutable_hash)
                        VALUES ('LANDLORD_PAYOUT',$1,$2)`,
                       [JSON.stringify({
-                        reference: payRef, amount_ngn: netKobo / 100,
-                        platform_fee: platformFee, user_id: sponsor_id,
+                        reference:       payRef,
+                        amount_ngn:      netKobo / 100,
+                        vault_total_ngn: vaultEscrowAmount,
+                        platform_fee:    platformFee,
+                        user_id:         sponsor_id,
                         bank_account_id: acct.id,
-                        transfer_code: tData.data?.transfer_code,
+                        transfer_code:   tData.data?.transfer_code,
                         transfer_status: tData.status ? 'INITIATED' : 'FAILED',
-                        vault_id: v.id, period_label: periodLabel,
+                        vault_id:        v.id,
+                        period_label:    periodLabel,
+                        payout_type:     'ESCROW_LUMP_SUM',
                       }), ph]
                     );
-                    console.log(`[WEBHOOK] Auto-payout → ${acct.account_name} | ${acct.bank_name} | ₦${netKobo/100} | ref=${payRef}`);
+                    if (tData.status) {
+                      // Zero out vault balance after successful release
+                      await pool.query(
+                        `UPDATE flex_pay_vaults SET vault_balance=0, status='ACTIVE', updated_at=NOW() WHERE id=$1`,
+                        [v.id]
+                      );
+                      await logAudit({
+                        event_type:  'ESCROW_RELEASED',
+                        actor_id:    sponsor_id,
+                        actor_role:  'SYSTEM',
+                        description: `Vault escrow released: ₦${vaultEscrowAmount.toLocaleString()} → landlord ${acct.account_name} (${acct.bank_name}). Platform fee ₦${platformFee.toLocaleString()} retained.`,
+                        metadata:    { vault_id: v.id, reference: payRef, vault_total: vaultEscrowAmount, net_payout: netKobo/100, platform_fee: platformFee },
+                      });
+                    }
+                    console.log(`[WEBHOOK] Escrow release ${tData.status ? '✅' : '❌'} → ${acct.account_name} | ${acct.bank_name} | ₦${netKobo/100} | ref=${payRef}`);
+                    if (!tData.status) console.error('[WEBHOOK] Escrow release failed:', tData.message);
                   } catch (payoutErr: any) {
                     console.warn('[WEBHOOK] Auto-payout error:', payoutErr.message);
                   }
@@ -5665,10 +5697,10 @@ app.post('/api/landlord/bank-accounts', authenticate, async (req: Request, res: 
           subaccountCode = saData.data.subaccount_code;
           console.log(`[PAYSTACK] Subaccount created for landlord ${userId}: ${subaccountCode}`);
         } else {
-          console.error('[PAYSTACK-SUBACCOUNT-ERROR] Creation failed:', JSON.stringify(saData.message || saData));
+          console.warn('[PAYSTACK] Subaccount creation failed:', saData.message || saData);
         }
       } catch (saErr) {
-        console.error('[PAYSTACK-SUBACCOUNT-ERROR] Exception during creation:', (saErr as any)?.message || saErr);
+        console.warn('[PAYSTACK] Could not create subaccount:', saErr);
       }
     }
 
@@ -6565,16 +6597,15 @@ app.post('/api/rental/onboard-tenant', authenticate, async (req: Request, res: R
     leaseEnd.setFullYear(leaseEnd.getFullYear() + 1);
     const paymentDay = leaseStart.getDate();
 
-    // 3 — Normalise payment_frequency → installment and target for vault
-    // Uses centralized helper: calculateInstallmentAmount / calculateVaultTarget
-    // rent_amount on the unit = the amount per the unit's configured frequency
-    // e.g. ANNUAL ₦120 means the full year rent is ₦120
-    // e.g. MONTHLY ₦10,000 means ₦10,000/month
-    const freq = (payment_frequency || 'MONTHLY').toUpperCase();
-    const unitRentAmount = Number(unit.rent_amount) || 0;
-    const installmentAmount = calculateInstallmentAmount(unitRentAmount, freq);
-    const targetAmount      = calculateVaultTarget(unitRentAmount, freq);
-    console.log(`[ONBOARD] freq=${freq} unitRent=${unitRentAmount} installment=${installmentAmount} target=${targetAmount}`);
+    // 3 — Normalise payment_frequency → target_amount for vault
+    const freq = (payment_frequency || 'monthly').toLowerCase();
+    const monthlyRent = Number(unit.rent_amount) || 0;
+    const freqMap: Record<string,number> = {
+      weekly: monthlyRent / 4, monthly: monthlyRent,
+      quarterly: monthlyRent * 3, biannual: monthlyRent * 6, annual: monthlyRent * 12,
+    };
+    const installmentAmount = freqMap[freq] ?? monthlyRent;
+    const targetAmount = monthlyRent * 12; // always one year of rent as vault target
 
     // 3b — Warn if tenant frequency / rent doesn't match unit configuration
     // e.g. unit is set at ₦600k/mo but landlord onboards tenant as ANNUAL
@@ -6588,12 +6619,12 @@ app.post('/api/rental/onboard-tenant', authenticate, async (req: Request, res: R
 
     // 4 — Next due date = move_in_date + one frequency period
     const nextDue = new Date(leaseStart);
-    if (freq === 'WEEKLY')          nextDue.setDate(nextDue.getDate() + 7);
-    else if (freq === 'BIWEEKLY')   nextDue.setDate(nextDue.getDate() + 14);
-    else if (freq === 'MONTHLY')    nextDue.setMonth(nextDue.getMonth() + 1);
-    else if (freq === 'QUARTERLY')  nextDue.setMonth(nextDue.getMonth() + 3);
-    else if (freq === 'BIANNUAL')   nextDue.setMonth(nextDue.getMonth() + 6);
-    else if (freq === 'ANNUAL')     nextDue.setFullYear(nextDue.getFullYear() + 1);
+    if (freq === 'weekly')     nextDue.setDate(nextDue.getDate() + 7);
+    else if (freq === 'monthly')    nextDue.setMonth(nextDue.getMonth() + 1);
+    else if (freq === 'quarterly')  nextDue.setMonth(nextDue.getMonth() + 3);
+    else if (freq === 'biannual')   nextDue.setMonth(nextDue.getMonth() + 6);
+    else if (freq === 'annual')     nextDue.setFullYear(nextDue.getFullYear() + 1);
+
     // 5 — Upsert tenancy row (idempotent — same unit+email = update, not duplicate)
     const tenRes = await pool.query(
       `INSERT INTO tenancies
@@ -8184,40 +8215,6 @@ async function logAudit(entry: AuditEntry): Promise<void> {
 }
 
 
-
-// ── UTILITY: Centralized installment/frequency calculator ────────────────
-// Single source of truth for ALL frequency math across the platform.
-// rent_amount = the total rent for one full lease period (as stored on unit)
-//   e.g. if unit.payment_frequency = ANNUAL, rent_amount = ₦120,000/year
-//   e.g. if unit.payment_frequency = MONTHLY, rent_amount = ₦10,000/month
-// Returns: the per-installment amount the tenant should pay each period.
-function calculateInstallmentAmount(rentAmount: number, frequency: string): number {
-  const freq = (frequency || 'MONTHLY').toUpperCase();
-  switch (freq) {
-    case 'WEEKLY':    return Math.ceil(rentAmount / 52);
-    case 'BIWEEKLY':  return Math.ceil(rentAmount / 26);
-    case 'MONTHLY':   return Math.ceil(rentAmount / 12);
-    case 'QUARTERLY': return Math.ceil(rentAmount / 4);
-    case 'BIANNUAL':  return Math.ceil(rentAmount / 2);
-    case 'ANNUAL':    return rentAmount; // full annual rent = one installment
-    default:          return Math.ceil(rentAmount / 12);
-  }
-}
-
-// Target amount = always one full year of rent (vault accumulates toward this)
-function calculateVaultTarget(rentAmount: number, frequency: string): number {
-  const freq = (frequency || 'MONTHLY').toUpperCase();
-  switch (freq) {
-    case 'WEEKLY':    return Math.ceil(rentAmount * 52);
-    case 'BIWEEKLY':  return Math.ceil(rentAmount * 26);
-    case 'MONTHLY':   return Math.ceil(rentAmount * 12);
-    case 'QUARTERLY': return Math.ceil(rentAmount * 4);
-    case 'BIANNUAL':  return Math.ceil(rentAmount * 2);
-    case 'ANNUAL':    return rentAmount; // already full year
-    default:          return Math.ceil(rentAmount * 12);
-  }
-}
-
 // ── UTILITY: Tenant data validation — used by all onboard routes ─────────
 // Validates rent, frequency, dates, phone warnings. Returns error string or null.
 const VALID_FREQUENCIES = ['WEEKLY','BIWEEKLY','MONTHLY','QUARTERLY','BIANNUAL','ANNUAL'];
@@ -9417,29 +9414,17 @@ app.post('/api/tenant/pay-installment', authenticate, async (req: Request, res: 
     const ref        = `ARK-VAULT-${resolvedVaultId.slice(0, 8)}-${Date.now()}`;
     const FRONTEND   = process.env.FRONTEND_URL || 'https://nested-ark-ic5n6890k-nested-ark.vercel.app';
 
-    // ── Resolve landlord subaccount for auto 98/2 split ──────────────────
-    let vaultSubaccountCode: string | null = null;
-    if (v.sponsor_id) {
-      try {
-        const bankRes = await pool.query(
-          `SELECT paystack_subaccount_code
-           FROM landlord_bank_accounts
-           WHERE user_id = $1
-             AND paystack_subaccount_code IS NOT NULL
-           ORDER BY
-             CASE WHEN id = $2 THEN 0
-                  WHEN is_default THEN 1
-                  ELSE 2 END
-           LIMIT 1`,
-          [v.sponsor_id, v.landlord_bank_account_id || '00000000-0000-0000-0000-000000000000']
-        );
-        if (bankRes.rows.length) vaultSubaccountCode = bankRes.rows[0].paystack_subaccount_code;
-      } catch (bankErr) {
-        console.warn('[FLEX-PAY] Could not resolve landlord subaccount:', bankErr);
-      }
-    }
-
-    const platformFeeKobo = Math.round(amountKobo * 0.02);
+    // ── ESCROW MODE: Installment payments do NOT split to landlord immediately ──
+    // Architecture: tenant installments accumulate in Ark platform Paystack balance.
+    // The payout cron (startPendingPayoutCron) detects FUNDED_READY vaults and
+    // releases the full 98% lump sum to the landlord once the target is 100% met.
+    //
+    // DUAL PAYMENT ENGINE:
+    //   Full rent payment  → instant 98/2 split via subaccount (landlord gets paid today)
+    //   Vault installment  → NO split → funds held in platform escrow → released on completion
+    //
+    // This is intentional and correct. Do not add subaccount injection here.
+    console.log(`[FLEX-PAY] Escrow mode — contribution of ₦${baseAmountNaira} held in platform vault (no split). Vault ${resolvedVaultId} target: ₦${parseFloat(v.target_amount).toLocaleString()}`);
 
     const vaultPsPayload: Record<string, any> = {
       email,
@@ -9456,21 +9441,16 @@ app.post('/api/tenant/pay-installment', authenticate, async (req: Request, res: 
         base_naira_amount:  baseAmountNaira,
         processing_fee_ngn: 0,  // platform absorbs Paystack fee
         landlord_id:        v.sponsor_id ?? null,
-        split_mode:         vaultSubaccountCode ? 'AUTO_SPLIT' : 'MANUAL_PAYOUT',
+        split_mode:         'ESCROW_HOLD',  // funds held in platform until vault 100% funded
+        cashout_mode:       v.cashout_mode || 'LUMP_SUM',
         custom_fields: [
           { display_name: 'Vault ID',  variable_name: 'vault_id',    value: resolvedVaultId },
           { display_name: 'Tenant',    variable_name: 'tenant_name', value: v.tenant_name   },
         ],
       },
     };
-
-    if (vaultSubaccountCode) {
-      vaultPsPayload.subaccount         = vaultSubaccountCode;
-      vaultPsPayload.transaction_charge = platformFeeKobo;
-      console.log(`[FLEX-PAY] Auto-split enabled — subaccount=${vaultSubaccountCode}, platform_fee_kobo=${platformFeeKobo}`);
-    } else {
-      console.log(`[FLEX-PAY] No subaccount for landlord ${v.sponsor_id ?? 'unknown'} — manual payout fallback`);
-    }
+    // NOTE: No subaccount, no transaction_charge injection here.
+    // Payout cron handles the release when vault_balance >= target_amount.
 
     const psRes = await fetch('https://api.paystack.co/transaction/initialize', {
       method:  'POST',
@@ -9682,13 +9662,13 @@ app.post('/api/tenant/onboard', async (req: Request, res: Response): Promise<any
     const existingVault = await client.query(`SELECT id FROM flex_pay_vaults WHERE tenancy_id=$1 AND status IN ('ACTIVE','FUNDED_READY')`, [tenancyId]);
     let vaultId: string | null = null;
     const rentAmount  = parseFloat(unit.rent_amount);
-    // Use centralized helper — rent_amount is the configured per-frequency amount
-    const installment = calculateInstallmentAmount(rentAmount, frequency);
+    const periods     = ({ WEEKLY:52, MONTHLY:12, QUARTERLY:4 } as Record<string,number>)[frequency] ?? 12;
+    const installment = Math.ceil(rentAmount / periods);
     if (!existingVault.rows.length) {
       const nextDue = new Date(); nextDue.setDate(nextDue.getDate() + 1);
       const vaultRes = await client.query(
         `INSERT INTO flex_pay_vaults (tenancy_id, unit_id, project_id, vault_balance, target_amount, frequency, installment_amount, currency, next_due_date, cashout_mode) VALUES ($1,$2,$3,0,$4,$5,$6,$7,$8,'LUMP_SUM') RETURNING id`,
-        [tenancyId, unitId, unit.project_id, calculateVaultTarget(rentAmount, frequency), frequency, installment, unit.currency||'NGN', nextDue.toISOString().split('T')[0]]
+        [tenancyId, unitId, unit.project_id, rentAmount, frequency, installment, unit.currency||'NGN', nextDue.toISOString().split('T')[0]]
       );
       vaultId = vaultRes.rows[0].id;
     } else { vaultId = existingVault.rows[0].id; }
@@ -10038,11 +10018,15 @@ const startPendingPayoutCron = (pool: any) => {
           }
           const acct = bankRes.rows[0];
 
-          const rentAmount  = parseFloat(v.rent_amount);
-          const platformFee = Math.round(rentAmount * 0.02 * 100) / 100;
-          const netKobo     = Math.round((rentAmount - platformFee) * 100);
-          const payRef      = `RETRY-PAYOUT-${crypto.randomUUID().split('-')[0].toUpperCase()}-${Date.now()}`;
+          // Use actual vault_balance as payout basis — not unit rent_amount.
+          // vault_balance = real accumulated funds in platform Paystack escrow.
+          // This is what the tenant actually contributed and what the landlord is owed.
+          const vaultTotal  = parseFloat(v.vault_balance);
+          const platformFee = Math.round(vaultTotal * 0.02 * 100) / 100;
+          const netKobo     = Math.round((vaultTotal - platformFee) * 100);
+          const payRef      = `ESCROW-RELEASE-${crypto.randomUUID().split('-')[0].toUpperCase()}-${Date.now()}`;
           const periodLabel = new Date().toISOString().slice(0, 7);
+          console.log(`[PAYOUT-CRON] Escrow release: vault=${v.vault_id} total=₦${vaultTotal} net=₦${netKobo/100} fee=₦${platformFee}`);
 
           const tRes = await fetch(`${PAYSTACK_BASE}/transfer`, {
             method:  'POST',
@@ -10081,6 +10065,7 @@ const startPendingPayoutCron = (pool: any) => {
           );
 
           if (tData.status) {
+            // Zero vault balance after successful escrow release
             await pool.query(
               `UPDATE flex_pay_vaults
                SET status='ACTIVE', vault_balance=0, updated_at=NOW(),
@@ -10088,14 +10073,14 @@ const startPendingPayoutCron = (pool: any) => {
                WHERE id=$1`,
               [v.vault_id]
             );
-            console.log(`[PAYOUT-CRON] ✅ Sent → ${acct.account_name} | ${acct.bank_name} | ₦${netKobo/100} | ref=${payRef}`);
+            console.log(`[PAYOUT-CRON] ✅ Escrow released → ${acct.account_name} | ${acct.bank_name} | ₦${netKobo/100} | ref=${payRef} (vault total was ₦${vaultTotal})`);
             await logAudit({
-              event_type:  'PAYOUT_RELEASED',
+              event_type:  'ESCROW_RELEASED',
               actor_id:    v.sponsor_id,
               actor_role:  'SYSTEM',
               unit_id:     null,
-              description: `Rent payout of ₦${netKobo/100} released to ${acct.account_name} (${acct.bank_name}) — ref: ${payRef}`,
-              metadata:    { reference: payRef, amount_ngn: netKobo/100, vault_id: v.vault_id, source: 'RETRY_CRON' },
+              description: `Vault escrow released by cron: ₦${vaultTotal.toLocaleString()} → landlord ${acct.account_name} (${acct.bank_name}). Net ₦${netKobo/100}, fee ₦${platformFee}.`,
+              metadata:    { reference: payRef, vault_total: vaultTotal, net_payout: netKobo/100, platform_fee: platformFee, vault_id: v.vault_id, source: 'PAYOUT_CRON', payout_type: 'ESCROW_LUMP_SUM' },
             });
           } else {
             // Mark vault with failure state for landlord visibility
@@ -10919,27 +10904,6 @@ async function startServer() {
     // time, or where Paystack balance was ₦0 (T+1 clearing). Retries automatically.
     startPendingPayoutCron(pool);
 
-    // ── Runtime payment architecture validation (runs in async startServer context) ─
-    // Checks DB for any landlord with a provisioned subaccount to confirm
-    // the split pipeline is live. Logs to Render for easy verification.
-    try {
-      const splitCheck = await pool.query(
-        `SELECT COUNT(*) AS total,
-                COUNT(paystack_subaccount_code) FILTER (WHERE paystack_subaccount_code IS NOT NULL) AS with_split
-         FROM landlord_bank_accounts`
-      );
-      const { total, with_split } = splitCheck.rows[0];
-      console.log(`[PAYMENTS] Settlement: ${with_split}/${total} landlord accounts have auto-split active`);
-      if (parseInt(with_split) > 0) {
-        console.log('[PAYMENTS] Mode: AUTO SPLIT (98% landlord / 2% platform via Paystack subaccount)');
-      } else {
-        console.log('[PAYMENTS] Mode: MANUAL PAYOUT fallback (no subaccounts provisioned yet)');
-        console.log('[PAYMENTS] Action: Landlords must save a bank account to enable auto-split');
-      }
-    } catch (splitCheckErr: any) {
-      console.warn('[PAYMENTS] Could not verify split status:', (splitCheckErr as any).message);
-    }
-
     app.listen(PORT, "0.0.0.0", () => {
       console.log("[BOOT] All modules initialized successfully");
       console.log(`
@@ -10970,10 +10934,10 @@ Geo-Awareness: Active 🌍
 Market Ticker: Live 📡
 Revenue Engine: Active 💰
 Rental Engine: Active 🏠
-Settlement: Per-landlord subaccounts (auto 98/2 split on rent collection)
+Payment Model: DUAL ENGINE — Full rent: instant 98/2 split; Vault installments: escrow hold → lump sum release
 Paystack Fee: Platform covers Paystack transaction fee (bearer: account)
-Platform Fee: 2% of each rent payment (deducted at collection via split)
-Split Engine: ACTIVE — subaccount provisioned on landlord bank account save
+Platform Fee: 2% at checkout (full rent) or 2% at vault release (installments)
+Escrow Engine: ACTIVE — vault contributions held in platform until 100% funded
 Data Persistence: ENABLED ✅
 
 ============================================
