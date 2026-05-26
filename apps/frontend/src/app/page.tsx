@@ -49,7 +49,7 @@ interface SearchResult {
   currency: string; category: string; status: string;
 }
 
-type RoleTab = 'landlord' | 'investor' | 'developer' | 'diaspora';
+type RoleTab = 'landlord' | 'investor' | 'developer' | 'diaspora' | 'tenant';
 
 // ── Animated counter ──────────────────────────────────────────────────────────
 function Counter({ target, prefix = '', suffix = '' }: { target: number; prefix?: string; suffix?: string }) {
@@ -73,11 +73,12 @@ function Counter({ target, prefix = '', suffix = '' }: { target: number; prefix?
 function Skel() { return <div className="skeleton h-7 w-3/4 rounded-lg" />; }
 
 // ── Role config ───────────────────────────────────────────────────────────────
-const ROLES: { id: RoleTab; emoji: string; label: string; color: 'teal' | 'amber' | 'blue' | 'rose' }[] = [
+const ROLES: { id: RoleTab; emoji: string; label: string; color: 'teal' | 'amber' | 'blue' | 'rose' | 'green' }[] = [
   { id: 'landlord',  emoji: '🏠', label: 'Landlord',  color: 'teal'  },
   { id: 'investor',  emoji: '💼', label: 'Investor',  color: 'amber' },
   { id: 'developer', emoji: '🏗️', label: 'Dev',       color: 'blue'  },
   { id: 'diaspora',  emoji: '🌍', label: 'Diaspora',  color: 'rose'  },
+  { id: 'tenant',    emoji: '🏠', label: 'Tenant',    color: 'green' },
 ];
 
 const CC = {
@@ -85,6 +86,7 @@ const CC = {
   amber: { bar:'from-amber-500 to-amber-400',  bd:'border-amber-500/25', tx:'text-amber-400', btn:'bg-amber-500 hover:bg-amber-400 text-black', sh:'shadow-amber-500/15', act:'bg-amber-500 text-black', tag:'bg-amber-500/8 text-amber-400 border-amber-500/20' },
   blue:  { bar:'from-blue-500 to-blue-400',    bd:'border-blue-500/25',  tx:'text-blue-400',  btn:'bg-blue-500 hover:bg-blue-400 text-black',  sh:'shadow-blue-500/15',  act:'bg-blue-500 text-black',  tag:'bg-blue-500/8 text-blue-400 border-blue-500/20'  },
   rose:  { bar:'from-rose-500 to-rose-400',    bd:'border-rose-500/25',  tx:'text-rose-400',  btn:'bg-rose-500 hover:bg-rose-400 text-white',  sh:'shadow-rose-500/15',  act:'bg-rose-500 text-white',  tag:'bg-rose-500/8 text-rose-400 border-rose-500/20'  },
+  green: { bar:'from-green-500 to-green-400',  bd:'border-green-500/25', tx:'text-green-400', btn:'bg-green-500 hover:bg-green-400 text-black', sh:'shadow-green-500/15', act:'bg-green-500 text-black', tag:'bg-green-500/8 text-green-400 border-green-500/20' },
 };
 
 // ── Role content ──────────────────────────────────────────────────────────────
@@ -186,6 +188,29 @@ const RD: Record<RoleTab, {
       { icon: ShieldCheck, title:'Verified Stages',    tags:['AI Review','Drone Evidence','Human Audit']      },
       { icon: HardHat,     title:'Vetted Contractors', tags:['Background-Checked','Bonded','Milestone-Paid']  },
       { icon: Landmark,    title:'Local Compliance',   tags:['Any Country','Permit-Ready','Court-Grade']      },
+    ],
+  },
+  tenant: {
+    headline: 'Save Toward Your Next Home',
+    sub: 'Set a target. Pay your rhythm. Ark auto-credits your landlord.',
+    points: [
+      'Browse verified vacant units and save toward any property',
+      'Weekly or monthly installments — no annual lump-sum pressure',
+      'Vault auto-disburses to landlord when your target is 100% reached',
+      'Build a portable tenant score and payment history on every payment',
+    ],
+    steps: [
+      { n:'01', t:'Browse & choose a home',   b:'Search verified listings. Pick your unit and set your savings target.'   },
+      { n:'02', t:'Set your payment rhythm',  b:'Choose weekly or monthly. Ark holds every installment in escrow.'        },
+      { n:'03', t:'Vault completes. You move in.', b:'Target hit → landlord auto-credited → ledger receipt issued to you.' },
+    ],
+    cta:'/register?intent=tenant', ctaLabel:'Create Tenant Account',
+    sec:'/marketplace',            secLabel:'Browse properties',
+    cards: [
+      { icon: Wallet,      title:'Flex-Pay Vault',      tags:['Weekly/Monthly','Escrow-Held','Auto-Disburse']      },
+      { icon: ShieldCheck, title:'Paystack Escrow',      tags:['Regulated','Tamper-Proof','T+1 Settled']           },
+      { icon: Receipt,     title:'SHA-256 Receipts',     tags:['Per Payment','Ledger-Backed','PDF Export']         },
+      { icon: TrendingUp,  title:'Tenant Score',         tags:['Portable','Landlord-Visible','Trust-Building']     },
     ],
   },
 };
@@ -296,6 +321,7 @@ export default function HomePage() {
               { label:'🌍 Diaspora',   href:'/register?role=diaspora' },
               { label:'🔨 Contractor', href:'/register'               },
               { label:'🏛️ Government', href:'/gov'                    },
+              { label:'🏠 Tenant',     href:'/register?intent=tenant' },
             ].map(r => (
               <Link key={r.href} href={r.href}
                 className="snap-start px-4 py-2.5 rounded-xl border border-zinc-800 bg-zinc-900/50 text-[11px] font-bold text-zinc-300 hover:border-zinc-600 transition-all active:scale-95 whitespace-nowrap min-w-max">
@@ -388,7 +414,7 @@ export default function HomePage() {
         <section>
           {/* Sticky tab bar */}
           <div className="sticky top-0 z-30 px-4 pt-2 pb-2 bg-[#050505]">
-            <div className="grid grid-cols-4 gap-1 bg-zinc-950 p-1 rounded-2xl border border-zinc-900">
+            <div className="grid grid-cols-5 gap-1 bg-zinc-950 p-1 rounded-2xl border border-zinc-900">
               {ROLES.map(r => {
                 const rc = CC[r.color];
                 return (
@@ -600,6 +626,7 @@ export default function HomePage() {
               { icon:'🌍', label:'Diaspora',    href:'/register?role=diaspora', hover:'hover:border-rose-500/40'   },
               { icon:'🔨', label:'Contractors', href:'/register',               hover:'hover:border-zinc-600'      },
               { icon:'🏛️', label:'Government',  href:'/gov',                    hover:'hover:border-purple-500/40' },
+              { icon:'🏠', label:'Tenants',     href:'/register?intent=tenant', hover:'hover:border-green-500/40'  },
             ].map(r => (
               <Link key={r.label} href={r.href}
                 className={`flex items-center gap-3 p-4 rounded-2xl border border-zinc-800 bg-zinc-900/20 transition-all group ${r.hover}`}>
@@ -641,6 +668,10 @@ export default function HomePage() {
               <Link href="/register?role=diaspora"
                 className="flex items-center justify-center gap-2 py-4 border border-zinc-700 text-zinc-300 font-black text-xs uppercase tracking-wider rounded-xl hover:border-rose-500/40 hover:text-white transition-all active:scale-95">
                 <Globe size={13} /> Diaspora
+              </Link>
+              <Link href="/register?intent=tenant"
+                className="col-span-2 flex items-center justify-center gap-2 py-4 bg-green-500 text-black font-black text-xs uppercase tracking-wider rounded-xl hover:bg-green-400 transition-all active:scale-95">
+                <Wallet size={13} /> Save Toward a Home — Tenant Vault
               </Link>
             </div>
             <div className="flex flex-wrap justify-center gap-4 pt-1 text-[8px] text-zinc-700">
