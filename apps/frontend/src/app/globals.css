@@ -40,6 +40,10 @@
     transition: background-color 0.25s ease, color 0.25s ease;
     margin: 0;
     padding: 0;
+    /* Prevent horizontal scroll on mobile */
+    overflow-x: hidden;
+    /* Smooth momentum scrolling on iOS */
+    -webkit-overflow-scrolling: touch;
   }
 
   /* ── Force Overrides for Theme Consistency ── */
@@ -56,10 +60,86 @@
 
   * {
     transition: background-color 0.2s ease, border-color 0.2s ease, color 0.05s linear;
+    /* Improve tap targets on mobile */
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* ── Better mobile input UX ─────────────────────────────── */
+  input, textarea, select {
+    font-size: 16px; /* prevents iOS auto-zoom on focus */
   }
 }
 
 @layer utilities {
+  /* ── Theme ───────────────────────────────────────────────── */
   .theme-transition { transition: all 0.3s ease; }
   .text-shadow-glow { text-shadow: 0 0 20px rgba(20,184,166,0.3); }
+
+  /* ── Scrollbar utilities ─────────────────────────────────── */
+  /* Hide scrollbar while preserving scroll functionality */
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* ── Safe area padding (iOS notch / home indicator) ─────── */
+  .safe-area-pb {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  .safe-area-pt {
+    padding-top: env(safe-area-inset-top, 0px);
+  }
+
+  /* ── Skeleton loader animation ───────────────────────────── */
+  .skeleton {
+    background: linear-gradient(
+      90deg,
+      rgba(39,39,42,0.6) 25%,
+      rgba(63,63,70,0.4) 50%,
+      rgba(39,39,42,0.6) 75%
+    );
+    background-size: 200% 100%;
+    animation: skeleton-sweep 1.5s ease-in-out infinite;
+    border-radius: 0.75rem;
+  }
+
+  @keyframes skeleton-sweep {
+    0%   { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+  }
+
+  /* ── Swipeable card snap container ──────────────────────── */
+  .snap-x-card {
+    display: flex;
+    gap: 0.75rem;
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+    -webkit-overflow-scrolling: touch;
+    padding-bottom: 0.5rem;
+    /* hide scrollbar */
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .snap-x-card::-webkit-scrollbar { display: none; }
+
+  .snap-x-card > * {
+    flex-shrink: 0;
+    scroll-snap-align: start;
+  }
+
+  /* ── Fade-in animation for tab panels ───────────────────── */
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(6px); }
+    to   { opacity: 1; transform: translateY(0);   }
+  }
+  .animate-fadeIn {
+    animation: fadeIn 0.22s ease-out both;
+  }
+
+  /* ── Active press scale for touch targets ────────────────── */
+  .active\:scale-95:active { transform: scale(0.95); }
+  .active\:scale-90:active { transform: scale(0.90); }
 }

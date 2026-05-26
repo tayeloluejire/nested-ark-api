@@ -3,12 +3,19 @@ import { Inter } from 'next/font/google';
 import './globals.css';
 import { AuthProvider } from '@/lib/AuthContext';
 import MarketTicker from '@/components/MarketTicker';
+import MobileBottomNav from '@/components/navigation/MobileBottomNav';
 
 const inter = Inter({ subsets: ['latin'] });
 
 export const metadata: Metadata = {
   title: 'Nested Ark OS',
   description: 'Infrastructure Management Platform',
+  viewport: {
+    width: 'device-width',
+    initialScale: 1,
+    maximumScale: 1,   // prevent double-tap zoom on mobile inputs
+    userScalable: false,
+  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -41,6 +48,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           {/* ── MarketTicker: runs across ALL pages — global broadcast feed ── */}
           <MarketTicker />
           {children}
+          {/* ── Mobile bottom navigation: role-aware, hidden on md+ ────── */}
+          <MobileBottomNav />
         </AuthProvider>
       </body>
     </html>
