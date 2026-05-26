@@ -111,7 +111,7 @@ setInterval(() => {
 // ── Rate limiter presets ──────────────────────────────────────────────────
 const authLimiter     = createRateLimiter(15 * 60 * 1000, 10,  'Too many auth attempts. Please try again in 15 minutes.');
 const actionLimiter   = createRateLimiter(60 * 1000,       30, 'Rate limit exceeded. Please slow down.');
-const paymentLimiter  = createRateLimiter(60 * 1000,       5,  'Too many payment requests. Please wait before retrying.');
+const paymentLimiter  = createRateLimiter(5 * 60 * 1000,   10, 'Too many payment requests. Please wait 5 minutes before retrying.');
 const noticeLimiter   = createRateLimiter(60 * 1000,       10, 'Too many notice requests. Please slow down.');
 
 // ── Apply limiters ────────────────────────────────────────────────────────
@@ -4047,9 +4047,7 @@ app.post("/api/payments/webhook",
                     const platformFee = Math.round(vaultEscrowAmount * 0.02 * 100) / 100;
                     const netKobo     = Math.round((vaultEscrowAmount - platformFee) * 100);
                     console.log(`[WEBHOOK] Escrow release → vault=₦${vaultEscrowAmount} platformFee=₦${platformFee} landlord=₦${netKobo/100}`);
-                    const payRef      = `AUTO-PAYOUT-${crypto.randomUUID().split('-')[0].toUpperCase()}-${Date.now()}`;
-
-                    const payRef = `ESCROW-RELEASE-${crypto.randomUUID().split('-')[0].toUpperCase()}-${Date.now()}`;
+                    const payRef      = `ESCROW-RELEASE-${crypto.randomUUID().split('-')[0].toUpperCase()}-${Date.now()}`;
                     const tRes = await fetch(`${PAYSTACK_BASE}/transfer`, {
                       method: 'POST',
                       headers: { Authorization: `Bearer ${PAYSTACK_SECRET}`, 'Content-Type': 'application/json' },
