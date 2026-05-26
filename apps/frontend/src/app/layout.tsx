@@ -1,4 +1,4 @@
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import { Inter } from 'next/font/google';
 import './globals.css';
 import { AuthProvider } from '@/lib/AuthContext';
@@ -7,15 +7,19 @@ import MobileBottomNav from '@/components/navigation/MobileBottomNav';
 
 const inter = Inter({ subsets: ['latin'] });
 
+// ── MODERN NEXT.JS VIEWPORT STRUCTURAL EXPORT ─────────────────────────────
+// Resolves: "Unsupported metadata viewport is configured in metadata export" warnings
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  maximumScale: 1,      // Prevents unpredictable layout scale shifts on input field selections
+  userScalable: false,
+};
+
+// ── CORE PLATFORM METADATA CONFIGURATION ──────────────────────────────────
 export const metadata: Metadata = {
   title: 'Nested Ark OS',
   description: 'Infrastructure Management Platform',
-  viewport: {
-    width: 'device-width',
-    initialScale: 1,
-    maximumScale: 1,   // prevent double-tap zoom on mobile inputs
-    userScalable: false,
-  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
