@@ -6,13 +6,16 @@ export const dynamic = 'force-dynamic';
  *
  * MODES:
  * 1. TENANT INVITE FLOW (via URL params from Landlord)
- * 2. STANDARD FLOW (With specialized Independent Tenant Escrow Vault Configuration)
+ * 2. STANDARD FLOW (With Specialized Independent Tenant Escrow Vault + Landlord Paystack Auto-Verification)
  */
 
 import { useState, useEffect, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { Loader2, AlertCircle, ShieldCheck, Home, Info, Wallet, Building, Calendar } from 'lucide-react';
+import { 
+  Loader2, AlertCircle, ShieldCheck, Home, Info, 
+  Wallet, Building, Calendar, CheckCircle2, Landmark 
+} from 'lucide-react';
 
 import { useAuth } from '@/lib/AuthContext';
 import api from '@/lib/api';
@@ -85,6 +88,11 @@ const ROLES = [
   },
 ] as const;
 
+interface BankOption {
+  name: string;
+  code: string;
+}
+
 function RegisterContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -102,8 +110,11 @@ function RegisterContent() {
   const isTenantInvite = (forceRole === 'TENANT' || urlIntent === 'vault') && !!inviteToken;
 
   const [selectedRole, setSelectedRole] = useState<typeof ROLES[number] | null>(null);
+  const [banks, setBanks] = useState<BankOption[]>([]);
+  const [verifyingBank, setVerifyingBank] = useState(false);
+  const [bankResolved, setBankResolved] = useState(false);
 
-  // Expanded registration form state to capture targets and escrow settlement rules natively
+  // Expanded registration form state to capture targets and auto-verification rules cleanly
   const [form, setForm] = useState({
     full_name: '',
     email: inviteEmail,
@@ -112,6 +123,7 @@ function RegisterContent() {
     // Independent Tenant Escrow Vault Configuration parameters
     target_rent: '',
     savings_frequency: 'MONTHLY',
+    landlord_bank_code: '',
     landlord_bank_name: '',
     landlord_account_number: '',
     landlord_account_name: '',
@@ -129,6 +141,15 @@ function RegisterContent() {
       if (tenantRole) setSelectedRole(tenantRole);
     }
   }, [urlIntent, forceRole]);
+
+  // Fetch available banks list for Landlord verification options
+  useEffect(() => {
+    if (selectedRole?.id === 'TENANT' && !isTenantInvite) {
+      api.get('/api/payouts/banks')
+        .then(res => setBanks(res.data?.banks || []))
+        .catch(() => {});
+    }
+  }, [selectedRole, isTenantInvite]);
 
   // Pre-fill fields from route parameters securely
   useEffect(() => {
@@ -153,6 +174,46 @@ function RegisterContent() {
     validateInvite();
   }, [inviteToken, isTenantInvite]);
 
+  // Perform surgical, live Landlord Bank Account verification using Paystack lookup infrastructure
+  useEffect(() => {
+    const verifyLandlordAccount = async () => {
+      if (form.landlord_account_number.length === 10 && form.landlord_bank_code) {
+        try {
+          setVerifyingBank(true);
+          setError('');
+          setBankResolved(false);
+
+          const matchedBank = banks.find(b => b.code === form.landlord_bank_code);
+          const bankName = matchedBank ? matchedBank.name : '';
+
+          const res = await api.post('/api/payouts/resolve-account', {
+            account_number: form.landlord_account_number,
+            bank_code: form.landlord_bank_code,
+          });
+
+          if (res.data?.account_name) {
+            setForm(prev => ({
+              ...prev,
+              landlord_account_name: res.data.account_name,
+              landlord_bank_name: bankName,
+            }));
+            setBankResolved(true);
+          }
+        } catch (err: any) {
+          setError(err?.response?.data?.error || 'Could not verify landlord bank account detail.');
+          setBankResolved(false);
+        } finally {
+          setVerifyingBank(false);
+        }
+      } else {
+        setBankResolved(false);
+        setForm(prev => ({ ...prev, landlord_account_name: '' }));
+      }
+    };
+
+    verifyLandlordAccount();
+  }, [form.landlord_account_number, form.landlord_bank_code, banks]);
+
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     setForm(prev => ({ ...prev, [e.target.name]: e.target.value }));
   };
@@ -174,13 +235,13 @@ function RegisterContent() {
     }
 
     // Dynamic runtime configuration validation for custom escrow track
-    if (activeRole === 'TENANT' && !isTenantInvite) {
-      if (form.target_rent && (!form.landlord_bank_name || !form.landlord_account_number)) {
+    if (activeRole === 'TENANT' && !isTenantInvite && form.target_rent) {
+      if (!form.landlord_bank_code || !form.landlord_account_number) {
         setError('Please fully fill out your landlord bank destination parameters to allow automated payout on completion.');
         return;
       }
-      if (form.landlord_account_number && form.landlord_account_number.length !== 10) {
-        setError('Nigerian settlement account numbers must be exactly 10 digits long.');
+      if (!bankResolved) {
+        setError('Please verify that the Landlord Bank Account is valid and auto-confirmed before proceeding.');
         return;
       }
     }
@@ -197,7 +258,7 @@ function RegisterContent() {
           password: form.password,
           role: 'TENANT',
           accountType: 'TENANT',
-        });
+         });
 
         await api.post('/api/rental/consume-invite', {
           tenancy_id: inviteToken,
@@ -220,7 +281,7 @@ function RegisterContent() {
         accountType: role.accountType as any,
       });
 
-      // Secure initialization hook for manual targeted escrow setup if configured during onboarding
+      // Secure initialization hook for manual targeted escrow setup with pre-resolved settlement targets
       if (activeRole === 'TENANT' && form.target_rent) {
         await api.post('/api/flex-pay/setup', {
           target_amount: parseFloat(form.target_rent),
@@ -228,9 +289,10 @@ function RegisterContent() {
           unit_id: intentUnit || null,
           custom_escrow: true,
           payout_profile: {
+            bank_code: form.landlord_bank_code,
             bank_name: form.landlord_bank_name,
             account_number: form.landlord_account_number,
-            account_name: form.landlord_account_name || form.full_name + ' Landlord Target Pool',
+            account_name: form.landlord_account_name,
           }
         });
       }
@@ -430,34 +492,57 @@ function RegisterContent() {
                 <p className="text-[9px] text-green-400 uppercase font-black tracking-widest flex items-center gap-1">
                   <Building size={10} /> Downstream Destination Bank Setup
                 </p>
-                <div className="grid grid-cols-1 gap-2.5">
+                
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <div>
-                    <input
-                      name="landlord_bank_name"
-                      value={form.landlord_bank_name}
+                    <label className="block text-[8px] text-zinc-500 uppercase font-bold tracking-widest mb-1">Select Bank</label>
+                    <select
+                      name="landlord_bank_code"
+                      value={form.landlord_bank_code}
                       onChange={handleChange}
-                      placeholder="Landlord's Settlement Bank (e.g. Wema Bank, GTBank)"
-                      className="w-full bg-black/40 border border-zinc-800 px-3 py-2.5 rounded-xl text-xs outline-none focus:border-green-500 font-medium"
-                    />
+                      className="w-full bg-black/40 border border-zinc-800 px-3 py-2.5 rounded-xl text-xs outline-none focus:border-green-500 text-zinc-300 appearance-none font-medium"
+                    >
+                      <option value="">-- Choose Bank --</option>
+                      {banks.map(b => (
+                        <option key={b.code} value={b.code}>{b.name}</option>
+                      ))}
+                    </select>
                   </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    <input
-                      name="landlord_account_number"
-                      value={form.landlord_account_number}
-                      onChange={handleChange}
-                      maxLength={10}
-                      placeholder="10-Digit Account Number"
-                      className="w-full bg-black/40 border border-zinc-800 px-3 py-2.5 rounded-xl text-xs outline-none focus:border-green-500 font-mono"
-                    />
-                    <input
-                      name="landlord_account_name"
-                      value={form.landlord_account_name}
-                      onChange={handleChange}
-                      placeholder="Beneficiary Account Name (Optional)"
-                      className="w-full bg-black/40 border border-zinc-800 px-3 py-2.5 rounded-xl text-xs outline-none focus:border-green-500 font-medium"
-                    />
+
+                  <div>
+                    <label className="block text-[8px] text-zinc-500 uppercase font-bold tracking-widest mb-1">Account Number</label>
+                    <div className="relative">
+                      <input
+                        name="landlord_account_number"
+                        value={form.landlord_account_number}
+                        onChange={handleChange}
+                        maxLength={10}
+                        placeholder="10-Digit Number"
+                        className="w-full bg-black/40 border border-zinc-800 px-3 py-2.5 rounded-xl text-xs outline-none focus:border-green-500 font-mono text-zinc-200"
+                      />
+                      {verifyingBank && (
+                        <span className="absolute right-3 top-3">
+                          <Loader2 size={12} className="animate-spin text-teal-400" />
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </div>
+
+                {/* Live Paystack Account Resolution Real-time Confirmation Badge View */}
+                {form.landlord_account_name && (
+                  <div className="p-3 rounded-xl border border-teal-500/20 bg-teal-500/5 flex items-center gap-2.5 animate-fadeIn">
+                    {bankResolved ? (
+                      <CheckCircle2 size={14} className="text-teal-400 shrink-0" />
+                    ) : (
+                      <Landmark size={14} className="text-zinc-500 shrink-0" />
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <p className="text-[8px] text-zinc-500 uppercase font-black tracking-widest">Verified Paystack Destination Profile</p>
+                      <p className="text-xs font-mono font-bold text-teal-400 uppercase tracking-wide truncate">{form.landlord_account_name}</p>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
