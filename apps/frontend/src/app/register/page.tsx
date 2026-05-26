@@ -229,6 +229,7 @@ function RegisterContent() {
     if (!form.full_name.trim() || !form.email.trim() || !form.password.trim()) {
       setError('Full name, email and account access password are required.');
       return;
+
     }
 
     const activeRole = isTenantInvite ? 'TENANT' : selectedRole?.id;
@@ -478,12 +479,13 @@ function RegisterContent() {
                 <label className="block text-[9px] text-zinc-400 uppercase font-black tracking-widest mb-1.5 flex items-center gap-1">
                   <Calendar size={10} /> Contribution Frequency
                 </label>
-                <div className="relative z-10">
+                <div className="relative z-30">
                   <select
                     name="savings_frequency"
                     value={form.savings_frequency}
                     onChange={handleChange}
-                    className="w-full bg-zinc-900 border border-zinc-800 px-3 py-2.5 rounded-xl text-xs outline-none focus:border-green-500 font-bold text-zinc-200 cursor-pointer"
+                    className="relative block w-full bg-zinc-900 border border-zinc-800 px-3 py-2.5 rounded-xl text-xs outline-none focus:border-green-500 font-bold text-zinc-200 cursor-pointer appearance-none"
+                    style={{ appearance: 'auto' }}
                   >
                     <option value="WEEKLY" className="bg-zinc-900 text-zinc-200">Weekly Rhythm</option>
                     <option value="MONTHLY" className="bg-zinc-900 text-zinc-200">Monthly Rhythm</option>
@@ -502,12 +504,13 @@ function RegisterContent() {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <div>
                     <label className="block text-[8px] text-zinc-500 uppercase font-bold tracking-widest mb-1">Select Bank</label>
-                    <div className="relative z-20">
+                    <div className="relative z-50">
                       <select
                         name="landlord_bank_code"
                         value={form.landlord_bank_code}
                         onChange={handleChange}
-                        className="w-full bg-zinc-900 border border-zinc-800 px-3 py-2.5 rounded-xl text-xs outline-none focus:border-green-500 text-zinc-200 cursor-pointer font-medium"
+                        className="relative block w-full bg-zinc-900 border border-zinc-800 px-3 py-2.5 rounded-xl text-xs outline-none focus:border-green-500 text-zinc-200 cursor-pointer font-medium appearance-none"
+                        style={{ appearance: 'auto' }}
                       >
                         <option value="" className="bg-zinc-900 text-zinc-400">-- Choose Bank --</option>
                         {banks.map(b => (
@@ -521,7 +524,7 @@ function RegisterContent() {
 
                   <div>
                     <label className="block text-[8px] text-zinc-500 uppercase font-bold tracking-widest mb-1">Account Number</label>
-                    <div className="relative">
+                    <div className="relative z-10">
                       <input
                         name="landlord_account_number"
                         value={form.landlord_account_number}
@@ -531,7 +534,7 @@ function RegisterContent() {
                         className="w-full bg-black/40 border border-zinc-800 px-3 py-2.5 rounded-xl text-xs outline-none focus:border-green-500 font-mono text-zinc-200"
                       />
                       {verifyingBank && (
-                        <span className="absolute right-3 top-3">
+                        <span className="absolute right-3 top-3 z-20">
                           <Loader2 size={12} className="animate-spin text-teal-400" />
                         </span>
                       )}
