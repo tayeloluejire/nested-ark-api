@@ -97,7 +97,11 @@ export default function LandlordBankPage() {
     finally { setBalanceLoading(false); }
   }, []);
 
-  useEffect(() => { loadAccounts(); loadBanks(); loadBalance(); }, [loadAccounts, loadBanks, loadBalance]);
+  useEffect(() => { 
+    loadAccounts(); 
+    loadBanks(); 
+    loadBalance(); 
+  }, [loadAccounts, loadBanks, loadBalance]);
 
   const resolveAccountName = async (acctNum: string, bCode: string) => {
     if (acctNum.length !== 10 || !bCode) return;
@@ -167,12 +171,12 @@ export default function LandlordBankPage() {
       });
       setPayoutMsg(res.data.message ?? `Transfer initiated successfully!`);
       setPayoutAmt('');
-      loadBalance(); // refresh balance after successful transfer
+      loadBalance();
     } catch (ex: any) {
       const d = ex?.response?.data;
       setPayoutErr(d?.error ?? 'Payout failed.');
       if (d?.t1_note) setT1Note(d.t1_note);
-      if (d?.insufficient_balance) loadBalance(); // refresh to show current balance
+      if (d?.insufficient_balance) loadBalance();
     } finally { setPayoutBusy(false); }
   };
 
@@ -181,7 +185,7 @@ export default function LandlordBankPage() {
   const feeAmt            = Math.round(grossAmt * 0.02);
   const netAmt            = Math.round(grossAmt * 0.98);
   const balanceKnown      = balanceNgn !== null;
-  const hasSufficientBal  = balanceKnown ? balanceNgn >= netAmt : true; // optimistic if unknown
+  const hasSufficientBal  = balanceKnown ? balanceNgn >= netAmt : true;
   const canInitiatePayout = !!payoutAcct && grossAmt > 0 && !payoutBusy && hasSufficientBal;
 
   return (
@@ -251,8 +255,8 @@ export default function LandlordBankPage() {
                       Click <strong>Repair →</strong> on your account and select your bank, or delete and re-add.
                     </p>
                   </div></>
-            }
-          </div>
+          }
+        </div>
         )}
 
         {error && (
@@ -483,7 +487,7 @@ export default function LandlordBankPage() {
           <p className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest">How payouts work</p>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {[
-              { step: '01', title: 'Tenant pays',    body: 'Rent collected via Paystack and held in your Paystack balance (T+1 settlement).' },
+              { step: '01', title: 'Tenant pays',     body: 'Rent collected via Paystack and held in your Paystack balance (T+1 settlement).' },
               { step: '02', title: 'T+1 clearing',   body: 'Paystack settles to your available balance the next business day after collection.' },
               { step: '03', title: '98% to you',     body: '2% platform fee deducted. Net transferred instantly once balance is available.' },
             ].map(s => (
@@ -561,8 +565,13 @@ export default function LandlordBankPage() {
               </select>
 
               <label className="flex items-center gap-3 cursor-pointer select-none">
-                <div onClick={() => setForm(f => ({ ...f, set_as_default: !f.set_as_default }))}
-                  className={`w-9 h-5 rounded-full transition-colors flex items-center px-0.5 ${form.set_as_default ? 'bg-teal-500' : 'bg-zinc-700'}`}>
+                <input 
+                  type="checkbox" 
+                  checked={form.set_as_default} 
+                  onChange={() => setForm(f => ({ ...f, set_as_default: !f.set_as_default }))} 
+                  className="sr-only" 
+                />
+                <div className={`w-9 h-5 rounded-full transition-colors flex items-center px-0.5 ${form.set_as_default ? 'bg-teal-500' : 'bg-zinc-700'}`}>
                   <div className={`w-4 h-4 rounded-full bg-white shadow transition-transform ${form.set_as_default ? 'translate-x-4' : 'translate-x-0'}`} />
                 </div>
                 <span className="text-xs text-zinc-400 font-bold">Set as default payout account</span>

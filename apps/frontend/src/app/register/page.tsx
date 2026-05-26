@@ -134,6 +134,11 @@ function RegisterContent() {
   const [error, setError] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
 
+  // ── FIX 4: SAFE EFFECT DEBUGGING FOR STATE HYDRATION ─────────────────────
+  useEffect(() => {
+    console.log('[DEBUG] RegisterContent - Active Banks State Array:', banks);
+  }, [banks]);
+
   // Handle default intent initialization
   useEffect(() => {
     if (urlIntent === 'tenant' || urlIntent === 'vault' || forceRole === 'TENANT') {
@@ -142,17 +147,30 @@ function RegisterContent() {
     }
   }, [urlIntent, forceRole]);
 
-  // Fetch available banks list cleanly for independent targeted configuration routes
+  // ── FIX 2: UNIFIED REGISTRATION BANK FETCH NORMALIZATION LOOP ────────────
   useEffect(() => {
     api.get('/api/payouts/banks')
       .then(res => {
-        if (res.data?.banks) {
-          setBanks(res.data.banks);
-        } else if (Array.isArray(res.data)) {
-          setBanks(res.data);
-        }
+        const payload =
+          Array.isArray(res.data)
+            ? res.data
+            : Array.isArray(res.data?.banks)
+              ? res.data.banks
+              : [];
+
+        const normalized = payload
+          .filter((b: any) => b?.name && b?.code)
+          .map((b: any) => ({
+            name: String(b.name),
+            code: String(b.code),
+          }));
+
+        setBanks(normalized);
       })
-      .catch(() => {});
+      .catch(err => {
+        console.error('[CRITICAL] Registration layout failed to hydrate bank arrays:', err);
+        setBanks([]);
+      });
   }, []);
 
   // Pre-fill fields from route parameters securely
@@ -229,7 +247,6 @@ function RegisterContent() {
     if (!form.full_name.trim() || !form.email.trim() || !form.password.trim()) {
       setError('Full name, email and account access password are required.');
       return;
-
     }
 
     const activeRole = isTenantInvite ? 'TENANT' : selectedRole?.id;
@@ -512,12 +529,19 @@ function RegisterContent() {
                         className="relative block w-full bg-zinc-900 border border-zinc-800 px-3 py-2.5 rounded-xl text-xs outline-none focus:border-green-500 text-zinc-200 cursor-pointer font-medium appearance-none"
                         style={{ appearance: 'auto' }}
                       >
-                        <option value="" className="bg-zinc-900 text-zinc-400">-- Choose Bank --</option>
-                        {banks.map(b => (
-                          <option key={b.code} value={b.code} className="bg-zinc-900 text-zinc-200">
-                            {b.name}
-                          </option>
-                        ))}
+                        {/* ── FIX 3: HARDENED SELECT DROPDOWN RENDERING HYDRATION CHECK ── */}
+                        {banks.length > 0 ? (
+                          <>
+                            <option value="" className="bg-zinc-900 text-zinc-400">-- Choose Bank --</option>
+                            {banks.map(b => (
+                              <option key={b.code} value={b.code} className="bg-zinc-900 text-zinc-200">
+                                {b.name}
+                              </option>
+                            ))}
+                          </>
+                        ) : (
+                          <option value="">Loading banks...</option>
+                        )}
                       </select>
                     </div>
                   </div>
