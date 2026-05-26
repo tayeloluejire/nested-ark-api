@@ -474,16 +474,18 @@ function RegisterContent() {
                 <label className="block text-[9px] text-zinc-400 uppercase font-black tracking-widest mb-1.5 flex items-center gap-1">
                   <Calendar size={10} /> Contribution Frequency
                 </label>
-                <select
-                  name="savings_frequency"
-                  value={form.savings_frequency}
-                  onChange={handleChange}
-                  className="w-full bg-black/40 border border-zinc-800 px-3 py-2.5 rounded-xl text-xs outline-none focus:border-green-500 font-bold text-zinc-300 appearance-none"
-                >
-                  <option value="WEEKLY">Weekly Rhythm</option>
-                  <option value="MONTHLY">Monthly Rhythm</option>
-                  <option value="QUARTERLY">Quarterly Rhythm</option>
-                </select>
+                <div className="relative z-10">
+                  <select
+                    name="savings_frequency"
+                    value={form.savings_frequency}
+                    onChange={handleChange}
+                    className="w-full bg-zinc-900 border border-zinc-800 px-3 py-2.5 rounded-xl text-xs outline-none focus:border-green-500 font-bold text-zinc-200 cursor-pointer"
+                  >
+                    <option value="WEEKLY" className="bg-zinc-900 text-zinc-200">Weekly Rhythm</option>
+                    <option value="MONTHLY" className="bg-zinc-900 text-zinc-200">Monthly Rhythm</option>
+                    <option value="QUARTERLY" className="bg-zinc-900 text-zinc-200">Quarterly Rhythm</option>
+                  </select>
+                </div>
               </div>
             </div>
 
@@ -496,17 +498,21 @@ function RegisterContent() {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <div>
                     <label className="block text-[8px] text-zinc-500 uppercase font-bold tracking-widest mb-1">Select Bank</label>
-                    <select
-                      name="landlord_bank_code"
-                      value={form.landlord_bank_code}
-                      onChange={handleChange}
-                      className="w-full bg-black/40 border border-zinc-800 px-3 py-2.5 rounded-xl text-xs outline-none focus:border-green-500 text-zinc-300 appearance-none font-medium"
-                    >
-                      <option value="">-- Choose Bank --</option>
-                      {banks.map(b => (
-                        <option key={b.code} value={b.code}>{b.name}</option>
-                      ))}
-                    </select>
+                    <div className="relative z-20">
+                      <select
+                        name="landlord_bank_code"
+                        value={form.landlord_bank_code}
+                        onChange={handleChange}
+                        className="w-full bg-zinc-900 border border-zinc-800 px-3 py-2.5 rounded-xl text-xs outline-none focus:border-green-500 text-zinc-200 cursor-pointer font-medium"
+                      >
+                        <option value="" className="bg-zinc-900 text-zinc-400">-- Choose Bank --</option>
+                        {banks.map(b => (
+                          <option key={b.code} value={b.code} className="bg-zinc-900 text-zinc-200">
+                            {b.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
                   </div>
 
                   <div>
