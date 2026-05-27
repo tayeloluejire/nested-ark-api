@@ -1165,6 +1165,55 @@ const ensureTablesExist = async () => {
       ALTER TABLE rental_units   ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ DEFAULT NULL;
       ALTER TABLE legal_notices  ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ DEFAULT NULL;
 
+      -- ── Standalone Vault (independent tenant savings — no landlord link required) ──
+      -- Tenants who self-register can initialize their own savings vault, specify
+      -- a target and a landlord payout destination, and start micro-contributing
+      -- immediately. When the landlord claims via invite/signup, the vault migrates
+      -- to a full tenancy-linked flex_pay_vault automatically.
+      CREATE TABLE IF NOT EXISTS standalone_vaults (
+        id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        tenant_user_id       UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        status               VARCHAR(30)  NOT NULL DEFAULT 'ACTIVE',
+        target_amount        DECIMAL(15,2) NOT NULL DEFAULT 0,
+        vault_balance        DECIMAL(15,2) NOT NULL DEFAULT 0,
+        currency             VARCHAR(10)   NOT NULL DEFAULT 'NGN',
+        frequency            VARCHAR(20)   NOT NULL DEFAULT 'MONTHLY',
+        installment_amount   DECIMAL(15,2) NOT NULL DEFAULT 0,
+        funded_periods       INTEGER       NOT NULL DEFAULT 0,
+        -- Landlord payout destination (supplied by tenant, unverified until landlord claims)
+        landlord_name        VARCHAR(255),
+        landlord_email       VARCHAR(255),
+        landlord_bank_name   VARCHAR(100),
+        landlord_account_number VARCHAR(20),
+        landlord_account_name   VARCHAR(255),
+        -- Linked tenancy (populated when landlord formally onboards and claims this vault)
+        linked_tenancy_id    UUID REFERENCES tenancies(id) ON DELETE SET NULL,
+        linked_at            TIMESTAMPTZ,
+        -- Audit
+        created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_sv_tenant  ON standalone_vaults(tenant_user_id);
+      CREATE INDEX IF NOT EXISTS idx_sv_status  ON standalone_vaults(status);
+
+      -- Standalone Vault Contributions (mirrors flex_contributions but FK-free on tenancy)
+      CREATE TABLE IF NOT EXISTS standalone_contributions (
+        id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        vault_id       UUID NOT NULL REFERENCES standalone_vaults(id) ON DELETE CASCADE,
+        amount_ngn     DECIMAL(15,2) NOT NULL,
+        paystack_ref   VARCHAR(150) UNIQUE,
+        status         VARCHAR(20)  NOT NULL DEFAULT 'PENDING',
+        period_label   VARCHAR(30),
+        paid_at        TIMESTAMPTZ,
+        ledger_hash    VARCHAR(128),
+        created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_sc_vault ON standalone_contributions(vault_id);
+
+      -- db_role mirror column (safe fallback — actual auth truth is 'role' column)
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS db_role VARCHAR(50) DEFAULT NULL;
+      UPDATE users SET db_role = role WHERE db_role IS NULL AND role IS NOT NULL;
+
     `);
 
     await client.query('COMMIT');
@@ -4206,6 +4255,89 @@ app.post("/api/payments/webhook",
         }
       } catch (e: any) {
         console.error('[WEBHOOK] Rent processing error:', e.message);
+      }
+      return res.sendStatus(200);
+    }
+
+    // ── STANDALONE_INSTALLMENT: credit independent tenant vault ──────────────
+    // Fired when a tenant who has no landlord tenancy link pays into their
+    // standalone savings vault. Funds are held in platform escrow.
+    // When the target is reached and the landlord is onboarded, an admin
+    // triggers the ESCROW_RELEASE to the landlord's Paystack recipient code.
+    if (event.event === 'charge.success' && event.data?.metadata?.payment_type === 'STANDALONE_INSTALLMENT') {
+      const { reference, amount } = event.data;
+      const amountNgn  = amount / 100;
+      const meta       = event.data?.metadata ?? {};
+      const svId       = meta.standalone_vault_id;
+      if (!svId) {
+        console.warn('[WEBHOOK] STANDALONE_INSTALLMENT: missing standalone_vault_id in metadata');
+        return res.sendStatus(200);
+      }
+      try {
+        const svRes = await pool.query(
+          `SELECT * FROM standalone_vaults WHERE id=$1 FOR UPDATE`,
+          [svId]
+        );
+        if (!svRes.rows.length) {
+          console.warn(`[WEBHOOK] STANDALONE_INSTALLMENT: vault ${svId} not found`);
+          return res.sendStatus(200);
+        }
+        const sv         = svRes.rows[0];
+        const newBalance = Math.min(
+          parseFloat(sv.vault_balance) + amountNgn,
+          parseFloat(sv.target_amount) * 1.5
+        );
+        const target      = parseFloat(sv.target_amount);
+        const periodLabel = new Date().toISOString().slice(0, 7);
+        let newStatus     = sv.status;
+        let newPeriods    = parseInt(sv.funded_periods) || 0;
+        if (newBalance >= target) {
+          newPeriods += 1;
+          newStatus   = 'FUNDED_READY';
+        }
+
+        const h = crypto.createHash('sha256')
+          .update(`sv-contrib-${svId}-${amountNgn}-${reference}-${Date.now()}`).digest('hex');
+
+        // Insert contribution record (idempotent)
+        await pool.query(
+          `INSERT INTO standalone_contributions
+             (vault_id, amount_ngn, paystack_ref, status, period_label, paid_at, ledger_hash)
+           VALUES ($1,$2,$3,'SUCCESS',$4,NOW(),$5)
+           ON CONFLICT (paystack_ref) DO NOTHING`,
+          [svId, amountNgn, reference, periodLabel, h]
+        );
+
+        // Update vault balance
+        await pool.query(
+          `UPDATE standalone_vaults
+           SET vault_balance=$1, funded_periods=$2, status=$3, updated_at=NOW()
+           WHERE id=$4`,
+          [newBalance, newPeriods, newStatus, svId]
+        );
+
+        // Immutable ledger
+        await pool.query(
+          `INSERT INTO system_ledger (transaction_type, payload, immutable_hash)
+           VALUES ('STANDALONE_VAULT_CREDIT',$1,$2)`,
+          [JSON.stringify({
+            vault_id:    svId,
+            tenant_id:   sv.tenant_user_id,
+            amount_ngn:  amountNgn,
+            reference,
+            new_balance: newBalance,
+            funded_pct:  Math.min(Math.round((newBalance / target) * 100), 100),
+            period_label: periodLabel,
+          }), h]
+        ).catch(() => {});
+
+        console.log(`[STANDALONE-VAULT] Credited +₦${amountNgn} → vault=${svId} balance=₦${newBalance} (${Math.min(Math.round((newBalance/target)*100),100)}%)`);
+
+        if (newStatus === 'FUNDED_READY') {
+          console.log(`[STANDALONE-VAULT] 🎯 Vault ${svId} FULLY FUNDED — awaiting landlord onboarding for escrow release`);
+        }
+      } catch (svErr: any) {
+        console.error('[WEBHOOK] STANDALONE_INSTALLMENT error:', svErr.message);
       }
       return res.sendStatus(200);
     }
@@ -8574,7 +8706,7 @@ app.get('/api/flex-pay/receipt/:contributionId', authenticate, async (req: Reque
            t.tenant_user_id = $2
            OR fpv.tenant_user_id = $2
            OR p.sponsor_id = $2
-           OR (SELECT db_role FROM users WHERE id=$2) = 'ADMIN'
+           OR (SELECT role FROM users WHERE id=$2) = 'ADMIN'
          )`,
       [contributionId, userId]
     );
@@ -9033,26 +9165,56 @@ app.get('/api/tenant/my-vault', authenticate, async (req: Request, res: Response
     }
 
     if (!tenancyRow) {
-      // ── Independent Tenant: no landlord-linked tenancy yet ────────────────
-      // Return a structured "savings profile" state so the UI renders gracefully
-      // instead of hard-blocking. The tenant can still browse the marketplace
-      // and their profile is ready to activate the moment they link to a unit.
+      // ── Independent Tenant: check for standalone vault ────────────────────
       const uInfo = await pool.query(
-        `SELECT email, full_name, phone FROM users WHERE id = $1`,
-        [userId]
+        `SELECT email, full_name, phone FROM users WHERE id = $1`, [userId]
       );
       const u = uInfo.rows[0] || {};
+      const svRes = await pool.query(
+        `SELECT sv.*,
+                COALESCE((
+                  SELECT SUM(sc.amount_ngn) FROM standalone_contributions sc
+                  WHERE sc.vault_id = sv.id AND sc.status = 'SUCCESS'
+                ), 0) AS total_contributed
+         FROM standalone_vaults sv
+         WHERE sv.tenant_user_id = $1 AND sv.status NOT IN ('MIGRATED','CLOSED')
+         ORDER BY sv.created_at DESC LIMIT 1`,
+        [userId]
+      );
+      const sv = svRes.rows[0] || null;
       return res.json({
         success:            true,
         hasActiveTenancy:   false,
         vault:              null,
+        standalone_vault:   sv ? {
+          id:                  sv.id,
+          vault_balance:       parseFloat(sv.vault_balance) || 0,
+          target_amount:       parseFloat(sv.target_amount) || 0,
+          installment_amount:  parseFloat(sv.installment_amount) || 0,
+          funded_pct:          sv.target_amount > 0
+                                 ? Math.min(Math.round((parseFloat(sv.vault_balance) / parseFloat(sv.target_amount)) * 100), 100)
+                                 : 0,
+          frequency:           sv.frequency,
+          status:              sv.status,
+          currency:            sv.currency,
+          funded_periods:      sv.funded_periods,
+          total_contributed:   parseFloat(sv.total_contributed) || 0,
+          landlord_name:       sv.landlord_name       || null,
+          landlord_email:      sv.landlord_email      || null,
+          landlord_bank_name:  sv.landlord_bank_name  || null,
+          landlord_account_name: sv.landlord_account_name || null,
+          linked_tenancy_id:   sv.linked_tenancy_id   || null,
+          created_at:          sv.created_at,
+        } : null,
         profile: {
-          user_id:    userId,
-          email:      u.email      || null,
-          full_name:  u.full_name  || null,
-          phone:      u.phone      || null,
+          user_id:   userId,
+          email:     u.email     || null,
+          full_name: u.full_name || null,
+          phone:     u.phone     || null,
         },
-        message: 'Independent savings profile active. Link to a property to activate your Flex-Pay vault.',
+        message: sv
+          ? 'Standalone savings vault active.'
+          : 'Independent savings profile active. Initialize your vault to start saving.',
       });
     }
 
@@ -9086,6 +9248,257 @@ app.get('/api/tenant/my-vault', authenticate, async (req: Request, res: Response
           100
         ),
       },
+    });
+  } catch (e: any) {
+    return res.status(500).json({ error: e.message });
+  }
+});
+
+// ── POST /api/tenant/standalone-vault/init ───────────────────────────────
+// Independent tenant initializes their own savings vault without a landlord link.
+// They supply: target_amount, installment_amount, frequency, and optional
+// landlord payout details (name, email, bank). The vault is immediately active
+// and accepts Paystack contributions. When the landlord later onboards, the
+// platform migrates this vault to a full tenancy-linked flex_pay_vault.
+app.post('/api/tenant/standalone-vault/init', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId = (req as any).userId;
+  try {
+    // Only TENANT role users may initialize standalone vaults
+    const uRes = await pool.query(`SELECT role, email, full_name FROM users WHERE id=$1`, [userId]);
+    if (!uRes.rows.length) return res.status(404).json({ error: 'User not found' });
+    if (uRes.rows[0].role !== 'TENANT') return res.status(403).json({ error: 'Only TENANT accounts may initialize a standalone vault' });
+
+    // Prevent duplicate active standalone vault
+    const existing = await pool.query(
+      `SELECT id FROM standalone_vaults WHERE tenant_user_id=$1 AND status NOT IN ('MIGRATED','CLOSED') LIMIT 1`,
+      [userId]
+    );
+    if (existing.rows.length) {
+      return res.status(409).json({
+        error:    'You already have an active standalone vault.',
+        vault_id: existing.rows[0].id,
+      });
+    }
+
+    const {
+      target_amount,
+      installment_amount,
+      frequency        = 'MONTHLY',
+      landlord_name,
+      landlord_email,
+      landlord_bank_name,
+      landlord_account_number,
+      landlord_account_name,
+    } = req.body;
+
+    if (!target_amount || isNaN(Number(target_amount)) || Number(target_amount) < 100) {
+      return res.status(400).json({ error: 'target_amount is required and must be at least ₦100' });
+    }
+    if (!installment_amount || isNaN(Number(installment_amount)) || Number(installment_amount) < 50) {
+      return res.status(400).json({ error: 'installment_amount is required and must be at least ₦50' });
+    }
+    const VALID_FREQS = ['DAILY','WEEKLY','BIWEEKLY','MONTHLY','QUARTERLY'];
+    const freq = VALID_FREQS.includes((frequency || '').toUpperCase()) ? frequency.toUpperCase() : 'MONTHLY';
+
+    const r = await pool.query(
+      `INSERT INTO standalone_vaults
+         (tenant_user_id, target_amount, installment_amount, frequency,
+          landlord_name, landlord_email, landlord_bank_name,
+          landlord_account_number, landlord_account_name, status, currency)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'ACTIVE','NGN')
+       RETURNING *`,
+      [
+        userId,
+        Number(target_amount),
+        Number(installment_amount),
+        freq,
+        landlord_name          || null,
+        landlord_email         || null,
+        landlord_bank_name     || null,
+        landlord_account_number|| null,
+        landlord_account_name  || null,
+      ]
+    );
+    const sv = r.rows[0];
+
+    // Ledger entry
+    const h = crypto.createHash('sha256')
+      .update(`sv-init-${sv.id}-${userId}-${Date.now()}`).digest('hex');
+    await pool.query(
+      `INSERT INTO system_ledger (transaction_type, payload, immutable_hash)
+       VALUES ('STANDALONE_VAULT_INIT',$1,$2)`,
+      [JSON.stringify({ vault_id: sv.id, tenant_user_id: userId, target_amount, frequency: freq }), h]
+    ).catch(() => {});
+
+    console.log(`[STANDALONE-VAULT] Initialized vault=${sv.id} tenant=${userId} target=₦${target_amount} freq=${freq}`);
+
+    return res.status(201).json({
+      success:          true,
+      vault_id:         sv.id,
+      target_amount:    parseFloat(sv.target_amount),
+      installment_amount: parseFloat(sv.installment_amount),
+      frequency:        sv.frequency,
+      status:           sv.status,
+      currency:         sv.currency,
+      landlord_supplied: !!(landlord_name || landlord_email || landlord_bank_name),
+      message:          'Standalone vault initialized. You can now start saving.',
+    });
+  } catch (e: any) {
+    return res.status(500).json({ error: e.message });
+  }
+});
+
+// ── GET /api/tenant/standalone-vault ─────────────────────────────────────
+// Returns the tenant's standalone vault state + contribution history.
+app.get('/api/tenant/standalone-vault', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId = (req as any).userId;
+  try {
+    const svRes = await pool.query(
+      `SELECT sv.*,
+              COALESCE((
+                SELECT SUM(sc.amount_ngn) FROM standalone_contributions sc
+                WHERE sc.vault_id = sv.id AND sc.status = 'SUCCESS'
+              ), 0) AS total_contributed,
+              (SELECT COUNT(*) FROM standalone_contributions sc
+               WHERE sc.vault_id = sv.id AND sc.status = 'SUCCESS') AS contribution_count
+       FROM standalone_vaults sv
+       WHERE sv.tenant_user_id = $1 AND sv.status NOT IN ('MIGRATED','CLOSED')
+       ORDER BY sv.created_at DESC LIMIT 1`,
+      [userId]
+    );
+    if (!svRes.rows.length) {
+      return res.json({
+        success:          true,
+        hasStandaloneVault: false,
+        vault:            null,
+        contributions:    [],
+        message:          'No standalone vault found. Use POST /api/tenant/standalone-vault/init to create one.',
+      });
+    }
+    const sv = svRes.rows[0];
+
+    const contribs = await pool.query(
+      `SELECT id, amount_ngn, period_label, paid_at, status, ledger_hash
+       FROM standalone_contributions
+       WHERE vault_id = $1
+       ORDER BY created_at DESC LIMIT 50`,
+      [sv.id]
+    );
+
+    return res.json({
+      success:            true,
+      hasStandaloneVault: true,
+      vault: {
+        id:                   sv.id,
+        vault_balance:        parseFloat(sv.vault_balance) || 0,
+        target_amount:        parseFloat(sv.target_amount) || 0,
+        installment_amount:   parseFloat(sv.installment_amount) || 0,
+        funded_pct:           sv.target_amount > 0
+                                ? Math.min(Math.round((parseFloat(sv.vault_balance) / parseFloat(sv.target_amount)) * 100), 100)
+                                : 0,
+        frequency:            sv.frequency,
+        status:               sv.status,
+        currency:             sv.currency,
+        funded_periods:       sv.funded_periods,
+        total_contributed:    parseFloat(sv.total_contributed) || 0,
+        contribution_count:   parseInt(sv.contribution_count) || 0,
+        landlord_name:        sv.landlord_name        || null,
+        landlord_email:       sv.landlord_email       || null,
+        landlord_bank_name:   sv.landlord_bank_name   || null,
+        landlord_account_name: sv.landlord_account_name || null,
+        linked_tenancy_id:    sv.linked_tenancy_id    || null,
+        created_at:           sv.created_at,
+      },
+      contributions: contribs.rows,
+    });
+  } catch (e: any) {
+    return res.status(500).json({ error: e.message });
+  }
+});
+
+// ── POST /api/tenant/standalone-vault/pay ────────────────────────────────
+// Initiates a Paystack payment into the tenant's standalone vault.
+// No tenancy required — vault must exist (call /init first if not).
+// Platform covers Paystack fee (bearer: account). Funds held in escrow until
+// the landlord is onboarded and the vault migrates to a full flex_pay_vault.
+app.post('/api/tenant/standalone-vault/pay', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId  = (req as any).userId;
+  const { amount } = req.body;
+  try {
+    const svRes = await pool.query(
+      `SELECT sv.*, u.email AS user_email, u.full_name
+       FROM standalone_vaults sv
+       JOIN users u ON u.id = sv.tenant_user_id
+       WHERE sv.tenant_user_id = $1 AND sv.status NOT IN ('MIGRATED','CLOSED')
+       ORDER BY sv.created_at DESC LIMIT 1`,
+      [userId]
+    );
+    if (!svRes.rows.length) {
+      return res.status(404).json({
+        error:      'No active standalone vault found. Initialize one first.',
+        error_code: 'NO_STANDALONE_VAULT',
+        action:     'POST /api/tenant/standalone-vault/init',
+      });
+    }
+    const sv = svRes.rows[0];
+
+    const baseAmountNaira = (amount && !isNaN(Number(amount)) && Number(amount) > 0)
+      ? Number(amount)
+      : parseFloat(sv.installment_amount);
+
+    if (baseAmountNaira < 50) {
+      return res.status(400).json({ error: 'Minimum contribution is ₦50' });
+    }
+
+    const amountKobo = Math.round(baseAmountNaira * 100);
+    if (amountKobo > 999999999) {
+      return res.status(400).json({ error: 'Amount exceeds single-transaction limit.' });
+    }
+
+    const email    = sv.user_email;
+    const ref      = `ARK-SV-${sv.id.slice(0, 8)}-${Date.now()}`;
+    const FRONTEND = process.env.FRONTEND_URL || 'https://nested-ark-ic5n6890k-nested-ark.vercel.app';
+
+    const psPayload: Record<string, any> = {
+      email,
+      amount:       amountKobo,
+      reference:    ref,
+      currency:     'NGN',
+      bearer:       'account',
+      callback_url: `${FRONTEND}/tenant/pay/success?reference=${ref}`,
+      metadata: {
+        payment_type:       'STANDALONE_INSTALLMENT',
+        standalone_vault_id: sv.id,
+        tenant_user_id:     userId,
+        tenant_name:        sv.full_name || email,
+        base_naira_amount:  baseAmountNaira,
+        processing_fee_ngn: 0,
+        split_mode:         'ESCROW_HOLD',
+        custom_fields: [
+          { display_name: 'Vault ID',  variable_name: 'vault_id',    value: sv.id     },
+          { display_name: 'Tenant',    variable_name: 'tenant_name', value: sv.full_name || email },
+        ],
+      },
+    };
+
+    console.log(`[STANDALONE-VAULT] Payment init — vault=${sv.id} tenant=${userId} amount=₦${baseAmountNaira}`);
+
+    const psRes  = await fetch('https://api.paystack.co/transaction/initialize', {
+      method:  'POST',
+      headers: { Authorization: `Bearer ${PAYSTACK_SECRET}`, 'Content-Type': 'application/json' },
+      body:    JSON.stringify(psPayload),
+    });
+    const psData: any = await psRes.json();
+    if (!psData.status) return res.status(502).json({ error: psData.message || 'Paystack error' });
+
+    return res.json({
+      success:            true,
+      authorization_url:  psData.data.authorization_url,
+      reference:          ref,
+      vault_id:           sv.id,
+      amount_ngn:         baseAmountNaira,
+      processing_fee_ngn: 0,
+      total_charged_ngn:  baseAmountNaira,
     });
   } catch (e: any) {
     return res.status(500).json({ error: e.message });
@@ -9393,12 +9806,26 @@ app.post('/api/tenant/pay-installment', authenticate, async (req: Request, res: 
         }
       }
 
-      if (!tenancyId) return res.status(200).json({
-        success:          false,
-        hasActiveTenancy: false,
-        error_code:       'NO_ACTIVE_TENANCY',
-        message:          'No active tenancy found. Browse the marketplace to link a property before making installment payments.',
-      });
+      if (!tenancyId) {
+        // Check if tenant has a standalone vault they should pay into instead
+        const svCheck = await pool.query(
+          `SELECT id FROM standalone_vaults WHERE tenant_user_id=$1 AND status NOT IN ('MIGRATED','CLOSED') LIMIT 1`,
+          [userId]
+        );
+        return res.status(200).json({
+          success:               false,
+          hasActiveTenancy:      false,
+          hasStandaloneVault:    svCheck.rows.length > 0,
+          standalone_vault_id:   svCheck.rows[0]?.id || null,
+          error_code:            'NO_ACTIVE_TENANCY',
+          message:               svCheck.rows.length > 0
+            ? 'Use POST /api/tenant/standalone-vault/pay to contribute to your standalone savings vault.'
+            : 'No active tenancy or standalone vault found. Initialize your savings vault first.',
+          action:                svCheck.rows.length > 0
+            ? 'POST /api/tenant/standalone-vault/pay'
+            : 'POST /api/tenant/standalone-vault/init',
+        });
+      }
 
       const vRes = await pool.query(
         `SELECT id FROM flex_pay_vaults
@@ -9523,7 +9950,7 @@ app.get('/api/tenant/receipt/:contributionId', authenticate, async (req: Request
          AND (
            t.tenant_user_id = $2
            OR fpv.tenant_user_id = $2
-           OR (SELECT db_role FROM users WHERE id=$2) = 'ADMIN'
+           OR (SELECT role FROM users WHERE id=$2) = 'ADMIN'
          )`,
       [contributionId, userId]
     );
@@ -10320,41 +10747,7 @@ app.get('/api/tenant/dashboard', authenticate, async (req: Request, res: Respons
   const userId = (req as any).userId;
   try {
     const tenancy = await resolveTenancy(userId);
-
-    if (!tenancy) {
-      // ── Independent Tenant: no landlord-linked tenancy yet ────────────────
-      // Return a rich onboarding state so the dashboard renders the
-      // "Account Setup Progress" flow rather than a hard error.
-      const uInfo = await pool.query(
-        `SELECT email, full_name, phone, created_at FROM users WHERE id = $1`,
-        [userId]
-      );
-      const u = uInfo.rows[0] || {};
-      return res.json({
-        success:          true,
-        hasActiveTenancy: false,
-        tenancy:          null,
-        vault:            null,
-        next_due_date:    null,
-        active_notice_count: 0,
-        recent_payments:  [],
-        recent_maintenance: [],
-        profile: {
-          user_id:    userId,
-          email:      u.email      || null,
-          full_name:  u.full_name  || null,
-          phone:      u.phone      || null,
-          created_at: u.created_at || null,
-        },
-        onboarding_steps: [
-          { key: 'account_created',       label: 'Account Created',              status: 'done'    },
-          { key: 'payout_destination',     label: 'Verify payout destination',    status: 'skipped' },
-          { key: 'escrow_vault_profile',   label: 'Escrow vault profile',         status: 'pending' },
-          { key: 'link_to_property',       label: 'Link to a property',           status: 'pending' },
-        ],
-        message: 'Independent savings profile active. Browse the marketplace or await a landlord invite to activate your vault.',
-      });
-    }
+    if (!tenancy) return res.status(404).json({ error: 'No active tenancy found for this account' });
 
     const tenancyId = tenancy.id;
 
@@ -10465,16 +10858,7 @@ app.get('/api/tenant/rent-history', authenticate, async (req: Request, res: Resp
   const offset = parseInt((req.query.offset as string) || '0');
   try {
     const tenancy = await resolveTenancy(userId);
-    if (!tenancy) return res.json({
-      success:      true,
-      hasActiveTenancy: false,
-      tenancy_id:   null,
-      payments:     [],
-      total_count:  0,
-      total_paid:   0,
-      limit,
-      offset,
-    });
+    if (!tenancy) return res.status(404).json({ error: 'No active tenancy found' });
 
     const payments = await pool.query(
       `SELECT id, amount_ngn, status, period_month, paid_at,
@@ -10682,7 +11066,7 @@ app.get('/api/audit/unit/:unitId', authenticate, async (req: Request, res: Respo
     const own = await pool.query(
       `SELECT ru.id FROM rental_units ru
        JOIN projects p ON p.id = ru.project_id
-       WHERE ru.id = $1 AND (p.sponsor_id = $2 OR (SELECT db_role FROM users WHERE id=$2) = 'ADMIN')`,
+       WHERE ru.id = $1 AND (p.sponsor_id = $2 OR (SELECT role FROM users WHERE id=$2) = 'ADMIN')`,
       [unitId, userId]
     );
     if (!own.rows.length) return res.status(403).json({ error: 'Unit not found or access denied' });
@@ -10709,7 +11093,7 @@ app.get('/api/audit/project/:projectId', authenticate, async (req: Request, res:
   const event_type = req.query.event_type as string | undefined;
   try {
     const own = await pool.query(
-      `SELECT id FROM projects WHERE id=$1 AND (sponsor_id=$2 OR (SELECT db_role FROM users WHERE id=$2)='ADMIN')`,
+      `SELECT id FROM projects WHERE id=$1 AND (sponsor_id=$2 OR (SELECT role FROM users WHERE id=$2)='ADMIN')`,
       [projectId, userId]
     );
     if (!own.rows.length) return res.status(403).json({ error: 'Project not found or access denied' });
@@ -10746,7 +11130,7 @@ app.get('/api/audit/tenancy/:tenancyId', authenticate, async (req: Request, res:
        JOIN projects p ON p.id = ru.project_id
        WHERE t.id = $1
          AND (p.sponsor_id = $2 OR t.tenant_user_id = $2
-              OR (SELECT db_role FROM users WHERE id=$2) = 'ADMIN')`,
+              OR (SELECT role FROM users WHERE id=$2) = 'ADMIN')`,
       [tenancyId, userId]
     );
     if (!access.rows.length) return res.status(403).json({ error: 'Tenancy not found or access denied' });
@@ -10810,8 +11194,8 @@ app.post('/api/admin/trigger-payout/:vaultId', authenticate, async (req: Request
   const { dispute_note } = req.body;
   try {
     // ADMIN only
-    const uRes = await pool.query(`SELECT db_role FROM users WHERE id=$1`, [userId]);
-    if (!uRes.rows.length || uRes.rows[0].db_role !== 'ADMIN')
+    const uRes = await pool.query(`SELECT role FROM users WHERE id=$1`, [userId]);
+    if (!uRes.rows.length || uRes.rows[0].role !== 'ADMIN')
       return res.status(403).json({ error: 'ADMIN only.' });
 
     // Load vault + landlord bank account
@@ -10901,8 +11285,8 @@ app.post('/api/admin/dedup-tenancies', authenticate, async (req: Request, res: R
   const userId = (req as any).userId;
   try {
     // Verify caller is ADMIN
-    const userRes = await pool.query(`SELECT db_role FROM users WHERE id = $1`, [userId]);
-    if (!userRes.rows.length || userRes.rows[0].db_role !== 'ADMIN')
+    const userRes = await pool.query(`SELECT role FROM users WHERE id = $1`, [userId]);
+    if (!userRes.rows.length || userRes.rows[0].role !== 'ADMIN')
       return res.status(403).json({ error: 'ADMIN only.' });
 
     // Find duplicate (unit_id, tenant_email) groups — keep the latest id, soft-delete the rest
