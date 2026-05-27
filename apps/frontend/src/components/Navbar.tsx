@@ -55,6 +55,15 @@ const SOLUTIONS = [
     sub: 'Oversight dashboards, permit verification & compliance',
     suite: ['Permit Registry', 'Compliance Dashboard', 'AML Reporting', 'Asset Inventory'],
   },
+  {
+    href: '/faq',
+    icon: BookOpen,
+    accent: 'text-zinc-400',
+    bg: 'hover:bg-zinc-800/60',
+    label: 'Help & FAQ',
+    sub: 'Answers for tenants, landlords, investors & diaspora',
+    suite: ['Tenant Guide', 'Escrow Explained', 'Payment FAQs', 'Legal Notices'],
+  },
 ];
 
 // ── Landlord quick panel (sidebar dropdown) ───────────────────────────────────
@@ -196,7 +205,7 @@ function SolutionsMenu({ onClose }: { onClose: () => void }) {
         </button>
       </div>
       <div className="grid grid-cols-2 gap-px bg-zinc-900 p-0">
-        {SOLUTIONS.map(s => {
+        {SOLUTIONS.slice(0, 4).map(s => {
           const Icon = s.icon;
           return (
             <Link
@@ -224,6 +233,27 @@ function SolutionsMenu({ onClose }: { onClose: () => void }) {
             </Link>
           );
         })}
+      </div>
+      {/* FAQ full-width footer row */}
+      {(() => { const faq = SOLUTIONS[4]; const Icon = faq.icon; return (
+        <Link href={faq.href} onClick={onClose}
+          className={`flex items-center gap-4 px-5 py-3 bg-zinc-950 border-t border-zinc-900 ${faq.bg} transition-colors group`}>
+          <div className={`w-7 h-7 rounded-lg bg-zinc-900 border border-zinc-800 flex items-center justify-center shrink-0 ${faq.accent}`}>
+            <Icon size={13} />
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className={`text-[10px] font-black uppercase ${faq.accent}`}>{faq.label}</p>
+            <p className="text-[9px] text-zinc-600">{faq.sub}</p>
+          </div>
+          <div className="flex gap-1 flex-wrap justify-end">
+            {faq.suite?.map(tag => (
+              <span key={tag} className="text-[7px] font-bold uppercase tracking-wide bg-zinc-900 border border-zinc-800 text-zinc-600 px-1.5 py-0.5 rounded">
+                {tag}
+              </span>
+            ))}
+          </div>
+        </Link>
+      ); })()}
       </div>
     </div>
   );
@@ -432,7 +462,8 @@ export default function Navbar() {
             </>
           ) : (
             <div className="flex items-center gap-2">
-              <Link href="/login"  className="text-zinc-400 text-xs font-bold uppercase px-4 py-2 rounded-xl hover:text-white transition-colors">Sign In</Link>
+              <Link href="/faq"     className="text-zinc-400 text-xs font-bold uppercase px-3 py-2 rounded-xl hover:text-white transition-colors">FAQ</Link>
+              <Link href="/login"   className="text-zinc-400 text-xs font-bold uppercase px-4 py-2 rounded-xl hover:text-white transition-colors">Sign In</Link>
               <Link href="/register" className="bg-teal-500 text-black text-xs font-black uppercase px-4 py-2 rounded-xl hover:bg-white transition-colors">Get Started</Link>
             </div>
           )}

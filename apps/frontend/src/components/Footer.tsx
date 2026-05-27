@@ -34,6 +34,7 @@ export default function Footer() {
                 ['/portfolio','My Portfolio'],['/investments','Investment Nodes'],
                 ['/milestones','Milestone Tracker'],['/ledger','Global Ledger'],
                 ['/map','Infrastructure Map'],['/about','About Nested Ark'],
+                ['/faq','FAQ & Help Center'],
               ].map(([href,label]) => (
                 <li key={href}><Link href={href} className="hover:text-teal-500 transition-colors">{label}</Link></li>
               ))}
@@ -43,9 +44,10 @@ export default function Footer() {
             <h4 className="text-white font-bold mb-5 text-xs uppercase tracking-widest flex items-center gap-2"><Shield size={12} className="text-teal-500"/> Access</h4>
             <ul className="space-y-2.5 text-sm text-zinc-500">
               {[
-                ['/register','Register as Investor'],['/register','Register as Contractor'],
+                ['/register?intent=tenant','Register as Tenant'],['/register','Register as Investor'],['/register','Register as Contractor'],
                 ['/gov','Government Portal'],['/admin','Admin Command Center'],
                 ['/kyc','KYC Verification'],['/verify-email','Email Verification'],
+                ['/faq','Help & FAQ'],
               ].map(([href,label],i) => (
                 <li key={i}><Link href={href} className="hover:text-teal-500 transition-colors">{label}</Link></li>
               ))}
