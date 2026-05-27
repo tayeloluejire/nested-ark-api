@@ -18,21 +18,19 @@ import {
 // ── Solutions mega-menu data ──────────────────────────────────────────────────
 const SOLUTIONS = [
   {
-    // PROPERTY TOOL — routes to /onboard (Register New Property)
     href: '/onboard',
     icon: Home,
     accent: 'text-teal-400',
-    bg: 'hover:bg-teal-500/8',
+    bg: 'hover:bg-teal-500/10',
     label: 'Landlords & Property Owners',
     sub: 'Automate rent, Flex-Pay vaults & legal notices',
     suite: ['Tenant Onboarding', 'Notice to Quit Generator', 'Auto Receipting', 'Ejection Proceedings'],
   },
   {
-    // NAP INFRASTRUCTURE LEDGER — routes to /projects/submit
     href: '/projects/submit',
     icon: HardHat,
     accent: 'text-blue-400',
-    bg: 'hover:bg-blue-500/8',
+    bg: 'hover:bg-blue-500/10',
     label: 'Developers & Builders',
     sub: 'Submit projects, raise capital, manage milestones',
     suite: ['NAP Project ID', 'Milestone Escrow', 'Contractor Bidding', 'Diaspora Tracking'],
@@ -41,7 +39,7 @@ const SOLUTIONS = [
     href: '/investments',
     icon: Wallet,
     accent: 'text-amber-400',
-    bg: 'hover:bg-amber-500/8',
+    bg: 'hover:bg-amber-500/10',
     label: 'Investors',
     sub: 'Fractional infrastructure investment with yield tracking',
     suite: ['Fractional Shares', 'Yield Engine', 'Rental Income', 'Exit Liquidity'],
@@ -50,7 +48,7 @@ const SOLUTIONS = [
     href: '/gov',
     icon: Globe,
     accent: 'text-purple-400',
-    bg: 'hover:bg-purple-500/8',
+    bg: 'hover:bg-purple-500/10',
     label: 'Government & Regulators',
     sub: 'Oversight dashboards, permit verification & compliance',
     suite: ['Permit Registry', 'Compliance Dashboard', 'AML Reporting', 'Asset Inventory'],
@@ -59,7 +57,7 @@ const SOLUTIONS = [
     href: '/faq',
     icon: BookOpen,
     accent: 'text-zinc-400',
-    bg: 'hover:bg-zinc-800/60',
+    bg: 'hover:bg-zinc-800',
     label: 'Help & FAQ',
     sub: 'Answers for tenants, landlords, investors & diaspora',
     suite: ['Tenant Guide', 'Escrow Explained', 'Payment FAQs', 'Legal Notices'],
@@ -70,7 +68,6 @@ const SOLUTIONS = [
 function LandlordQuickPanel({ onClose }: { onClose: () => void }) {
   const ITEMS = [
     {
-      // PROPERTY TOOL entry point — separate from NAP Ledger
       href: '/onboard',
       icon: Home,
       label: 'Add New Property',
@@ -103,7 +100,6 @@ function LandlordQuickPanel({ onClose }: { onClose: () => void }) {
       bg: 'hover:bg-amber-500/10',
     },
     {
-      // Payout Engine — required for rent to reach landlord bank account
       href: '/landlord/bank',
       icon: Landmark,
       label: 'Bank Accounts',
@@ -113,7 +109,6 @@ function LandlordQuickPanel({ onClose }: { onClose: () => void }) {
       badge: 'Payout Engine',
     },
     {
-      // Yield Engine — live rent intelligence across all properties
       href: '/landlord/rent-dashboard',
       icon: BarChart3,
       label: 'Rent Dashboard',
@@ -123,7 +118,6 @@ function LandlordQuickPanel({ onClose }: { onClose: () => void }) {
       badge: 'Yield Engine',
     },
     {
-      // Inventory Matrix — manage, edit & advertise all units
       href: '/landlord/inventory',
       icon: Archive,
       label: 'Inventory Matrix',
@@ -132,7 +126,6 @@ function LandlordQuickPanel({ onClose }: { onClose: () => void }) {
       bg: 'hover:bg-amber-500/10',
     },
     {
-      // Unit Editor — upload images, edit specs & update individual units
       href: '/landlord/inventory/editor',
       icon: Edit3,
       label: 'Unit Editor',
@@ -142,7 +135,6 @@ function LandlordQuickPanel({ onClose }: { onClose: () => void }) {
       badge: 'Edit & Upload',
     },
     {
-      // Marketplace — public rental listings board
       href: '/marketplace',
       icon: ShoppingBag,
       label: 'Property Marketplace',
@@ -151,13 +143,12 @@ function LandlordQuickPanel({ onClose }: { onClose: () => void }) {
       bg: 'hover:bg-blue-500/10',
     },
     {
-      // NAP Ledger — clearly labeled separately
       href: '/projects/my',
       icon: Building2,
       label: 'NAP Infrastructure Projects',
       sub: 'Projects on the global ledger',
       accent: 'text-zinc-400',
-      bg: 'hover:bg-zinc-800/60',
+      bg: 'hover:bg-zinc-800',
     },
   ];
 
@@ -196,6 +187,11 @@ function LandlordQuickPanel({ onClose }: { onClose: () => void }) {
 
 // ── Solutions mega-menu ───────────────────────────────────────────────────────
 function SolutionsMenu({ onClose }: { onClose: () => void }) {
+  // Extract FAQ safely to render as full-width footer link
+  const mainSolutions = SOLUTIONS.slice(0, 4);
+  const faqSolution = SOLUTIONS[4];
+  const FaqIcon = faqSolution.icon;
+
   return (
     <div className="absolute left-1/2 -translate-x-1/2 top-full mt-2 w-[680px] bg-zinc-950 border border-zinc-800 rounded-2xl shadow-2xl shadow-black/70 z-[300] overflow-hidden">
       <div className="px-5 py-3 border-b border-zinc-900 flex items-center justify-between">
@@ -205,7 +201,7 @@ function SolutionsMenu({ onClose }: { onClose: () => void }) {
         </button>
       </div>
       <div className="grid grid-cols-2 gap-px bg-zinc-900 p-0">
-        {SOLUTIONS.slice(0, 4).map(s => {
+        {mainSolutions.map(s => {
           const Icon = s.icon;
           return (
             <Link
@@ -234,27 +230,28 @@ function SolutionsMenu({ onClose }: { onClose: () => void }) {
           );
         })}
       </div>
+      
       {/* FAQ full-width footer row */}
-      {(() => { const faq = SOLUTIONS[4]; const Icon = faq.icon; return (
-        <Link href={faq.href} onClick={onClose}
-          className={`flex items-center gap-4 px-5 py-3 bg-zinc-950 border-t border-zinc-900 ${faq.bg} transition-colors group`}>
-          <div className={`w-7 h-7 rounded-lg bg-zinc-900 border border-zinc-800 flex items-center justify-center shrink-0 ${faq.accent}`}>
-            <Icon size={13} />
-          </div>
-          <div className="flex-1 min-w-0">
-            <p className={`text-[10px] font-black uppercase ${faq.accent}`}>{faq.label}</p>
-            <p className="text-[9px] text-zinc-600">{faq.sub}</p>
-          </div>
-          <div className="flex gap-1 flex-wrap justify-end">
-            {faq.suite?.map(tag => (
-              <span key={tag} className="text-[7px] font-bold uppercase tracking-wide bg-zinc-900 border border-zinc-800 text-zinc-600 px-1.5 py-0.5 rounded">
-                {tag}
-              </span>
-            ))}
-          </div>
-        </Link>
-      ); })()}
-      </div>
+      <Link 
+        href={faqSolution.href} 
+        onClick={onClose}
+        className={`flex items-center gap-4 px-5 py-3 bg-zinc-950 border-t border-zinc-900 ${faqSolution.bg} transition-colors group`}
+      >
+        <div className={`w-7 h-7 rounded-lg bg-zinc-900 border border-zinc-800 flex items-center justify-center shrink-0 ${faqSolution.accent}`}>
+          <FaqIcon size={13} />
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className={`text-[10px] font-black uppercase ${faqSolution.accent}`}>{faqSolution.label}</p>
+          <p className="text-[9px] text-zinc-600">{faqSolution.sub}</p>
+        </div>
+        <div className="flex gap-1 flex-wrap justify-end">
+          {faqSolution.suite?.map(tag => (
+            <span key={tag} className="text-[7px] font-bold uppercase tracking-wide bg-zinc-900 border border-zinc-800 text-zinc-600 px-1.5 py-0.5 rounded">
+              {tag}
+            </span>
+          ))}
+        </div>
+      </Link>
     </div>
   );
 }
@@ -274,7 +271,6 @@ export default function Navbar() {
   const landlordRef  = useRef<HTMLDivElement>(null);
   const userRef      = useRef<HTMLDivElement>(null);
 
-  // Close dropdowns on outside click
   useEffect(() => {
     const handler = (e: MouseEvent) => {
       if (solutionsRef.current && !solutionsRef.current.contains(e.target as Node)) setSolutionsOpen(false);
@@ -285,32 +281,22 @@ export default function Navbar() {
     return () => document.removeEventListener('mousedown', handler);
   }, []);
 
-  // Close mobile on route change
   useEffect(() => { setMobileOpen(false); }, [pathname]);
 
   const role = user?.role ?? '';
 
-  // ── Role-based nav links ────────────────────────────────────────────────────
-  // IMPORTANT separation:
-  //   My Projects  (/projects/my)  = NAP Infrastructure Ledger — DEVELOPER/GOVT/ADMIN
-  //   Add Property (/onboard)      = Rental Property Tool      — DEVELOPER (landlord)
-  //   Tenants      (/landlord/tenants) — DEVELOPER (landlord)
   const baseLinks = [
     { name: 'Dashboard',    href: '/dashboard',         icon: LayoutDashboard, roles: ['INVESTOR','CONTRACTOR','SUPPLIER','BANK','GOVERNMENT','ADMIN','VERIFIER','DEVELOPER'] },
-    // Tenant-only links
     { name: 'My Dashboard', href: '/tenant/dashboard',  icon: Home,            roles: ['TENANT'] },
     { name: 'My Vault',     href: '/tenant/vault',      icon: TrendingUp,      roles: ['TENANT'] },
     { name: 'Pay Rent',     href: '/tenant/pay',        icon: DollarSign,      roles: ['TENANT'] },
     { name: 'My Notices',   href: '/tenant/notices',    icon: Gavel,           roles: ['TENANT'] },
-    // Shared project links
     { name: 'Projects',     href: '/projects',          icon: Briefcase,       roles: ['DEVELOPER','GOVERNMENT','CONTRACTOR','SUPPLIER','ADMIN','INVESTOR','VERIFIER','BANK'] },
     { name: 'Investments',  href: '/investments',       icon: Wallet,          roles: ['INVESTOR','ADMIN'] },
     { name: 'Milestones',   href: '/milestones',        icon: Layers,          roles: ['DEVELOPER','CONTRACTOR','ADMIN'] },
     { name: 'Ledger',       href: '/ledger',            icon: BookOpen,        roles: ['DEVELOPER','GOVERNMENT','ADMIN','INVESTOR','VERIFIER'] },
     { name: 'Map',          href: '/map',               icon: MapPin,          roles: ['DEVELOPER','GOVERNMENT','ADMIN','INVESTOR','CONTRACTOR'] },
-    // DEVELOPER / Landlord — NAP Ledger (infrastructure projects)
     { name: 'My Projects',  href: '/projects/my',       icon: Building2,       roles: ['DEVELOPER','GOVERNMENT','ADMIN'] },
-    // DEVELOPER / Landlord — Property Tool (rental management)
     { name: 'My Properties',href: '/onboard',           icon: Home,            roles: ['DEVELOPER'] },
     { name: 'Tenants',      href: '/landlord/tenants',  icon: Users,           roles: ['DEVELOPER'] },
     { name: 'Notices',      href: '/landlord/notices',  icon: Gavel,           roles: ['DEVELOPER'] },
@@ -318,14 +304,12 @@ export default function Navbar() {
     { name: 'Inventory',    href: '/landlord/inventory',        icon: Archive,     roles: ['DEVELOPER'] },
     { name: 'Unit Editor',  href: '/landlord/inventory/editor', icon: Edit3,       roles: ['DEVELOPER'] },
     { name: 'Marketplace',  href: '/marketplace',        icon: ShoppingBag,     roles: ['DEVELOPER','TENANT','INVESTOR'] },
-    // Government / Admin
-    { name: 'Gov Portal',   href: '/gov',               icon: Globe,           roles: ['GOVERNMENT','ADMIN'] },
+    { name: 'Gov Portal',    href: '/gov',               icon: Globe,           roles: ['GOVERNMENT','ADMIN'] },
     { name: 'Admin',        href: '/admin',             icon: Settings,        roles: ['ADMIN'] },
   ];
 
   const visibleLinks = baseLinks.filter(l => !role || l.roles.includes(role));
   const isDeveloper  = role === 'DEVELOPER';
-  const isTenant     = role === 'TENANT';
 
   const active = (href: string) =>
     pathname === href || (href !== '/' && pathname.startsWith(href))
@@ -336,7 +320,7 @@ export default function Navbar() {
     <nav className="sticky top-0 z-[200] border-b border-zinc-900 bg-[#050505]/95 backdrop-blur-md">
       <div className="max-w-7xl mx-auto px-4 md:px-6 h-14 flex items-center justify-between gap-4">
 
-        {/* ── Logo — real brand asset ── */}
+        {/* Logo */}
         <BrandLogo
           href={user ? '/dashboard' : '/'}
           size={28}
@@ -344,9 +328,8 @@ export default function Navbar() {
           className="shrink-0"
         />
 
-        {/* ── Desktop center: Solutions + NAP Search ── */}
+        {/* Desktop center */}
         <div className="hidden md:flex items-center gap-3 flex-1 justify-center max-w-2xl">
-          {/* Solutions dropdown */}
           <div ref={solutionsRef} className="relative">
             <button
               onClick={() => { setSolutionsOpen(o => !o); setLandlordOpen(false); }}
@@ -357,10 +340,8 @@ export default function Navbar() {
             {solutionsOpen && <SolutionsMenu onClose={() => setSolutionsOpen(false)} />}
           </div>
 
-          {/* NAP Search */}
           <NapSearch mode="inline" compact />
 
-          {/* Desktop nav links (condensed) */}
           {user && (
             <div className="flex items-center gap-1">
               {visibleLinks.slice(0, 5).map(link => {
@@ -380,11 +361,10 @@ export default function Navbar() {
           )}
         </div>
 
-        {/* ── Right side ── */}
+        {/* Right side */}
         <div className="flex items-center gap-2 shrink-0">
           {user ? (
             <>
-              {/* Landlord quick panel — DEVELOPER only */}
               {isDeveloper && (
                 <div ref={landlordRef} className="relative">
                   <button
@@ -399,7 +379,6 @@ export default function Navbar() {
                 </div>
               )}
 
-              {/* User menu */}
               <div ref={userRef} className="relative">
                 <button
                   onClick={() => setUserMenuOpen(o => !o)}
@@ -449,10 +428,8 @@ export default function Navbar() {
                 )}
               </div>
 
-              {/* Theme toggle */}
               <ThemeToggle compact />
 
-              {/* Mobile hamburger */}
               <button
                 onClick={() => setMobileOpen(o => !o)}
                 className="md:hidden p-2 text-zinc-500 hover:text-white transition-colors"
@@ -470,15 +447,13 @@ export default function Navbar() {
         </div>
       </div>
 
-      {/* ── Mobile menu ── */}
+      {/* Mobile menu */}
       {mobileOpen && user && (
         <div className="md:hidden border-t border-zinc-900 bg-[#050505] px-4 py-4 space-y-1 max-h-[80vh] overflow-y-auto">
-          {/* Mobile NAP Search */}
           <div className="mb-4">
             <NapSearch mode="inline" placeholder="Search by NAP Project ID…" />
           </div>
 
-          {/* Mobile Solutions */}
           <div className="mb-3">
             <p className="text-[9px] text-zinc-600 uppercase font-bold tracking-widest px-3 mb-2">Solutions</p>
             {SOLUTIONS.map(s => {
@@ -497,7 +472,6 @@ export default function Navbar() {
             })}
           </div>
 
-          {/* Mobile nav links */}
           <div className="border-t border-zinc-900 pt-3">
             <p className="text-[9px] text-zinc-600 uppercase font-bold tracking-widest px-3 mb-2">Navigation</p>
             {visibleLinks.map(link => {
@@ -513,7 +487,6 @@ export default function Navbar() {
             })}
           </div>
 
-          {/* Mobile sign out */}
           <div className="border-t border-zinc-900 pt-3">
             <button
               onClick={() => { logout(); setMobileOpen(false); }}
