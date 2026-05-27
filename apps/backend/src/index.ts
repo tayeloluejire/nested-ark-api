@@ -8574,7 +8574,7 @@ app.get('/api/flex-pay/receipt/:contributionId', authenticate, async (req: Reque
            t.tenant_user_id = $2
            OR fpv.tenant_user_id = $2
            OR p.sponsor_id = $2
-           OR (SELECT role FROM users WHERE id=$2) = 'ADMIN'
+           OR (SELECT db_role FROM users WHERE id=$2) = 'ADMIN'
          )`,
       [contributionId, userId]
     );
@@ -9032,7 +9032,29 @@ app.get('/api/tenant/my-vault', authenticate, async (req: Request, res: Response
       }
     }
 
-    if (!tenancyRow) return res.status(404).json({ error: 'No active tenancy found for this account' });
+    if (!tenancyRow) {
+      // ── Independent Tenant: no landlord-linked tenancy yet ────────────────
+      // Return a structured "savings profile" state so the UI renders gracefully
+      // instead of hard-blocking. The tenant can still browse the marketplace
+      // and their profile is ready to activate the moment they link to a unit.
+      const uInfo = await pool.query(
+        `SELECT email, full_name, phone FROM users WHERE id = $1`,
+        [userId]
+      );
+      const u = uInfo.rows[0] || {};
+      return res.json({
+        success:            true,
+        hasActiveTenancy:   false,
+        vault:              null,
+        profile: {
+          user_id:    userId,
+          email:      u.email      || null,
+          full_name:  u.full_name  || null,
+          phone:      u.phone      || null,
+        },
+        message: 'Independent savings profile active. Link to a property to activate your Flex-Pay vault.',
+      });
+    }
 
     // Link user to tenancy for future fast lookups
     pool.query(
@@ -9371,7 +9393,12 @@ app.post('/api/tenant/pay-installment', authenticate, async (req: Request, res: 
         }
       }
 
-      if (!tenancyId) return res.status(404).json({ error: 'No active tenancy found' });
+      if (!tenancyId) return res.status(200).json({
+        success:          false,
+        hasActiveTenancy: false,
+        error_code:       'NO_ACTIVE_TENANCY',
+        message:          'No active tenancy found. Browse the marketplace to link a property before making installment payments.',
+      });
 
       const vRes = await pool.query(
         `SELECT id FROM flex_pay_vaults
@@ -9496,7 +9523,7 @@ app.get('/api/tenant/receipt/:contributionId', authenticate, async (req: Request
          AND (
            t.tenant_user_id = $2
            OR fpv.tenant_user_id = $2
-           OR (SELECT role FROM users WHERE id=$2) = 'ADMIN'
+           OR (SELECT db_role FROM users WHERE id=$2) = 'ADMIN'
          )`,
       [contributionId, userId]
     );
@@ -10293,7 +10320,41 @@ app.get('/api/tenant/dashboard', authenticate, async (req: Request, res: Respons
   const userId = (req as any).userId;
   try {
     const tenancy = await resolveTenancy(userId);
-    if (!tenancy) return res.status(404).json({ error: 'No active tenancy found for this account' });
+
+    if (!tenancy) {
+      // ── Independent Tenant: no landlord-linked tenancy yet ────────────────
+      // Return a rich onboarding state so the dashboard renders the
+      // "Account Setup Progress" flow rather than a hard error.
+      const uInfo = await pool.query(
+        `SELECT email, full_name, phone, created_at FROM users WHERE id = $1`,
+        [userId]
+      );
+      const u = uInfo.rows[0] || {};
+      return res.json({
+        success:          true,
+        hasActiveTenancy: false,
+        tenancy:          null,
+        vault:            null,
+        next_due_date:    null,
+        active_notice_count: 0,
+        recent_payments:  [],
+        recent_maintenance: [],
+        profile: {
+          user_id:    userId,
+          email:      u.email      || null,
+          full_name:  u.full_name  || null,
+          phone:      u.phone      || null,
+          created_at: u.created_at || null,
+        },
+        onboarding_steps: [
+          { key: 'account_created',       label: 'Account Created',              status: 'done'    },
+          { key: 'payout_destination',     label: 'Verify payout destination',    status: 'skipped' },
+          { key: 'escrow_vault_profile',   label: 'Escrow vault profile',         status: 'pending' },
+          { key: 'link_to_property',       label: 'Link to a property',           status: 'pending' },
+        ],
+        message: 'Independent savings profile active. Browse the marketplace or await a landlord invite to activate your vault.',
+      });
+    }
 
     const tenancyId = tenancy.id;
 
@@ -10404,7 +10465,16 @@ app.get('/api/tenant/rent-history', authenticate, async (req: Request, res: Resp
   const offset = parseInt((req.query.offset as string) || '0');
   try {
     const tenancy = await resolveTenancy(userId);
-    if (!tenancy) return res.status(404).json({ error: 'No active tenancy found' });
+    if (!tenancy) return res.json({
+      success:      true,
+      hasActiveTenancy: false,
+      tenancy_id:   null,
+      payments:     [],
+      total_count:  0,
+      total_paid:   0,
+      limit,
+      offset,
+    });
 
     const payments = await pool.query(
       `SELECT id, amount_ngn, status, period_month, paid_at,
@@ -10612,7 +10682,7 @@ app.get('/api/audit/unit/:unitId', authenticate, async (req: Request, res: Respo
     const own = await pool.query(
       `SELECT ru.id FROM rental_units ru
        JOIN projects p ON p.id = ru.project_id
-       WHERE ru.id = $1 AND (p.sponsor_id = $2 OR (SELECT role FROM users WHERE id=$2) = 'ADMIN')`,
+       WHERE ru.id = $1 AND (p.sponsor_id = $2 OR (SELECT db_role FROM users WHERE id=$2) = 'ADMIN')`,
       [unitId, userId]
     );
     if (!own.rows.length) return res.status(403).json({ error: 'Unit not found or access denied' });
@@ -10639,7 +10709,7 @@ app.get('/api/audit/project/:projectId', authenticate, async (req: Request, res:
   const event_type = req.query.event_type as string | undefined;
   try {
     const own = await pool.query(
-      `SELECT id FROM projects WHERE id=$1 AND (sponsor_id=$2 OR (SELECT role FROM users WHERE id=$2)='ADMIN')`,
+      `SELECT id FROM projects WHERE id=$1 AND (sponsor_id=$2 OR (SELECT db_role FROM users WHERE id=$2)='ADMIN')`,
       [projectId, userId]
     );
     if (!own.rows.length) return res.status(403).json({ error: 'Project not found or access denied' });
@@ -10676,7 +10746,7 @@ app.get('/api/audit/tenancy/:tenancyId', authenticate, async (req: Request, res:
        JOIN projects p ON p.id = ru.project_id
        WHERE t.id = $1
          AND (p.sponsor_id = $2 OR t.tenant_user_id = $2
-              OR (SELECT role FROM users WHERE id=$2) = 'ADMIN')`,
+              OR (SELECT db_role FROM users WHERE id=$2) = 'ADMIN')`,
       [tenancyId, userId]
     );
     if (!access.rows.length) return res.status(403).json({ error: 'Tenancy not found or access denied' });
@@ -10740,8 +10810,8 @@ app.post('/api/admin/trigger-payout/:vaultId', authenticate, async (req: Request
   const { dispute_note } = req.body;
   try {
     // ADMIN only
-    const uRes = await pool.query(`SELECT role FROM users WHERE id=$1`, [userId]);
-    if (!uRes.rows.length || uRes.rows[0].role !== 'ADMIN')
+    const uRes = await pool.query(`SELECT db_role FROM users WHERE id=$1`, [userId]);
+    if (!uRes.rows.length || uRes.rows[0].db_role !== 'ADMIN')
       return res.status(403).json({ error: 'ADMIN only.' });
 
     // Load vault + landlord bank account
@@ -10831,8 +10901,8 @@ app.post('/api/admin/dedup-tenancies', authenticate, async (req: Request, res: R
   const userId = (req as any).userId;
   try {
     // Verify caller is ADMIN
-    const userRes = await pool.query(`SELECT role FROM users WHERE id = $1`, [userId]);
-    if (!userRes.rows.length || userRes.rows[0].role !== 'ADMIN')
+    const userRes = await pool.query(`SELECT db_role FROM users WHERE id = $1`, [userId]);
+    if (!userRes.rows.length || userRes.rows[0].db_role !== 'ADMIN')
       return res.status(403).json({ error: 'ADMIN only.' });
 
     // Find duplicate (unit_id, tenant_email) groups — keep the latest id, soft-delete the rest
