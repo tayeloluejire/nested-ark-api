@@ -709,7 +709,7 @@ function RegisterContent() {
                       { icon: '✅', label: 'Account Created',              done: false },
                       { icon: '⚡', label: 'Vault profile initialised',    done: false },
                       { icon: '🔍', label: 'Payout destination verified',  done: false },
-                      { icon: '🔒', label: 'Escrow escrow setup complete', done: false },
+                      { icon: '🔒', label: 'Escrow setup complete', done: false },
                     ].map((s, i) => (
                       <div key={i} className="flex items-center gap-2">
                         <span className="text-[10px]">{s.icon}</span>
