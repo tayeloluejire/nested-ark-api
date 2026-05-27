@@ -150,11 +150,15 @@ function RegisterContent() {
     (urlIntent === 'tenant' || urlIntent === 'vault');
 
   // ── UI state ──────────────────────────────────────────────────────────────
-  const [selectedRole,  setSelectedRole]  = useState<typeof ROLES[number] | null>(null);
-  const [loadingInvite, setLoadingInvite] = useState(false);
-  const [submitting,    setSubmitting]    = useState(false);
-  const [error,         setError]         = useState('');
-  const [successMsg,    setSuccessMsg]    = useState('');
+  const [selectedRole,             setSelectedRole]             = useState<typeof ROLES[number] | null>(null);
+  const [loadingInvite,            setLoadingInvite]            = useState(false);
+  const [submitting,               setSubmitting]               = useState(false);
+  const [error,                    setError]                    = useState('');
+  const [successMsg,               setSuccessMsg]               = useState('');
+  // Post-auth background task states — never block registration
+  const [bankLookupReady,          setBankLookupReady]          = useState(false);
+  const [postAuthBankVerification, setPostAuthBankVerification] = useState(false);
+  const [vaultProfileCreated,      setVaultProfileCreated]      = useState(false);
 
   // ── Form state ────────────────────────────────────────────────────────────
   const [form, setForm] = useState({
@@ -199,6 +203,61 @@ function RegisterContent() {
       }
     })();
   }, [inviteToken, isTenantInvite]);
+
+  // ── POST-AUTH: fetch banks (requires JWT — never called during registration) ─
+  /**
+   * Banks endpoint requires authenticated JWT.
+   * Do NOT call during public registration.
+   * Called only after successful register() — JWT is then live in AuthContext.
+   */
+  const loadBanksPostAuth = async (): Promise<void> => {
+    try {
+      const res = await api.get('/api/paystack/banks');
+      setBankLookupReady(true);
+      // Result used by verifyBankPostAuth below — no state needed for the list
+      return res.data?.banks ?? (Array.isArray(res.data) ? res.data : []);
+    } catch {
+      setBankLookupReady(false);
+    }
+  };
+
+  // ── POST-AUTH: resolve landlord account (non-fatal, requires JWT) ─────────
+  /**
+   * IMPORTANT: Public registration MUST NOT hard-fail because of:
+   * - Paystack downtime, mobile latency, bank API timeout.
+   * Verification runs ONLY AFTER successful registration + JWT creation.
+   * Returns true if verified, false otherwise — caller decides what to do.
+   */
+  const verifyBankPostAuth = async (): Promise<boolean> => {
+    if (
+      form.landlord_account_number.length !== 10 ||
+      !form.landlord_bank_code
+    ) return false;
+
+    try {
+      setPostAuthBankVerification(true);
+      const res = await api.post('/api/paystack/resolve-account', {
+        account_number: form.landlord_account_number,
+        bank_code:      form.landlord_bank_code,
+      });
+      if (res.data?.account_name) {
+        setForm(prev => ({
+          ...prev,
+          landlord_account_name: res.data.account_name,
+          landlord_bank_name:    form.landlord_bank_name || prev.landlord_bank_name,
+        }));
+        return true;
+      }
+      return false;
+    } catch {
+      /**
+       * NON-FATAL — user can fix/update payout routing later from dashboard.
+       */
+      return false;
+    } finally {
+      setPostAuthBankVerification(false);
+    }
+  };
 
   const handleChange = (
     e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>,
@@ -250,28 +309,76 @@ function RegisterContent() {
       });
       // JWT is now live in AuthContext. Registration is complete.
 
-      // ── MODE B only: Write vault intent draft to localStorage ─────────────
-      // Dashboard picks this up on first load and runs background verification.
-      // This is intentionally non-blocking — if localStorage write fails,
-      // tenant simply sets up their vault from the dashboard manually.
+      // ── MODE B only: deferred post-auth vault + bank setup ───────────────
+      // Registration is already complete at this point. JWT is live.
+      // All steps below are non-fatal — failure never blocks account creation.
       if (activeRoleId === 'TENANT') {
+        // Always write localStorage draft as a resilient fallback
         try {
           const draft = {
-            target_rent:             form.target_rent       || null,
-            savings_frequency:       form.savings_frequency || 'MONTHLY',
+            target_rent:             form.target_rent             || null,
+            savings_frequency:       form.savings_frequency       || 'MONTHLY',
             landlord_bank_name:      form.landlord_bank_name.trim()      || null,
             landlord_bank_code:      form.landlord_bank_code.trim()      || null,
             landlord_account_number: form.landlord_account_number.trim() || null,
             landlord_account_name:   form.landlord_account_name.trim()   || null,
             created_at:              new Date().toISOString(),
           };
-          // Only write if there is something worth saving
           const hasPayload = draft.target_rent || draft.landlord_account_number;
-          if (hasPayload) {
-            localStorage.setItem(BANK_DRAFT_KEY, JSON.stringify(draft));
+          if (hasPayload) localStorage.setItem(BANK_DRAFT_KEY, JSON.stringify(draft));
+        } catch { /* localStorage unavailable — silently continue */ }
+
+        // Only run post-auth steps if tenant provided vault intent
+        if (form.target_rent) {
+          // STEP 1: Load bank list now that JWT is live
+          await loadBanksPostAuth();
+
+          // STEP 2: Optionally verify landlord account — non-fatal
+          const verified = await verifyBankPostAuth();
+
+          // STEP 3: Create independent vault profile (backend endpoint pending)
+          // This endpoint does NOT require tenancy_id — it is a standalone profile.
+          // Non-fatal: vault setup can be completed from dashboard if this fails.
+          try {
+            await api.post('/api/flex-pay/create-vault-profile', {
+              target_amount:        parseFloat(form.target_rent),
+              frequency:            form.savings_frequency,
+              vault_mode:           'INDEPENDENT',
+              marketplace_enabled:  true,
+              auto_match_properties: true,
+              payout_profile: {
+                bank_code:      form.landlord_bank_code      || '',
+                bank_name:      form.landlord_bank_name      || '',
+                account_number: form.landlord_account_number || '',
+                account_name:   form.landlord_account_name   || '',
+                verified,
+              },
+            });
+            setVaultProfileCreated(true);
+            // Draft fulfilled — remove from localStorage
+            try { localStorage.removeItem(BANK_DRAFT_KEY); } catch {}
+          } catch {
+            /**
+             * NON-FATAL — vault setup continues on first dashboard load
+             * via the localStorage draft pickup.
+             */
           }
-        } catch {
-          // localStorage unavailable (SSR edge case) — silently continue
+
+          // STEP 4: Register landlord payout destination for auto-settlement
+          // Non-fatal: can be configured later from dashboard.
+          if (verified && form.landlord_account_number && form.landlord_bank_code) {
+            try {
+              await api.post('/api/tenant/payout-destination', {
+                account_number: form.landlord_account_number,
+                bank_code:      form.landlord_bank_code,
+                account_name:   form.landlord_account_name,
+                bank_name:      form.landlord_bank_name,
+                payout_type:    'LANDLORD_AUTO_SETTLEMENT',
+              });
+            } catch {
+              /* Silent fail — user can configure later */
+            }
+          }
         }
       }
 
@@ -426,9 +533,9 @@ function RegisterContent() {
                   Programmable Escrow Savings Vault
                 </p>
                 <p className="text-zinc-400 text-[10px] mt-1 leading-relaxed">
-                  Set a savings target and rhythm. Add your landlord's bank details as a
-                  destination. Your vault verifies and activates in the background after
-                  you register — no delays to your account creation.
+                  No landlord invite required. Create an independent programmable rent vault,
+                  save gradually toward your housing target, search properties globally, and
+                  optionally configure automatic landlord settlement once your target is completed.
                 </p>
               </div>
             </div>
@@ -563,6 +670,15 @@ function RegisterContent() {
                     </div>
                   </div>
 
+                  {/* Post-auth bank verification status */}
+                  {postAuthBankVerification && (
+                    <div className="p-3 rounded-xl border border-amber-500/20 bg-amber-500/5 animate-pulse">
+                      <p className="text-[9px] text-amber-400 uppercase font-black tracking-widest">
+                        Verifying payout destination…
+                      </p>
+                    </div>
+                  )}
+
                   {/* Draft confirmation badge */}
                   {bankPartiallyFilled && (
                     <div className="flex items-start gap-2.5 p-3 rounded-xl border border-zinc-700 bg-zinc-900/40">
@@ -617,6 +733,19 @@ function RegisterContent() {
                 </p>
               </div>
             </div>
+          </div>
+        )}
+
+        {/* Vault profile created confirmation */}
+        {vaultProfileCreated && (
+          <div className="p-4 rounded-xl border border-green-500/20 bg-green-500/5 text-green-400">
+            <p className="text-[10px] font-black uppercase tracking-widest">
+              Independent Vault Initialized
+            </p>
+            <p className="text-xs text-green-300 mt-1 leading-relaxed">
+              Your programmable housing savings vault is active. You may now search properties,
+              save toward rent, connect landlords, or auto-settle future rental targets.
+            </p>
           </div>
         )}
 
