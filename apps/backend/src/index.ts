@@ -8574,7 +8574,7 @@ app.get('/api/flex-pay/receipt/:contributionId', authenticate, async (req: Reque
            t.tenant_user_id = $2
            OR fpv.tenant_user_id = $2
            OR p.sponsor_id = $2
-           OR (SELECT db_role FROM users WHERE id=$2) = 'ADMIN'
+           OR (SELECT role FROM users WHERE id=$2) = 'ADMIN'
          )`,
       [contributionId, userId]
     );
@@ -9496,7 +9496,7 @@ app.get('/api/tenant/receipt/:contributionId', authenticate, async (req: Request
          AND (
            t.tenant_user_id = $2
            OR fpv.tenant_user_id = $2
-           OR (SELECT db_role FROM users WHERE id=$2) = 'ADMIN'
+           OR (SELECT role FROM users WHERE id=$2) = 'ADMIN'
          )`,
       [contributionId, userId]
     );
@@ -10612,7 +10612,7 @@ app.get('/api/audit/unit/:unitId', authenticate, async (req: Request, res: Respo
     const own = await pool.query(
       `SELECT ru.id FROM rental_units ru
        JOIN projects p ON p.id = ru.project_id
-       WHERE ru.id = $1 AND (p.sponsor_id = $2 OR (SELECT db_role FROM users WHERE id=$2) = 'ADMIN')`,
+       WHERE ru.id = $1 AND (p.sponsor_id = $2 OR (SELECT role FROM users WHERE id=$2) = 'ADMIN')`,
       [unitId, userId]
     );
     if (!own.rows.length) return res.status(403).json({ error: 'Unit not found or access denied' });
@@ -10639,7 +10639,7 @@ app.get('/api/audit/project/:projectId', authenticate, async (req: Request, res:
   const event_type = req.query.event_type as string | undefined;
   try {
     const own = await pool.query(
-      `SELECT id FROM projects WHERE id=$1 AND (sponsor_id=$2 OR (SELECT db_role FROM users WHERE id=$2)='ADMIN')`,
+      `SELECT id FROM projects WHERE id=$1 AND (sponsor_id=$2 OR (SELECT role FROM users WHERE id=$2)='ADMIN')`,
       [projectId, userId]
     );
     if (!own.rows.length) return res.status(403).json({ error: 'Project not found or access denied' });
@@ -10676,7 +10676,7 @@ app.get('/api/audit/tenancy/:tenancyId', authenticate, async (req: Request, res:
        JOIN projects p ON p.id = ru.project_id
        WHERE t.id = $1
          AND (p.sponsor_id = $2 OR t.tenant_user_id = $2
-              OR (SELECT db_role FROM users WHERE id=$2) = 'ADMIN')`,
+              OR (SELECT role FROM users WHERE id=$2) = 'ADMIN')`,
       [tenancyId, userId]
     );
     if (!access.rows.length) return res.status(403).json({ error: 'Tenancy not found or access denied' });
@@ -10740,8 +10740,8 @@ app.post('/api/admin/trigger-payout/:vaultId', authenticate, async (req: Request
   const { dispute_note } = req.body;
   try {
     // ADMIN only
-    const uRes = await pool.query(`SELECT db_role FROM users WHERE id=$1`, [userId]);
-    if (!uRes.rows.length || uRes.rows[0].db_role !== 'ADMIN')
+    const uRes = await pool.query(`SELECT role FROM users WHERE id=$1`, [userId]);
+    if (!uRes.rows.length || uRes.rows[0].role !== 'ADMIN')
       return res.status(403).json({ error: 'ADMIN only.' });
 
     // Load vault + landlord bank account
@@ -10831,8 +10831,8 @@ app.post('/api/admin/dedup-tenancies', authenticate, async (req: Request, res: R
   const userId = (req as any).userId;
   try {
     // Verify caller is ADMIN
-    const userRes = await pool.query(`SELECT db_role FROM users WHERE id = $1`, [userId]);
-    if (!userRes.rows.length || userRes.rows[0].db_role !== 'ADMIN')
+    const userRes = await pool.query(`SELECT role FROM users WHERE id = $1`, [userId]);
+    if (!userRes.rows.length || userRes.rows[0].role !== 'ADMIN')
       return res.status(403).json({ error: 'ADMIN only.' });
 
     // Find duplicate (unit_id, tenant_email) groups — keep the latest id, soft-delete the rest
