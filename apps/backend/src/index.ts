@@ -8567,11 +8567,15 @@ app.get('/api/flex-pay/receipt/:contributionId', authenticate, async (req: Reque
     const ownerCheck = await pool.query(
       `SELECT fc.id FROM flex_contributions fc
        JOIN flex_pay_vaults fpv ON fpv.id = fc.vault_id
-       JOIN tenancies t ON t.id = fpv.tenancy_id
-       JOIN projects p ON p.id = COALESCE(fpv.project_id, t.project_id)
+       LEFT JOIN tenancies t ON t.id = fpv.tenancy_id
+       LEFT JOIN projects p ON p.id = COALESCE(fpv.project_id, t.project_id)
        WHERE fc.id = $1
-         AND (t.tenant_user_id = $2 OR p.sponsor_id = $2
-              OR (SELECT db_role FROM users WHERE id=$2) = 'ADMIN')`,
+         AND (
+           t.tenant_user_id = $2
+           OR fpv.tenant_user_id = $2
+           OR p.sponsor_id = $2
+           OR (SELECT db_role FROM users WHERE id=$2) = 'ADMIN'
+         )`,
       [contributionId, userId]
     );
     if (!ownerCheck.rows.length)
@@ -8582,16 +8586,18 @@ app.get('/api/flex-pay/receipt/:contributionId', authenticate, async (req: Reque
          fc.id, fc.amount_ngn, fc.period_label, fc.paid_at, fc.ledger_hash,
          fc.status, fc.paystack_ref,
          fpv.vault_balance, fpv.target_amount, fpv.frequency,
-         t.tenant_name, t.tenant_email,
-         ru.unit_name,
-         COALESCE(ru.currency, t.currency, 'NGN') AS currency,
-         p.title AS project_title, p.project_number
+         COALESCE(t.tenant_name,  u.full_name,  'Tenant')     AS tenant_name,
+         COALESCE(t.tenant_email, u.email,       '')           AS tenant_email,
+         COALESCE(ru.unit_name,   'Independent Vault')         AS unit_name,
+         COALESCE(ru.currency, t.currency, 'NGN')              AS currency,
+         COALESCE(p.title,    'Savings Vault')                 AS project_title,
+         COALESCE(p.project_number, '—')                       AS project_number
        FROM flex_contributions fc
-       JOIN flex_pay_vaults fpv ON fpv.id      = fc.vault_id
-       JOIN tenancies t          ON t.id       = fpv.tenancy_id
-       -- COALESCE: self-healed vaults may have NULL unit_id/project_id — use LEFT JOIN
-       LEFT JOIN rental_units ru  ON ru.id     = COALESCE(fpv.unit_id, t.unit_id)
-       LEFT JOIN projects p       ON p.id      = COALESCE(fpv.project_id, ru.project_id)
+       JOIN flex_pay_vaults fpv      ON fpv.id  = fc.vault_id
+       LEFT JOIN tenancies t          ON t.id   = fpv.tenancy_id
+       LEFT JOIN users u              ON u.id   = fpv.tenant_user_id
+       LEFT JOIN rental_units ru      ON ru.id  = COALESCE(fpv.unit_id, t.unit_id)
+       LEFT JOIN projects p           ON p.id   = COALESCE(fpv.project_id, ru.project_id)
        WHERE fc.id = $1`,
       [contributionId]
     );
@@ -9480,12 +9486,18 @@ app.get('/api/tenant/receipt/:contributionId', authenticate, async (req: Request
   const { contributionId } = req.params;
   try {
     // ── IDOR guard: tenant can only fetch their own receipts ──────────────
+    // Supports both linked tenants (via tenancies.tenant_user_id) AND
+    // independent tenants (via flex_pay_vaults.tenant_user_id directly).
     const ownerCheck = await pool.query(
       `SELECT fc.id FROM flex_contributions fc
        JOIN flex_pay_vaults fpv ON fpv.id = fc.vault_id
-       JOIN tenancies t ON t.id = fpv.tenancy_id
-       WHERE fc.id = $1 AND (t.tenant_user_id = $2
-             OR (SELECT db_role FROM users WHERE id=$2) = 'ADMIN')`,
+       LEFT JOIN tenancies t ON t.id = fpv.tenancy_id
+       WHERE fc.id = $1
+         AND (
+           t.tenant_user_id = $2
+           OR fpv.tenant_user_id = $2
+           OR (SELECT db_role FROM users WHERE id=$2) = 'ADMIN'
+         )`,
       [contributionId, userId]
     );
     if (!ownerCheck.rows.length)
@@ -9495,17 +9507,19 @@ app.get('/api/tenant/receipt/:contributionId', authenticate, async (req: Request
       `SELECT fc.id, fc.amount_ngn, fc.period_label, fc.paid_at, fc.ledger_hash,
               fc.status, fc.paystack_ref,
               fpv.frequency,
-              t.tenant_name, t.tenant_email,
-              ru.unit_name,
-              COALESCE(ru.currency, t.currency, 'NGN') AS currency,
-              COALESCE(p.title,  p2.title)             AS project_title,
-              COALESCE(p.project_number, p2.project_number) AS project_number
+              COALESCE(t.tenant_name,  u.full_name,  'Tenant')       AS tenant_name,
+              COALESCE(t.tenant_email, u.email,       '')             AS tenant_email,
+              COALESCE(ru.unit_name,   'Independent Vault')           AS unit_name,
+              COALESCE(ru.currency, t.currency, 'NGN')                AS currency,
+              COALESCE(p.title,  p2.title,  'Savings Vault')          AS project_title,
+              COALESCE(p.project_number, p2.project_number, '—')      AS project_number
        FROM flex_contributions fc
-       JOIN flex_pay_vaults fpv  ON fpv.id        = fc.vault_id
-       JOIN tenancies t           ON t.id         = fpv.tenancy_id
-       LEFT JOIN rental_units ru  ON ru.id        = COALESCE(fpv.unit_id, t.unit_id)
-       LEFT JOIN projects p       ON p.id         = fpv.project_id
-       LEFT JOIN projects p2      ON p2.id        = ru.project_id
+       JOIN flex_pay_vaults fpv      ON fpv.id  = fc.vault_id
+       LEFT JOIN tenancies t          ON t.id   = fpv.tenancy_id
+       LEFT JOIN users u              ON u.id   = fpv.tenant_user_id
+       LEFT JOIN rental_units ru      ON ru.id  = COALESCE(fpv.unit_id, t.unit_id)
+       LEFT JOIN projects p           ON p.id   = fpv.project_id
+       LEFT JOIN projects p2          ON p2.id  = ru.project_id
        WHERE fc.id = $1`,
       [contributionId]
     );
