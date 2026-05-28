@@ -9,7 +9,7 @@ export const dynamic = 'force-dynamic';
  * Fully searchable, category-filtered, accordion layout.
  */
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import Link from 'next/link';
 import Navbar from '@/components/Navbar';
 import Footer from '@/components/Footer';
@@ -111,6 +111,22 @@ const CATEGORIES: FAQCategory[] = [
       {
         q: 'Can I download my payment receipts?',
         a: 'Yes. Every contribution generates a digital receipt downloadable as HTML or PDF from the My Contributions page. Each receipt includes: tenant name, unit details, amount paid, date, Paystack reference, and your SHA-256 ledger hash. These are court-admissible documents.',
+      },
+      {
+        q: 'What happens if I change my mind before the vault is fully funded?',
+        a: 'Before a vault reaches FUNDED_READY status, tenants may request a withdrawal or reassignment subject to platform policy, applicable escrow rules, and any linked tenancy agreement. Depending on the vault state, processing fees or cooling periods may apply. Once a landlord payout has been triggered and the transfer completed, it cannot be reversed except through formal dispute resolution. Contact support at nestedark@gmail.com for assistance.',
+      },
+      {
+        q: 'Can I save toward a property before it becomes available?',
+        a: 'Yes. Independent vaults can be created before tenancy linkage. This allows you to build savings progressively while monitoring target properties on the marketplace. Once a unit becomes available or an invite link is received from a landlord, your vault links instantly — without restarting the savings cycle. Your contributions and history are fully preserved.',
+      },
+      {
+        q: 'Does my vault history move with me if I relocate?',
+        a: 'Yes. Nested Ark OS creates a portable tenant financial identity. Your vault history, contribution discipline, SHA-256 receipts, and Tenant Score remain attached to your account — not to a specific property. You carry your financial reputation across landlords, cities, and countries. A strong track record on the platform makes approvals faster wherever you move.',
+      },
+      {
+        q: 'Are all marketplace properties verified?',
+        a: 'Nested Ark OS supports both platform-verified and self-listed properties. Verified listings undergo identity checks, ownership review, location validation, and documentation screening before receiving a verification badge. Unverified listings are clearly marked. Users should always review listing status and verification level before making financial commitments. We recommend contacting the landlord directly for any clarification before activating a vault.',
       },
     ],
   },
@@ -233,6 +249,10 @@ const CATEGORIES: FAQCategory[] = [
         a: 'Paystack bank transfers typically settle within T+1 (next business day) for Nigerian bank accounts. International transfers may take 2–3 business days depending on the receiving bank and country. The platform logs the transfer initiation timestamp on the ledger — if transfer is delayed beyond 48 hours, the system flags it for support review.',
       },
       {
+        q: 'What happens if the landlord\'s bank transfer fails?',
+        a: 'If a Paystack transfer fails due to an invalid account, frozen account, compliance restriction, or banking outage, the funds remain safely held within the regulated payout flow — they are never lost. The platform automatically retries eligible transfers and sends a notification to the landlord to update their payout details. All transfer attempts and outcomes are logged on the immutable ledger. If a transfer remains unresolved after 72 hours, the platform flags it for support review.',
+      },
+      {
         q: 'What is a Paystack subaccount and why is one created for my landlord?',
         a: 'A Paystack subaccount is a virtual payment destination linked to a specific bank account. When a landlord registers their bank details, Nested Ark automatically creates a Paystack subaccount and transfer recipient for them. This enables programmable, automatic rent disbursement without requiring the landlord to be online or manually approve each transfer. It is the core of the rent automation infrastructure.',
       },
@@ -265,10 +285,16 @@ const CATEGORIES: FAQCategory[] = [
         q: 'What is the platform\'s AML (Anti-Money Laundering) policy?',
         a: 'Nested Ark OS maintains AML controls in line with CBN guidelines and Paystack\'s compliance framework. Transactions above threshold limits trigger additional verification. Government and enterprise accounts access AML reporting dashboards via the Government Portal. Suspicious activity reports are handled according to regulatory requirements.',
       },
+      {
+        q: 'Does Nested Ark OS work with government regulators?',
+        a: 'Yes. The platform is designed to support government oversight, permit verification, AML reporting, infrastructure transparency, and compliance auditing. The Government Portal (/gov) provides institutional dashboards for regulators and agencies. Permit references (such as Lagos State digital building permits) are embedded in every project record. Government and enterprise compliance integrations are being expanded in partnership-ready phases.',
+      },
+      {
+        q: 'Is Nested Ark OS compliant with financial regulations?',
+        a: 'Nested Ark OS provides infrastructure orchestration and escrow automation services. Payment processing and regulated financial operations are handled exclusively by Paystack, a CBN-licensed payment processor. The platform follows NDPR (Nigeria Data Protection Regulation) for data handling and operates within Paystack\'s AML/KYC compliance framework for all financial transactions.',
+      },
     ],
   },
-  {
-    id:    'technical',
     label: 'Technical',
     icon:  FileText,
     color: 'text-zinc-400',
@@ -289,6 +315,14 @@ const CATEGORIES: FAQCategory[] = [
       {
         q: 'What is a NAP Project ID?',
         a: 'NAP (Nested Ark Protocol) Project ID is a unique identifier assigned to every infrastructure project registered on the platform — e.g. NAP-2026-00001. It links all associated records: investor stakes, contractor milestones, escrow transactions, permit references, and drone verification events. It is searchable globally via the NAP Search bar in the navigation.',
+      },
+      {
+        q: 'Does AI make investment or construction decisions automatically?',
+        a: 'No. AI systems on the platform assist with analysis, anomaly detection, milestone image comparison, and verification support — but they are advisory components only. Final approvals always involve human oversight and compliance workflows. The Tri-Layer Verification system requires AI analysis, a human auditor, AND drone footage confirmation — no single layer can approve a release alone. AI outputs are never used as the sole basis for releasing investor funds.',
+      },
+      {
+        q: 'What happens if the platform experiences downtime?',
+        a: 'Core payment records remain protected because transaction processing occurs through Paystack\'s infrastructure and the immutable ledger logging is handled server-side. Temporary frontend outages do not affect vault balances, payment history, or escrow state. Nested Ark OS uses GitHub-triggered CI/CD auto-deploys on Vercel (frontend) and Render (backend) with automatic failover, minimising recovery time. All critical data is backed up in Supabase PostgreSQL with point-in-time recovery.',
       },
     ],
   },
@@ -342,6 +376,14 @@ export default function FAQPage() {
   const [activeCategory, setActiveCategory] = useState<string>('general');
   const [openItem,       setOpenItem]       = useState<string | null>(null);
   const [search,         setSearch]         = useState('');
+
+  // Read URL hash on mount — supports /faq#tenant, /faq#escrow etc.
+  useEffect(() => {
+    const hash = window.location.hash.replace('#', '');
+    if (hash && CATEGORIES.find(c => c.id === hash)) {
+      setActiveCategory(hash);
+    }
+  }, []);
 
   const currentCategory = CATEGORIES.find(c => c.id === activeCategory)!;
 
@@ -406,6 +448,32 @@ export default function FAQPage() {
               </button>
             )}
           </div>
+
+          {/* Popular questions */}
+          {!search && (
+            <div className="mt-5 space-y-2">
+              <p className="text-[8px] text-zinc-600 uppercase font-black tracking-widest">Popular questions</p>
+              <div className="flex flex-wrap justify-center gap-2">
+                {[
+                  { q: 'How does Flex-Pay work?',           cat: 'tenant'  },
+                  { q: 'Can I join without a landlord?',    cat: 'tenant'  },
+                  { q: 'Is my money safe?',                  cat: 'general' },
+                  { q: 'How are landlords paid?',            cat: 'landlord'},
+                  { q: 'How does escrow work?',              cat: 'escrow'  },
+                  { q: 'What is Tri-Layer Verification?',    cat: 'investor'},
+                ].map(p => (
+                  <button key={p.q}
+                    onClick={() => { setSearch(p.q); setOpenItem(null); }}
+                    className="px-3 py-1.5 rounded-full border border-zinc-800 bg-zinc-900/40 text-zinc-400 text-[9px] font-bold hover:border-teal-500/40 hover:text-teal-400 transition-all">
+                    {p.q}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Last updated */}
+          <p className="text-[8px] text-zinc-700 font-mono mt-4">Last updated: May 2026</p>
         </div>
       </div>
 
@@ -464,7 +532,11 @@ export default function FAQPage() {
                   return (
                     <button
                       key={cat.id}
-                      onClick={() => { setActiveCategory(cat.id); setOpenItem(null); }}
+                      onClick={() => {
+                        setActiveCategory(cat.id);
+                        setOpenItem(null);
+                        window.history.replaceState(null, '', `/faq#${cat.id}`);
+                      }}
                       className={`flex items-center gap-2.5 px-3 py-2.5 rounded-xl border transition-all shrink-0 md:shrink text-left w-full ${
                         isActive
                           ? `${cat.bg} ${cat.color} border-current/30`
@@ -487,7 +559,10 @@ export default function FAQPage() {
             {/* ── FAQ list ─────────────────────────────────────────────────── */}
             <div className="flex-1 min-w-0">
               {/* Category header */}
-              <div className={`flex items-center gap-3 p-4 rounded-2xl border mb-6 ${currentCategory.bg}`}>
+              <div
+                id={currentCategory.id}
+                className={`flex items-center gap-3 p-4 rounded-2xl border mb-6 ${currentCategory.bg}`}
+              >
                 <div className={`w-9 h-9 rounded-xl flex items-center justify-center bg-black/30`}>
                   <currentCategory.icon size={18} className={currentCategory.color} />
                 </div>
@@ -516,6 +591,14 @@ export default function FAQPage() {
             </div>
           </div>
         )}
+
+        {/* Compliance note */}
+        <div className="mt-12 px-5 py-4 rounded-2xl border border-zinc-900 bg-zinc-950/60 flex items-start gap-3">
+          <ShieldCheck size={14} className="text-teal-500 shrink-0 mt-0.5" />
+          <p className="text-[10px] text-zinc-600 leading-relaxed">
+            <span className="text-zinc-500 font-bold">Regulatory notice:</span> Nested Ark OS provides infrastructure orchestration and escrow automation services. Payment processing and regulated financial operations are handled exclusively by licensed payment infrastructure providers. Nested Ark OS is a product of Impressions &amp; Impacts Ltd.
+          </p>
+        </div>
 
         {/* ── Still have questions CTA ─────────────────────────────────────── */}
         <div className="mt-16 p-6 rounded-2xl border border-zinc-800 bg-zinc-900/20 flex flex-col md:flex-row items-center justify-between gap-6">
