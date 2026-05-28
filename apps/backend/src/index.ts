@@ -10974,6 +10974,10 @@ app.get('/api/tenant/rent-history', authenticate, async (req: Request, res: Resp
         limit, offset,
       });
     }
+    const payments = await pool.query(
+      `SELECT id, amount_ngn, status, period_month, paid_at,
+              paystack_reference, created_at
+       FROM rent_payments
        WHERE tenancy_id = $1
        ORDER BY created_at DESC
        LIMIT $2 OFFSET $3`,
