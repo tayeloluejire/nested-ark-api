@@ -4,20 +4,19 @@ export const dynamic = 'force-dynamic';
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
-// Backend URL — NEXT_PUBLIC_API_URL may or may not include /api suffix.
-// We normalise here so this file works regardless of how the env var is set.
-const _rawBase = process.env.NEXT_PUBLIC_API_URL || '';
-const API_BASE = _rawBase
-  ? _rawBase.replace(/\/api\/?$/, '') + '/api'   // strip trailing /api then re-add cleanly
-  : '/api';                                        // local dev fallback
+// ── Same pattern as vault/page.tsx which is confirmed working ─────────────────
+// Relative /api path — Next.js rewrites proxy this to the backend.
+// Do NOT use NEXT_PUBLIC_API_URL here: cross-origin absolute URLs cause
+// CORS + credentials failures on Vercel even with credentials:'include'.
+const API_BASE = '/api';
 
 function getToken(): string | null {
   if (typeof window === 'undefined') return null;
   return (
-    localStorage.getItem('ark_token') ||
     localStorage.getItem('token') ||
-    sessionStorage.getItem('ark_token') ||
     sessionStorage.getItem('token') ||
+    localStorage.getItem('ark_token') ||
+    sessionStorage.getItem('ark_token') ||
     null
   );
 }
@@ -193,7 +192,6 @@ export default function TenantDashboardPage() {
             'Content-Type': 'application/json',
             Authorization: `Bearer ${token}`,
           },
-          credentials: 'include',
           cache: 'no-store',
         });
 
