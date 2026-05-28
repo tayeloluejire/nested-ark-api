@@ -295,6 +295,8 @@ const CATEGORIES: FAQCategory[] = [
       },
     ],
   },
+  {
+    id:    'technical',
     label: 'Technical',
     icon:  FileText,
     color: 'text-zinc-400',
