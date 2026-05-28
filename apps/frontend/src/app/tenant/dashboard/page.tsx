@@ -1,12 +1,23 @@
 'use client';
+export const dynamic = 'force-dynamic';
+
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
-const API_BASE = '/api';
+// Backend URL — NEXT_PUBLIC_API_URL must be set in Vercel env vars
+// pointing to the Render backend e.g. https://nested-ark-backend.onrender.com/api
+// Falls back to relative /api for local dev only
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || '/api';
 
 function getToken(): string | null {
   if (typeof window === 'undefined') return null;
-  return localStorage.getItem('token') || sessionStorage.getItem('token');
+  return (
+    localStorage.getItem('ark_token') ||
+    localStorage.getItem('token') ||
+    sessionStorage.getItem('ark_token') ||
+    sessionStorage.getItem('token') ||
+    null
+  );
 }
 
 const fmt = (n: number) =>
@@ -16,13 +27,13 @@ const fmt = (n: number) =>
     minimumFractionDigits: 2,
   }).format(n);
 
-const fmtDate = (d: string | null) => {
+const fmtDate = (d?: string | null) => {
   if (!d) return '—';
-  return new Date(d).toLocaleDateString('en-NG', {
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric',
-  });
+  try {
+    return new Date(d).toLocaleDateString('en-NG', {
+      day: '2-digit', month: 'short', year: 'numeric',
+    });
+  } catch { return '—'; }
 };
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -170,22 +181,47 @@ export default function TenantDashboardPage() {
   const [error, setError]     = useState('');
 
   useEffect(() => {
+    let mounted = true;
     (async () => {
       const token = getToken();
-      if (!token) { router.push('/login'); return; }
+      if (!token) { router.replace('/login?reason=session_expired'); return; }
       try {
         const res = await fetch(`${API_BASE}/tenant/dashboard`, {
-          headers: { Authorization: `Bearer ${token}` },
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          credentials: 'include',
+          cache: 'no-store',
         });
+
+        // 401 — clear stale token and redirect
+        if (res.status === 401) {
+          localStorage.removeItem('ark_token');
+          localStorage.removeItem('token');
+          if (mounted) router.replace('/login?reason=session_expired');
+          return;
+        }
+
+        if (!res.ok) throw new Error(`Server error (${res.status})`);
+
         const json = await res.json();
-        if (!json.success && json.error) throw new Error(json.error);
-        setData(json);
+
+        // Support both raw response and wrapped { data: {} } or { dashboard: {} }
+        const dashData = json.data || json.dashboard || json;
+
+        if (dashData?.error || json?.error) {
+          throw new Error(dashData.error || json.error);
+        }
+
+        if (mounted) setData(dashData);
       } catch (e: any) {
-        setError(e.message || 'Failed to load dashboard');
+        if (mounted) setError(e.message || 'Failed to load dashboard');
       } finally {
-        setLoading(false);
+        if (mounted) setLoading(false);
       }
     })();
+    return () => { mounted = false; };
   }, []);
 
   // ── Derived state ─────────────────────────────────────────────────────────
