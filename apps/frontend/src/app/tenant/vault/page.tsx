@@ -1,98 +1,6 @@
 'use client';
-
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import Link from 'next/link';
-
-// ─── Shared Visual Components Placeholder Layouts ────────────────────────────
-// Replace these paths with your actual project workspace imports
-function BrandLogo() {
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 800, letterSpacing: '0.05em', color: '#white', fontFamily: 'monospace' }}>
-      <span style={{ color: '#14b8a6' }}>⚡</span> NESTED<span style={{ color: '#14b8a6' }}>ARK</span>
-    </div>
-  );
-}
-
-function NavBar() {
-  return (
-    <nav style={{
-      width: '100%',
-      background: 'rgba(10,26,26,0.8)',
-      backdropFilter: 'blur(12px)',
-      borderBottom: '1px solid rgba(20,184,166,0.15)',
-      padding: '16px 24px',
-      position: 'sticky',
-      top: 0,
-      zIndex: 100,
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'between',
-    }}>
-      <div style={{ display: 'flex', width: '100%', maxWidth: 1200, margin: '0 auto', justifyContent: 'space-between', alignItems: 'center' }}>
-        <BrandLogo />
-        <div style={{ display: 'flex', gap: 20, fontSize: 13, color: '#9ca3af' }}>
-          <Link href="/tenant/dashboard" style={{ color: '#14b8a6', textDecoration: 'none' }}>Dashboard</Link>
-          <Link href="/tenant/contributions" style={{ color: 'inherit', textDecoration: 'none' }}>History</Link>
-        </div>
-      </div>
-    </nav>
-  );
-}
-
-function Footer() {
-  return (
-    <footer style={{
-      width: '100%',
-      padding: '40px 24px',
-      borderTop: '1px solid rgba(20,184,166,0.1)',
-      background: '#050d0d',
-      marginTop: 'auto',
-    }}>
-      <div style={{ maxWidth: 1200, margin: '0 auto', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 16 }}>
-        <BrandLogo />
-        <div style={{ color: '#374151', fontSize: 12, fontFamily: 'monospace' }}>
-          SECURE ESCROW INFRASTRUCTURE // SHA-256 ENCRYPTED
-        </div>
-      </div>
-    </footer>
-  );
-}
-
-function MobileBottomButton({ label, onClick, disabled }: { label: string; onClick: () => void; disabled?: boolean }) {
-  return (
-    <div style={{
-      position: 'fixed',
-      bottom: 0,
-      left: 0,
-      right: 0,
-      padding: '16px',
-      background: 'linear-gradient(to top, #0a1a1a 80%, transparent)',
-      borderTop: '1px solid rgba(20,184,166,0.15)',
-      zIndex: 90,
-    }}>
-      <button
-        onClick={onClick}
-        disabled={disabled}
-        style={{
-          width: '100%',
-          padding: '16px',
-          borderRadius: 12,
-          background: disabled ? '#0d2d2d' : 'linear-gradient(135deg, #14b8a6, #0d9488)',
-          border: 'none',
-          color: 'white',
-          fontWeight: 700,
-          fontSize: 15,
-          letterSpacing: 0.5,
-          cursor: disabled ? 'not-allowed' : 'pointer',
-          boxShadow: '0 4px 20px rgba(20,184,166,0.25)',
-        }}
-      >
-        {label}
-      </button>
-    </div>
-  );
-}
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 interface StandaloneVault {
@@ -135,6 +43,7 @@ interface VaultApiResponse {
   message?: string;
 }
 
+// ─── Init Form State ──────────────────────────────────────────────────────────
 interface InitForm {
   target_amount: string;
   installment_amount: string;
@@ -153,10 +62,12 @@ function getToken(): string | null {
   return localStorage.getItem('token') || sessionStorage.getItem('token');
 }
 
+// ─── Formatters ───────────────────────────────────────────────────────────────
 const fmt = (n: number) =>
   new Intl.NumberFormat('en-NG', { style: 'currency', currency: 'NGN', minimumFractionDigits: 2 }).format(n);
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
+
 function ProgressRing({ pct }: { pct: number }) {
   const r = 54;
   const circ = 2 * Math.PI * r;
@@ -198,8 +109,8 @@ function StatCard({ label, value, sub }: { label: string; value: string; sub?: s
   );
 }
 
-// ─── Init Form Component ──────────────────────────────────────────────────────
-function InitVaultForm({ onSuccess, triggerSubmitRef }: { onSuccess: () => void; triggerSubmitRef: { current: (() => void) | null } }) {
+// ─── Init Form ────────────────────────────────────────────────────────────────
+function InitVaultForm({ onSuccess }: { onSuccess: () => void }) {
   const [form, setForm] = useState<InitForm>({
     target_amount: '',
     installment_amount: '',
@@ -252,12 +163,6 @@ function InitVaultForm({ onSuccess, triggerSubmitRef }: { onSuccess: () => void;
     }
   };
 
-  // Bind execution pipeline to ref trigger for mobile button action tracking
-  useEffect(() => {
-    triggerSubmitRef.current = handleSubmit;
-    return () => { triggerSubmitRef.current = null; };
-  }, [form]);
-
   const inputStyle: React.CSSProperties = {
     width: '100%', background: '#0d1f1f', border: '1px solid rgba(20,184,166,0.2)',
     borderRadius: 8, padding: '11px 14px', color: 'white', fontSize: 14,
@@ -272,8 +177,9 @@ function InitVaultForm({ onSuccess, triggerSubmitRef }: { onSuccess: () => void;
     <div style={{
       background: 'linear-gradient(135deg, #0d1f1f 0%, #0a1a1a 100%)',
       border: '1px solid rgba(20,184,166,0.25)',
-      borderRadius: 16, padding: 32, marginBottom: 80, // buffer zone for mobile sticky action items
+      borderRadius: 16, padding: 32,
     }}>
+      {/* Header */}
       <div style={{ marginBottom: 28 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10 }}>
           <div style={{
@@ -292,10 +198,11 @@ function InitVaultForm({ onSuccess, triggerSubmitRef }: { onSuccess: () => void;
           background: 'rgba(20,184,166,0.08)', border: '1px solid rgba(20,184,166,0.15)',
           borderRadius: 8, padding: '10px 14px', fontSize: 12, color: '#14b8a6', lineHeight: 1.5,
         }}>
-          💡 Your savings are held securely in Paystack escrow. When your landlord onboards, funds auto-release to them. You can also add their bank details now to pre-configure the payout.
+          💡 Your savings are held in Paystack escrow. When your landlord onboards, funds auto-release to them. You can also add their bank details now to pre-configure the payout.
         </div>
       </div>
 
+      {/* Core Fields */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
         <div>
           <label style={labelStyle}>Target Amount (₦) *</label>
@@ -317,6 +224,7 @@ function InitVaultForm({ onSuccess, triggerSubmitRef }: { onSuccess: () => void;
         </select>
       </div>
 
+      {/* Landlord Section — Optional */}
       <div style={{ marginBottom: 20 }}>
         <button
           onClick={() => setShowLandlord(!showLandlord)}
@@ -370,16 +278,31 @@ function InitVaultForm({ onSuccess, triggerSubmitRef }: { onSuccess: () => void;
           borderRadius: 8, padding: '10px 14px', color: '#ef4444', fontSize: 13, marginBottom: 16,
         }}>{error}</div>
       )}
+
+      <button
+        onClick={handleSubmit}
+        disabled={loading}
+        style={{
+          width: '100%', padding: '14px', borderRadius: 10,
+          background: loading ? '#0d2d2d' : 'linear-gradient(135deg, #14b8a6, #0d9488)',
+          border: 'none', color: 'white', fontWeight: 700, fontSize: 15,
+          cursor: loading ? 'not-allowed' : 'pointer', letterSpacing: 0.5,
+          transition: 'all 0.2s',
+        }}
+      >
+        {loading ? '⏳ Initializing Vault...' : '🚀 Initialize My Savings Vault'}
+      </button>
     </div>
   );
 }
 
-// ─── Active Vault Display Component ──────────────────────────────────────────
+// ─── Active Vault Display (Standalone) ───────────────────────────────────────
 function StandaloneVaultDisplay({ vault, onPay }: { vault: StandaloneVault; onPay: () => void }) {
   const statusColor = vault.status === 'FUNDED_READY' ? '#10b981' : vault.status === 'ACTIVE' ? '#14b8a6' : '#f59e0b';
 
   return (
-    <div style={{ marginBottom: 80 }}>
+    <div>
+      {/* Status Banner */}
       {vault.status === 'FUNDED_READY' && (
         <div style={{
           background: 'rgba(16,185,129,0.12)', border: '1px solid rgba(16,185,129,0.3)',
@@ -394,6 +317,7 @@ function StandaloneVaultDisplay({ vault, onPay }: { vault: StandaloneVault; onPa
         </div>
       )}
 
+      {/* Main Vault Card */}
       <div style={{
         background: 'linear-gradient(135deg, #0d1f1f 0%, #0a1a1a 100%)',
         border: `1px solid ${statusColor}30`,
@@ -416,12 +340,14 @@ function StandaloneVaultDisplay({ vault, onPay }: { vault: StandaloneVault; onPa
           </div>
         </div>
 
+        {/* Stats Grid */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 20 }}>
           <StatCard label="Total Saved" value={fmt(vault.total_contributed)} sub={`${vault.contribution_count} payments`} />
           <StatCard label="Installment" value={fmt(vault.installment_amount)} sub={vault.frequency.toLowerCase()} />
           <StatCard label="Status" value={vault.status.replace('_', ' ')} sub={vault.funded_periods > 0 ? `${vault.funded_periods} period(s) funded` : 'Saving in progress'} />
         </div>
 
+        {/* Landlord Payout Config */}
         {vault.landlord_name || vault.landlord_email ? (
           <div style={{
             background: 'rgba(20,184,166,0.06)', border: '1px solid rgba(20,184,166,0.15)',
@@ -451,15 +377,31 @@ function StandaloneVaultDisplay({ vault, onPay }: { vault: StandaloneVault; onPa
           </div>
         )}
 
+        {/* Vault ID */}
         <div style={{ color: '#374151', fontSize: 11, fontFamily: 'monospace' }}>
           VAULT · {vault.id} · {new Date(vault.created_at).toLocaleDateString('en-NG')}
         </div>
       </div>
+
+      {/* CTA */}
+      {vault.status !== 'FUNDED_READY' && (
+        <button
+          onClick={onPay}
+          style={{
+            width: '100%', padding: '14px', borderRadius: 10,
+            background: 'linear-gradient(135deg, #14b8a6, #0d9488)',
+            border: 'none', color: 'white', fontWeight: 700, fontSize: 15,
+            cursor: 'pointer', letterSpacing: 0.5,
+          }}
+        >
+          ⚡ Make a Contribution — {fmt(vault.installment_amount)}
+        </button>
+      )}
     </div>
   );
 }
 
-// ─── Linked Vault Display Component ──────────────────────────────────────────
+// ─── Linked Vault Display (standard tenancy) ──────────────────────────────────
 function LinkedVaultDisplay({ vault }: { vault: LinkedVault }) {
   return (
     <div style={{
@@ -489,15 +431,12 @@ function LinkedVaultDisplay({ vault }: { vault: LinkedVault }) {
   );
 }
 
-// ─── Main Page Shell Layer ───────────────────────────────────────────────────
+// ─── Main Page ────────────────────────────────────────────────────────────────
 export default function TenantVaultPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState<VaultApiResponse | null>(null);
   const [error, setError] = useState('');
-
-  // Execution anchor used by programmatic structural component mapping
-  const formSubmitRef = useState<{ current: (() => void) | null }>({ current: null })[0];
 
   const fetchVault = async () => {
     setLoading(true);
@@ -519,27 +458,18 @@ export default function TenantVaultPage() {
   useEffect(() => { fetchVault(); }, []);
 
   if (loading) return (
-    <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh', background: '#050d0d' }}>
-      <NavBar />
-      <div style={{ display: 'flex', flex: 1, alignItems: 'center', justifyContent: 'center', color: '#14b8a6', fontSize: 14 }}>
-        <span style={{ fontFamily: 'monospace' }}>⟳ Loading core vault matrix...</span>
-      </div>
-      <Footer />
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '60vh', color: '#14b8a6', fontSize: 14 }}>
+      <span style={{ fontFamily: 'monospace' }}>⟳ Loading vault...</span>
     </div>
   );
 
   if (error) return (
-    <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh', background: '#050d0d' }}>
-      <NavBar />
-      <div style={{ padding: 24, color: '#ef4444', fontSize: 14, maxWidth: 720, margin: '40px auto' }}>Error: {error}</div>
-      <Footer />
-    </div>
+    <div style={{ padding: 24, color: '#ef4444', fontSize: 14 }}>Error: {error}</div>
   );
 
   const shell: React.CSSProperties = {
-    maxWidth: 720, margin: '0 auto', padding: '40px 20px', width: '100%', boxSizing: 'border-box'
+    maxWidth: 720, margin: '0 auto', padding: '24px 20px',
   };
-
   const pageHeader = (
     <div style={{ marginBottom: 28 }}>
       <div style={{ color: '#6b7280', fontSize: 11, letterSpacing: 2, textTransform: 'uppercase', marginBottom: 6 }}>
@@ -552,95 +482,84 @@ export default function TenantVaultPage() {
     </div>
   );
 
+  // ── Case 1: Linked tenancy with vault ────────────────────────────────────
+  if (data?.hasActiveTenancy && data.vault) {
+    return (
+      <div style={shell}>
+        {pageHeader}
+        <LinkedVaultDisplay vault={data.vault} />
+        <div style={{ marginTop: 16, textAlign: 'center' }}>
+          <a href="/tenant/contributions" style={{ color: '#14b8a6', fontSize: 13, textDecoration: 'none' }}>
+            View All Contributions →
+          </a>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Case 2: Linked tenancy but no vault yet (landlord hasn't set one up) ─
+  if (data?.hasActiveTenancy && !data.vault) {
+    return (
+      <div style={shell}>
+        {pageHeader}
+        <div style={{
+          background: 'linear-gradient(135deg, #0d1f1f, #0a1a1a)',
+          border: '1px solid rgba(20,184,166,0.2)', borderRadius: 16, padding: 32, textAlign: 'center',
+        }}>
+          <div style={{ fontSize: 40, marginBottom: 16 }}>🔄</div>
+          <div style={{ color: 'white', fontWeight: 600, fontSize: 16, marginBottom: 8 }}>Property Linked — Vault Pending</div>
+          <div style={{ color: '#6b7280', fontSize: 13 }}>
+            Your landlord is setting up your Flex-Pay vault. You will be notified as soon as it is activated.
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Case 3: No tenancy but HAS a standalone vault ─────────────────────────
+  if (!data?.hasActiveTenancy && data?.standalone_vault) {
+    return (
+      <div style={shell}>
+        {pageHeader}
+        <StandaloneVaultDisplay
+          vault={data.standalone_vault}
+          onPay={() => router.push('/tenant/pay')}
+        />
+        <div style={{ marginTop: 16, textAlign: 'center' }}>
+          <a href="/tenant/contributions" style={{ color: '#14b8a6', fontSize: 13, textDecoration: 'none' }}>
+            View All Contributions →
+          </a>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Case 4: No tenancy, no standalone vault — show Init form ─────────────
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh', background: '#050d0d', color: 'white' }}>
-      <NavBar />
+    <div style={shell}>
+      {pageHeader}
 
-      <main style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-        {/* Case 1: Linked tenancy with active vault */}
-        {data?.hasActiveTenancy && data.vault && (
-          <div style={shell}>
-            {pageHeader}
-            <LinkedVaultDisplay vault={data.vault} />
-            <div style={{ marginTop: 24, textAlign: 'center' }}>
-              <Link href="/tenant/contributions" style={{ color: '#14b8a6', fontSize: 13, textDecoration: 'none' }}>
-                View All Contributions →
-              </Link>
-            </div>
+      {/* Feature highlights */}
+      <div style={{
+        display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 24,
+      }}>
+        {[
+          { icon: '🔒', label: 'Escrow-held' },
+          { icon: '📅', label: 'Your rhythm' },
+          { icon: '⚡', label: 'Auto-disburse' },
+          { icon: '🧾', label: 'SHA-256 receipts' },
+        ].map(({ icon, label }) => (
+          <div key={label} style={{
+            background: 'rgba(20,184,166,0.06)', border: '1px solid rgba(20,184,166,0.12)',
+            borderRadius: 10, padding: '12px 8px', textAlign: 'center',
+          }}>
+            <div style={{ fontSize: 20, marginBottom: 4 }}>{icon}</div>
+            <div style={{ color: '#9ca3af', fontSize: 11 }}>{label}</div>
           </div>
-        )}
+        ))}
+      </div>
 
-        {/* Case 2: Linked tenancy, setup pending */}
-        {data?.hasActiveTenancy && !data.vault && (
-          <div style={shell}>
-            {pageHeader}
-            <div style={{
-              background: 'linear-gradient(135deg, #0d1f1f, #0a1a1a)',
-              border: '1px solid rgba(20,184,166,0.2)', borderRadius: 16, padding: 32, textAlign: 'center',
-            }}>
-              <div style={{ fontSize: 40, marginBottom: 16 }}>🔄</div>
-              <div style={{ color: 'white', fontWeight: 600, fontSize: 16, marginBottom: 8 }}>Property Linked — Vault Pending</div>
-              <div style={{ color: '#6b7280', fontSize: 13 }}>
-                Your landlord is setting up your Flex-Pay vault. You will be notified as soon as it is activated.
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Case 3: Standalone structural setup */}
-        {!data?.hasActiveTenancy && data?.standalone_vault && (
-          <div style={shell}>
-            {pageHeader}
-            <StandaloneVaultDisplay
-              vault={data.standalone_vault}
-              onPay={() => router.push('/tenant/pay')}
-            />
-            <div style={{ marginTop: 24, textAlign: 'center' }}>
-              <Link href="/tenant/contributions" style={{ color: '#14b8a6', fontSize: 13, textDecoration: 'none' }}>
-                View All Contributions →
-              </Link>
-            </div>
-            {data.standalone_vault.status !== 'FUNDED_READY' && (
-              <MobileBottomButton 
-                label={`⚡ Make Contribution — ${fmt(data.standalone_vault.installment_amount)}`} 
-                onClick={() => router.push('/tenant/pay')} 
-              />
-            )}
-          </div>
-        )}
-
-        {/* Case 4: No vault active — Init parameters onboarding mapping */}
-        {!data?.hasActiveTenancy && !data?.standalone_vault && (
-          <div style={shell}>
-            {pageHeader}
-
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 24 }}>
-              {[
-                { icon: '🔒', label: 'Escrow-held' },
-                { icon: '📅', label: 'Your rhythm' },
-                { icon: '⚡', label: 'Auto-disburse' },
-                { icon: '🧾', label: 'Secure Ledger' },
-              ].map(({ icon, label }) => (
-                <div key={label} style={{
-                  background: 'rgba(20,184,166,0.06)', border: '1px solid rgba(20,184,166,0.12)',
-                  borderRadius: 10, padding: '12px 8px', textAlign: 'center',
-                }}>
-                  <div style={{ fontSize: 20, marginBottom: 4 }}>{icon}</div>
-                  <div style={{ color: '#9ca3af', fontSize: 11 }}>{label}</div>
-                </div>
-              ))}
-            </div>
-
-            <InitVaultForm onSuccess={fetchVault} triggerSubmitRef={formSubmitRef} />
-            <MobileBottomButton 
-              label="🚀 Initialize My Savings Vault" 
-              onClick={() => { if (formSubmitRef.current) formSubmitRef.current(); }} 
-            />
-          </div>
-        )}
-      </main>
-
-      <Footer />
+      <InitVaultForm onSuccess={fetchVault} />
     </div>
   );
 }

@@ -1,10 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-// ─── Imports added for layout framework ─────────────────────────────────────
-import Navbar from '@/components/Navbar';
-import Footer from '@/components/Footer';
-import MobileBottomNav from '@/components/navigation/MobileBottomNav';
 
 const API_BASE = '/api';
 
@@ -138,13 +134,8 @@ export default function PayInstallmentPage() {
   // ── Loading ───────────────────────────────────────────────────────────────
   if (flow === 'loading') {
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh', background: '#050505' }}>
-        <Navbar />
-        <div style={{ flexGrow: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <span style={{ color: '#14b8a6', fontFamily: 'monospace', fontSize: 14 }}>⟳ Loading vault...</span>
-        </div>
-        <Footer />
-        <MobileBottomNav />
+      <div style={{ ...shell, display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '60vh' }}>
+        <span style={{ color: '#14b8a6', fontFamily: 'monospace', fontSize: 14 }}>⟳ Loading vault...</span>
       </div>
     );
   }
@@ -152,16 +143,11 @@ export default function PayInstallmentPage() {
   // ── Error ─────────────────────────────────────────────────────────────────
   if (flow === 'error') {
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh', background: '#050505' }}>
-        <Navbar />
-        <div style={{ flexGrow: 1, ...shell }}>
-          {pageHeader}
-          <div style={{ ...card, borderColor: 'rgba(239,68,68,0.3)', color: '#ef4444', fontSize: 14 }}>
-            ⚠️ {error || 'Something went wrong. Please refresh and try again.'}
-          </div>
+      <div style={shell}>
+        {pageHeader}
+        <div style={{ ...card, borderColor: 'rgba(239,68,68,0.3)', color: '#ef4444', fontSize: 14 }}>
+          ⚠️ {error || 'Something went wrong. Please refresh and try again.'}
         </div>
-        <Footer />
-        <MobileBottomNav />
       </div>
     );
   }
@@ -169,197 +155,185 @@ export default function PayInstallmentPage() {
   // ── No vault — redirect to init ───────────────────────────────────────────
   if (flow === 'no_vault') {
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh', background: '#050505' }}>
-        <Navbar />
-        <div style={{ flexGrow: 1, ...shell }}>
-          {pageHeader}
-          <div style={{ ...card, textAlign: 'center' }}>
-            <div style={{ fontSize: 48, marginBottom: 16 }}>🏦</div>
-            <h3 style={{ margin: '0 0 10px', color: 'white', fontWeight: 700 }}>No Active Vault Found</h3>
-            <p style={{ color: '#6b7280', fontSize: 14, lineHeight: 1.6, marginBottom: 24 }}>
-              Initialize your personal savings vault to start contributing toward rent.
-              No landlord required — you control your own savings timeline.
-            </p>
-            <button
-              onClick={() => router.push('/tenant/vault')}
-              style={{
-                padding: '12px 28px', borderRadius: 10,
-                background: 'linear-gradient(135deg, #14b8a6, #0d9488)',
-                border: 'none', color: 'white', fontWeight: 700, fontSize: 14,
-                cursor: 'pointer',
-              }}
-            >
-              🚀 Initialize My Vault
-            </button>
-            <div style={{ marginTop: 16 }}>
-              <a href="/tenant/dashboard" style={{ color: '#4b5563', fontSize: 12, textDecoration: 'none' }}>
-                ← Back to Dashboard
-              </a>
-            </div>
+      <div style={shell}>
+        {pageHeader}
+        <div style={{ ...card, textAlign: 'center' }}>
+          <div style={{ fontSize: 48, marginBottom: 16 }}>🏦</div>
+          <h3 style={{ margin: '0 0 10px', color: 'white', fontWeight: 700 }}>No Active Vault Found</h3>
+          <p style={{ color: '#6b7280', fontSize: 14, lineHeight: 1.6, marginBottom: 24 }}>
+            Initialize your personal savings vault to start contributing toward rent.
+            No landlord required — you control your own savings timeline.
+          </p>
+          <button
+            onClick={() => router.push('/tenant/vault')}
+            style={{
+              padding: '12px 28px', borderRadius: 10,
+              background: 'linear-gradient(135deg, #14b8a6, #0d9488)',
+              border: 'none', color: 'white', fontWeight: 700, fontSize: 14,
+              cursor: 'pointer',
+            }}
+          >
+            🚀 Initialize My Vault
+          </button>
+          <div style={{ marginTop: 16 }}>
+            <a href="/tenant/dashboard" style={{ color: '#4b5563', fontSize: 12, textDecoration: 'none' }}>
+              ← Back to Dashboard
+            </a>
           </div>
         </div>
-        <Footer />
-        <MobileBottomNav />
       </div>
     );
   }
 
   // ── Payment Form (linked_vault OR standalone_vault) ───────────────────────
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh', background: '#050505' }}>
-      <Navbar />
-      
-      <div style={{ flexGrow: 1, ...shell }}>
-        {pageHeader}
+    <div style={shell}>
+      {pageHeader}
 
-        {/* Vault Summary */}
-        {vault && (
-          <div style={{
-            background: 'rgba(20,184,166,0.06)', border: '1px solid rgba(20,184,166,0.15)',
-            borderRadius: 12, padding: '16px 20px', marginBottom: 20,
-            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+      {/* Vault Summary */}
+      {vault && (
+        <div style={{
+          background: 'rgba(20,184,166,0.06)', border: '1px solid rgba(20,184,166,0.15)',
+          borderRadius: 12, padding: '16px 20px', marginBottom: 20,
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+        }}>
+          <div>
+            <div style={{ color: '#6b7280', fontSize: 11, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 4 }}>
+              {vault.isStandalone ? 'Independent Savings Vault' : 'Flex-Pay Vault'}
+            </div>
+            <div style={{ color: 'white', fontSize: 16, fontWeight: 700, fontFamily: 'monospace' }}>
+              {fmt(vault.vault_balance)} / {fmt(vault.target_amount)}
+            </div>
+            <div style={{ color: '#6b7280', fontSize: 12, marginTop: 2 }}>
+              {vault.funded_pct}% funded · {vault.frequency.toLowerCase()}
+            </div>
+          </div>
+          {/* Mini progress bar */}
+          <div style={{ width: 80 }}>
+            <div style={{ height: 6, background: '#1a2a2a', borderRadius: 3, overflow: 'hidden' }}>
+              <div style={{
+                height: '100%', width: `${vault.funded_pct}%`,
+                background: vault.funded_pct >= 100 ? '#10b981' : '#14b8a6',
+                borderRadius: 3, transition: 'width 0.5s ease',
+              }} />
+            </div>
+            <div style={{ color: '#6b7280', fontSize: 10, textAlign: 'center', marginTop: 4 }}>
+              {vault.funded_pct}%
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Payment Card */}
+      <div style={card}>
+        <div style={{ marginBottom: 20 }}>
+          <label style={{
+            display: 'block', color: '#9ca3af', fontSize: 11,
+            letterSpacing: 1, textTransform: 'uppercase', marginBottom: 8,
           }}>
-            <div>
-              <div style={{ color: '#6b7280', fontSize: 11, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 4 }}>
-                {vault.isStandalone ? 'Independent Savings Vault' : 'Flex-Pay Vault'}
-              </div>
-              <div style={{ color: 'white', fontSize: 16, fontWeight: 700, fontFamily: 'monospace' }}>
-                {fmt(vault.vault_balance)} / {fmt(vault.target_amount)}
-              </div>
-              <div style={{ color: '#6b7280', fontSize: 12, marginTop: 2 }}>
-                {vault.funded_pct}% funded · {vault.frequency.toLowerCase()}
-              </div>
+            Contribution Amount (₦)
+          </label>
+
+          {/* Quick amount buttons */}
+          {vault && (
+            <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+              {[vault.installment_amount, vault.installment_amount * 2, vault.installment_amount * 0.5]
+                .filter(v => v >= 50)
+                .map(v => (
+                  <button
+                    key={v}
+                    onClick={() => setAmount(String(v))}
+                    style={{
+                      padding: '6px 14px', borderRadius: 6, fontSize: 12,
+                      background: Number(amount) === v ? 'rgba(20,184,166,0.25)' : 'rgba(20,184,166,0.08)',
+                      border: `1px solid ${Number(amount) === v ? '#14b8a6' : 'rgba(20,184,166,0.2)'}`,
+                      color: Number(amount) === v ? '#14b8a6' : '#9ca3af',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {fmt(v)}
+                  </button>
+                ))}
             </div>
-            {/* Mini progress bar */}
-            <div style={{ width: 80 }}>
-              <div style={{ height: 6, background: '#1a2a2a', borderRadius: 3, overflow: 'hidden' }}>
-                <div style={{
-                  height: '100%', width: `${vault.funded_pct}%`,
-                  background: vault.funded_pct >= 100 ? '#10b981' : '#14b8a6',
-                  borderRadius: 3, transition: 'width 0.5s ease',
-                }} />
-              </div>
-              <div style={{ color: '#6b7280', fontSize: 10, textAlign: 'center', marginTop: 4 }}>
-                {vault.funded_pct}%
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Payment Card */}
-        <div style={card}>
-          <div style={{ marginBottom: 20 }}>
-            <label style={{
-              display: 'block', color: '#9ca3af', fontSize: 11,
-              letterSpacing: 1, textTransform: 'uppercase', marginBottom: 8,
-            }}>
-              Contribution Amount (₦)
-            </label>
-
-            {/* Quick amount buttons */}
-            {vault && (
-              <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
-                {[vault.installment_amount, vault.installment_amount * 2, vault.installment_amount * 0.5]
-                  .filter(v => v >= 50)
-                  .map(v => (
-                    <button
-                      key={v}
-                      onClick={() => setAmount(String(v))}
-                      style={{
-                        padding: '6px 14px', borderRadius: 6, fontSize: 12,
-                        background: Number(amount) === v ? 'rgba(20,184,166,0.25)' : 'rgba(20,184,166,0.08)',
-                        border: `1px solid ${Number(amount) === v ? '#14b8a6' : 'rgba(20,184,166,0.2)'}`,
-                        color: Number(amount) === v ? '#14b8a6' : '#9ca3af',
-                        cursor: 'pointer',
-                      }}
-                    >
-                      {fmt(v)}
-                    </button>
-                  ))}
-              </div>
-            )}
-
-            <input
-              type="number"
-              value={amount}
-              onChange={e => setAmount(e.target.value)}
-              placeholder="Enter amount"
-              style={{
-                width: '100%', background: '#0d1f1f',
-                border: '1px solid rgba(20,184,166,0.2)', borderRadius: 8,
-                padding: '12px 14px', color: 'white', fontSize: 18,
-                outline: 'none', fontFamily: 'monospace', boxSizing: 'border-box',
-              }}
-            />
-          </div>
-
-          {/* Fee note */}
-          <div style={{
-            background: 'rgba(20,184,166,0.06)', borderRadius: 8,
-            padding: '10px 14px', marginBottom: 20,
-            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-          }}>
-            <div>
-              <div style={{ color: '#9ca3af', fontSize: 12 }}>You pay exactly</div>
-              <div style={{ color: 'white', fontWeight: 700, fontFamily: 'monospace', fontSize: 20 }}>
-                {amount && !isNaN(Number(amount)) ? fmt(Number(amount)) : '₦0.00'}
-              </div>
-            </div>
-            <div style={{ textAlign: 'right' }}>
-              <div style={{ color: '#14b8a6', fontSize: 11 }}>Platform covers Paystack fee</div>
-              <div style={{ color: '#6b7280', fontSize: 11 }}>Funds held in escrow · 2% platform fee at release</div>
-            </div>
-          </div>
-
-          {error && (
-            <div style={{
-              background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)',
-              borderRadius: 8, padding: '10px 14px', color: '#ef4444',
-              fontSize: 13, marginBottom: 16,
-            }}>{error}</div>
           )}
 
-          {statusMsg && (
-            <div style={{
-              background: 'rgba(20,184,166,0.1)', border: '1px solid rgba(20,184,166,0.3)',
-              borderRadius: 8, padding: '10px 14px', color: '#14b8a6',
-              fontSize: 13, marginBottom: 16,
-            }}>{statusMsg}</div>
-          )}
-
-          <button
-            onClick={handlePay}
-            disabled={paying || !amount || Number(amount) < 50}
+          <input
+            type="number"
+            value={amount}
+            onChange={e => setAmount(e.target.value)}
+            placeholder="Enter amount"
             style={{
-              width: '100%', padding: 14, borderRadius: 10,
-              background: (paying || !amount || Number(amount) < 50)
-                ? '#0d2d2d'
-                : 'linear-gradient(135deg, #14b8a6, #0d9488)',
-              border: 'none', color: 'white', fontWeight: 700, fontSize: 15,
-              cursor: (paying || !amount || Number(amount) < 50) ? 'not-allowed' : 'pointer',
-              letterSpacing: 0.5,
+              width: '100%', background: '#0d1f1f',
+              border: '1px solid rgba(20,184,166,0.2)', borderRadius: 8,
+              padding: '12px 14px', color: 'white', fontSize: 18,
+              outline: 'none', fontFamily: 'monospace', boxSizing: 'border-box',
             }}
-          >
-            {paying ? '⏳ Preparing Paystack...' : `⚡ Pay ${amount && !isNaN(Number(amount)) ? fmt(Number(amount)) : ''} via Paystack`}
-          </button>
+          />
+        </div>
 
-          <div style={{ marginTop: 16, textAlign: 'center' }}>
-            <a href="/tenant/vault" style={{ color: '#4b5563', fontSize: 12, textDecoration: 'none' }}>
-              ← Back to Vault
-            </a>
+        {/* Fee note */}
+        <div style={{
+          background: 'rgba(20,184,166,0.06)', borderRadius: 8,
+          padding: '10px 14px', marginBottom: 20,
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+        }}>
+          <div>
+            <div style={{ color: '#9ca3af', fontSize: 12 }}>You pay exactly</div>
+            <div style={{ color: 'white', fontWeight: 700, fontFamily: 'monospace', fontSize: 20 }}>
+              {amount && !isNaN(Number(amount)) ? fmt(Number(amount)) : '₦0.00'}
+            </div>
+          </div>
+          <div style={{ textAlign: 'right' }}>
+            <div style={{ color: '#14b8a6', fontSize: 11 }}>Platform covers Paystack fee</div>
+            <div style={{ color: '#6b7280', fontSize: 11 }}>Funds held in escrow · 2% platform fee at release</div>
           </div>
         </div>
 
-        {/* SHA note */}
-        <div style={{
-          marginTop: 16, textAlign: 'center', color: '#374151', fontSize: 11, fontFamily: 'monospace',
-        }}>
-          🔐 SHA-256 receipt issued on payment confirmation
+        {error && (
+          <div style={{
+            background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)',
+            borderRadius: 8, padding: '10px 14px', color: '#ef4444',
+            fontSize: 13, marginBottom: 16,
+          }}>{error}</div>
+        )}
+
+        {statusMsg && (
+          <div style={{
+            background: 'rgba(20,184,166,0.1)', border: '1px solid rgba(20,184,166,0.3)',
+            borderRadius: 8, padding: '10px 14px', color: '#14b8a6',
+            fontSize: 13, marginBottom: 16,
+          }}>{statusMsg}</div>
+        )}
+
+        <button
+          onClick={handlePay}
+          disabled={paying || !amount || Number(amount) < 50}
+          style={{
+            width: '100%', padding: 14, borderRadius: 10,
+            background: (paying || !amount || Number(amount) < 50)
+              ? '#0d2d2d'
+              : 'linear-gradient(135deg, #14b8a6, #0d9488)',
+            border: 'none', color: 'white', fontWeight: 700, fontSize: 15,
+            cursor: (paying || !amount || Number(amount) < 50) ? 'not-allowed' : 'pointer',
+            letterSpacing: 0.5,
+          }}
+        >
+          {paying ? '⏳ Preparing Paystack...' : `⚡ Pay ${amount && !isNaN(Number(amount)) ? fmt(Number(amount)) : ''} via Paystack`}
+        </button>
+
+        <div style={{ marginTop: 16, textAlign: 'center' }}>
+          <a href="/tenant/vault" style={{ color: '#4b5563', fontSize: 12, textDecoration: 'none' }}>
+            ← Back to Vault
+          </a>
         </div>
       </div>
 
-      <Footer />
-      <MobileBottomNav />
+      {/* SHA note */}
+      <div style={{
+        marginTop: 16, textAlign: 'center', color: '#374151', fontSize: 11, fontFamily: 'monospace',
+      }}>
+        🔐 SHA-256 receipt issued on payment confirmation
+      </div>
     </div>
   );
 }
