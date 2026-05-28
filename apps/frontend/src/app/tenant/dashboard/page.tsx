@@ -1,733 +1,969 @@
 'use client';
-export const dynamic = 'force-dynamic';
-
-/**
- * /tenant/dashboard/page.tsx
- *
- * MERGED: new single-endpoint architecture + full old robustness features.
- *
- * DATA: single GET /api/tenant/dashboard call — returns hasActiveTenancy,
- *       tenancy, vault, standalone_vault, onboarding_steps, recent_payments,
- *       active_notice_count, next_due_date, profile.
- *
- * STATE A — LINKED TENANT  (hasActiveTenancy === true)
- *   Active notice banner, unit card, escrow ring, vault stats, escrow seal,
- *   rhythm card, KPI strip, 4-card quick actions, recent payments, notices list.
- *
- * STATE B — INDEPENDENT TENANT  (hasActiveTenancy === false)
- *   Onboarding progress (server-driven steps), standalone vault or init CTA,
- *   recent payments, vault feature highlights, marketplace shortcuts.
- */
-
-import { useEffect, useState, Suspense } from 'react';
-import Link from 'next/link';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import Navbar from '@/components/Navbar';
-import Footer from '@/components/Footer';
-import { useAuth } from '@/lib/AuthContext';
-import api from '@/lib/api';
-import {
-  DollarSign, Calendar, ShieldCheck, Loader2, AlertCircle,
-  TrendingUp, ArrowRight, Bell, CheckCircle2, Star,
-  FileText, Building2, Gavel, Lock, Search, MapPin,
-  Zap, Home, Wallet,
-} from 'lucide-react';
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-const safeN = (v: any) => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
-const safeF = (v: any) => safeN(v).toLocaleString();
-const fmt   = (n: number) =>
-  new Intl.NumberFormat('en-NG', { style: 'currency', currency: 'NGN', minimumFractionDigits: 2 }).format(n);
+const API_BASE = '/api';
 
-// ── TypeScript interfaces (from new) ─────────────────────────────────────────
+function getToken(): string | null {
+  if (typeof window === 'undefined') return null;
+  return localStorage.getItem('token') || sessionStorage.getItem('token');
+}
+
+const fmt = (n: number) =>
+  new Intl.NumberFormat('en-NG', {
+    style: 'currency',
+    currency: 'NGN',
+    minimumFractionDigits: 2,
+  }).format(n);
+
+const fmtDate = (d: string | null) => {
+  if (!d) return '—';
+  return new Date(d).toLocaleDateString('en-NG', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+  });
+};
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+type TenantType = 'linked' | 'standalone' | 'none';
+
+interface VaultData {
+  id: string;
+  vault_balance: number;
+  target_amount: number;
+  installment_amount: number;
+  funded_pct: number;
+  status: string;
+  frequency: string;
+  total_contributed: number;
+  contribution_count?: number;
+  landlord_name?: string | null;
+  landlord_email?: string | null;
+  currency?: string;
+}
+
+interface TenancyData {
+  id: string;
+  tenant_name: string;
+  tenant_email: string;
+  unit_name: string;
+  unit_type: string;
+  project_title: string;
+  project_number: string;
+  location: string;
+  lease_start: string;
+  lease_end: string;
+  rent_amount: number;
+  currency: string;
+  payment_frequency: string;
+  status: string;
+}
+
+interface PaymentRow {
+  id: string;
+  amount_ngn: number;
+  status: string;
+  period_month?: string;
+  period_label?: string;
+  paid_at: string | null;
+  ledger_hash?: string | null;
+}
+
+interface MaintenanceRow {
+  id: string;
+  title: string;
+  category: string;
+  severity: string;
+  status: string;
+  created_at: string;
+}
+
 interface OnboardingStep {
-  key:    string;
-  label:  string;
-  status: 'done' | 'skipped' | 'pending';
+  key: string;
+  label: string;
+  status: 'done' | 'pending' | 'skipped';
 }
 
-interface StandaloneVaultSummary {
-  id:                 string;
-  vault_balance:      number;
-  target_amount:      number;
-  installment_amount: number;
-  funded_pct:         number;
-  frequency:          string;
-  status:             string;
-  total_contributed:  number;
-  contribution_count: number;
-  landlord_name:      string | null;
-  landlord_email:     string | null;
-}
-
-interface LinkedVaultSummary {
-  id:                 string;
-  vault_balance:      number;
-  target_amount:      number;
-  installment_amount: number;
-  funded_pct:         number;
-  frequency:          string;
-  status:             string;
-  total_contributed:  number;
-  next_due_date?:     string | null;
-  currency?:          string;
+interface ProfileData {
+  user_id: string;
+  email: string | null;
+  full_name: string | null;
+  phone: string | null;
+  created_at: string | null;
 }
 
 interface DashboardData {
-  success:             boolean;
-  hasActiveTenancy:    boolean;
-  tenancy:             any | null;
-  vault:               LinkedVaultSummary | null;
-  standalone_vault:    StandaloneVaultSummary | null;
-  next_due_date:       string | null;
+  hasActiveTenancy: boolean;
+  tenancy: TenancyData | null;
+  vault: VaultData | null;
+  standalone_vault: VaultData | null;
+  next_due_date: string | null;
   active_notice_count: number;
-  recent_payments:     any[];
-  recent_maintenance:  any[];
-  recent_notices:      any[];
-  profile: {
-    user_id:    string;
-    email:      string;
-    full_name:  string;
-    phone:      string;
-    created_at: string;
-  };
-  onboarding_steps: OnboardingStep[];
+  recent_payments: PaymentRow[];
+  recent_maintenance: MaintenanceRow[];
+  profile?: ProfileData;
+  onboarding_steps?: OnboardingStep[];
   message?: string;
 }
 
-// ── EscrowRing (from old — animated SVG ring) ─────────────────────────────────
-function EscrowRing({ pct, balance, target, currency }: {
-  pct: number; balance: number; target: number; currency: string;
-}) {
-  const r    = 52;
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+const STATUS_COLOR: Record<string, string> = {
+  SUCCESS:   '#10b981',
+  PENDING:   '#f59e0b',
+  FAILED:    '#ef4444',
+  UNKNOWN:   '#6b7280',
+};
+
+const SEVERITY_COLOR: Record<string, string> = {
+  HIGH:     '#ef4444',
+  MEDIUM:   '#f59e0b',
+  LOW:      '#10b981',
+  CRITICAL: '#dc2626',
+};
+
+function StatusBadge({ status }: { status: string }) {
+  const color = STATUS_COLOR[status] || '#6b7280';
+  return (
+    <span style={{
+      fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20,
+      background: `${color}18`, color, border: `1px solid ${color}40`,
+      textTransform: 'uppercase', letterSpacing: 0.5,
+    }}>
+      {status}
+    </span>
+  );
+}
+
+function ProgressRing({ pct, size = 64 }: { pct: number; size?: number }) {
+  const r = (size - 8) / 2;
   const circ = 2 * Math.PI * r;
-  const dash = circ * (pct / 100);
-  const col  = pct >= 80 ? '#14b8a6' : pct >= 50 ? '#f59e0b' : '#ef4444';
+  const stroke = circ - (pct / 100) * circ;
+  const color = pct >= 100 ? '#10b981' : pct >= 60 ? '#14b8a6' : pct >= 30 ? '#f59e0b' : '#ef4444';
   return (
-    <div className="flex flex-col items-center gap-3">
-      <div className="relative w-[140px] h-[140px]">
-        <svg viewBox="0 0 120 120" className="w-full h-full -rotate-90">
-          <circle cx="60" cy="60" r={r} fill="none" stroke="#18181b" strokeWidth="8" />
-          <circle cx="60" cy="60" r={r} fill="none" stroke={col} strokeWidth="8"
-            strokeLinecap="round" strokeDasharray={`${dash} ${circ}`}
-            style={{ transition: 'stroke-dasharray 1s ease' }} />
-        </svg>
-        <div className="absolute inset-0 flex flex-col items-center justify-center">
-          <span className="text-2xl font-black font-mono" style={{ color: col }}>{pct}%</span>
-          <span className="text-[8px] text-zinc-600 uppercase font-bold tracking-widest">funded</span>
-        </div>
-      </div>
-      <div className="text-center">
-        <p className="font-black font-mono text-lg" style={{ color: col }}>{currency} {safeF(balance)}</p>
-        <p className="text-[9px] text-zinc-600 font-bold">of {currency} {safeF(target)} target</p>
-      </div>
-    </div>
-  );
-}
-
-// ── EscrowSeal (from old) ─────────────────────────────────────────────────────
-function EscrowSeal({ status }: { status: string }) {
-  const ready = status === 'FUNDED_READY';
-  return (
-    <div className={`flex items-start gap-3 p-4 rounded-2xl border ${
-      ready ? 'border-teal-500/30 bg-teal-500/5' : 'border-zinc-700/60 bg-zinc-900/30'
-    }`}>
-      <div className={`w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 ${
-        ready ? 'bg-teal-500/20' : 'bg-zinc-800'
-      }`}>
-        <Lock size={14} className={ready ? 'text-teal-400' : 'text-zinc-500'} />
-      </div>
-      <div>
-        <p className="text-[9px] font-black uppercase tracking-widest text-zinc-300">
-          {ready ? '🔓 Escrow Release Pending' : '🔒 Nest Vault Escrow Active'}
-        </p>
-        <p className="text-[10px] text-zinc-500 mt-0.5 leading-relaxed">
-          {ready
-            ? 'Your vault is fully funded. Funds will be automatically disbursed to your landlord via Paystack within 24 hours.'
-            : 'Funds are locked in platform escrow and will be automatically disbursed to your landlord via Paystack once your vault reaches 100%.'}
-        </p>
-        <div className="flex items-center gap-1.5 mt-2">
-          <ShieldCheck size={9} className="text-teal-500" />
-          <span className="text-[8px] text-teal-500 font-bold uppercase tracking-widest">
-            Paystack-secured · SHA-256 receipts · Court-admissible
-          </span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ── RhythmCard (from old) ─────────────────────────────────────────────────────
-function RhythmCard({ vault, nextDueDate }: { vault: LinkedVaultSummary; nextDueDate: string | null }) {
-  const nextDue  = nextDueDate ? nextDueDate.split('T')[0] : null;
-  const daysLeft = nextDue
-    ? Math.max(0, Math.ceil((new Date(nextDue).getTime() - Date.now()) / 86400000))
-    : null;
-  const urgency = daysLeft != null && daysLeft <= 3;
-  return (
-    <div className="p-5 rounded-2xl border border-zinc-800 bg-zinc-900/20 space-y-4">
-      <p className="text-[9px] text-zinc-500 uppercase font-black tracking-widest">Payment Rhythm</p>
-      <div className="grid grid-cols-2 gap-4">
-        <div>
-          <p className="text-[8px] text-zinc-600 uppercase font-bold mb-1">Frequency</p>
-          <p className="text-sm font-black uppercase text-white">{vault.frequency || '—'}</p>
-        </div>
-        <div>
-          <p className="text-[8px] text-zinc-600 uppercase font-bold mb-1">Installment</p>
-          <p className="text-sm font-black font-mono text-teal-400">
-            {vault.currency || 'NGN'} {safeF(vault.installment_amount)}
-          </p>
-        </div>
-      </div>
-      {nextDue && (
-        <div className={`flex items-center justify-between p-3 rounded-xl border ${
-          urgency ? 'border-red-500/30 bg-red-500/5' : 'border-zinc-800 bg-zinc-900/40'
-        }`}>
-          <div className="flex items-center gap-2">
-            <Calendar size={13} className={urgency ? 'text-red-400' : 'text-zinc-500'} />
-            <div>
-              <p className="text-[8px] text-zinc-500 uppercase font-bold">Next Due</p>
-              <p className={`text-xs font-black font-mono ${urgency ? 'text-red-400' : 'text-white'}`}>{nextDue}</p>
-            </div>
-          </div>
-          {daysLeft != null && (
-            <span className={`text-[9px] font-black uppercase px-2.5 py-1 rounded-lg border ${
-              daysLeft === 0  ? 'border-red-500/40 text-red-400 bg-red-500/10'
-              : urgency       ? 'border-amber-500/40 text-amber-400 bg-amber-500/10'
-              :                 'border-zinc-700 text-zinc-400 bg-zinc-900/40'
-            }`}>
-              {daysLeft === 0 ? 'Due Today' : `${daysLeft}d left`}
-            </span>
-          )}
-        </div>
-      )}
-      <Link href="/tenant/pay"
-        className="flex items-center justify-center gap-2 w-full py-3 bg-teal-500 text-black text-[10px] font-black uppercase rounded-xl hover:bg-teal-400 transition-all tracking-widest">
-        <DollarSign size={13} /> Pay This Installment
-      </Link>
-    </div>
-  );
-}
-
-// ── OnboardingProgress (from new — timeline UI) ───────────────────────────────
-function OnboardingProgress({ steps }: { steps: OnboardingStep[] }) {
-  const stepDesc: Record<string, (status: string) => string> = {
-    account_created:      () => 'Your Nested Ark account is live and active.',
-    payout_destination:   (s) => s === 'done'
-      ? 'Landlord payout destination saved and Paystack-verified.'
-      : 'No bank details provided at registration. Add from your dashboard settings anytime.',
-    escrow_vault_profile: (s) => s === 'done'
-      ? 'Your savings vault is active and accumulating contributions.'
-      : 'Activated automatically when you initialize your vault.',
-    link_to_property:     (s) => s === 'done'
-      ? 'Linked to a property via tenancy.'
-      : 'Browse the marketplace or await a landlord invite link.',
-  };
-
-  return (
-    <div className="p-5 rounded-2xl border border-zinc-800 bg-zinc-900/20 space-y-4">
-      <div className="flex items-center justify-between flex-wrap gap-2">
-        <p className="text-[9px] text-zinc-500 uppercase font-black tracking-widest">Account Setup Progress</p>
-        <span className="flex items-center gap-1.5 text-[8px] text-zinc-600">
-          <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
-          Background tasks running
-        </span>
-      </div>
-      <div className="space-y-4">
-        {steps.map((step, i) => (
-          <div key={step.key} className="flex items-start gap-3">
-            {/* Icon */}
-            <div className={`w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5 ${
-              step.status === 'done'    ? 'bg-teal-500/15 border border-teal-500/30'
-              : step.status === 'skipped' ? 'bg-zinc-800 border border-zinc-700'
-              :                             'bg-amber-500/10 border border-amber-500/20'
-            }`}>
-              {step.status === 'done'    ? <CheckCircle2 size={13} className="text-teal-400" /> :
-               step.status === 'skipped' ? <span className="text-zinc-600 text-xs font-bold">—</span> :
-               <span className="text-amber-400 text-xs">○</span>}
-            </div>
-            {/* Content */}
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2 flex-wrap mb-0.5">
-                <p className={`text-xs font-bold ${
-                  step.status === 'done' ? 'text-white' : 'text-zinc-500'
-                }`}>{step.label}</p>
-                <span className={`text-[7px] px-1.5 py-0.5 rounded border font-black uppercase tracking-widest ${
-                  step.status === 'done'    ? 'border-teal-500/30 text-teal-500'
-                  : step.status === 'skipped' ? 'border-zinc-700 text-zinc-600'
-                  :                             'border-amber-500/30 text-amber-400'
-                }`}>{step.status}</span>
-              </div>
-              <p className="text-[9px] text-zinc-600">
-                {stepDesc[step.key]?.(step.status) ?? ''}
-              </p>
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// ── VaultCard (from new — enhanced, with landlord payout display) ─────────────
-function VaultCard({
-  vault, isStandalone, onPay,
-}: {
-  vault: StandaloneVaultSummary | LinkedVaultSummary;
-  isStandalone: boolean;
-  onPay: () => void;
-}) {
-  const pct      = safeN(vault.funded_pct);
-  const currency = (vault as LinkedVaultSummary).currency || 'NGN';
-  return (
-    <div className="p-6 rounded-2xl border border-zinc-800 bg-zinc-900/20 space-y-5">
-      <p className="text-[9px] text-zinc-500 uppercase font-black tracking-widest">
-        {isStandalone ? 'Independent Flex-Pay Vault' : 'Flex-Pay Vault'}
-      </p>
-      <div className="flex flex-col md:flex-row items-center gap-8">
-        <EscrowRing
-          pct={pct}
-          balance={safeN(vault.vault_balance)}
-          target={safeN(vault.target_amount)}
-          currency={currency}
-        />
-        <div className="flex-1 w-full space-y-4">
-          <div className="h-3 bg-zinc-800 rounded-full overflow-hidden">
-            <div
-              className={`h-full rounded-full transition-all duration-1000 ${
-                pct >= 80 ? 'bg-teal-500' : pct >= 50 ? 'bg-amber-500' : 'bg-red-500'
-              }`}
-              style={{ width: `${pct}%` }}
-            />
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            {[
-              { label: 'Vault Balance', val: fmt(safeN(vault.vault_balance)),                             col: 'text-teal-400'  },
-              { label: 'Annual Target', val: fmt(safeN(vault.target_amount)),                             col: 'text-white'     },
-              { label: 'Contributed',   val: fmt(safeN(vault.total_contributed)),                         col: 'text-zinc-300'  },
-              { label: 'Installment',   val: `${currency} ${safeF(vault.installment_amount)}`,            col: 'text-amber-400' },
-            ].map(s => (
-              <div key={s.label} className="p-3 rounded-xl bg-zinc-900 border border-zinc-800">
-                <p className="text-zinc-600 uppercase font-bold text-[8px] mb-0.5">{s.label}</p>
-                <p className={`font-black font-mono text-[10px] ${s.col}`}>{s.val}</p>
-              </div>
-            ))}
-          </div>
-          {/* Landlord payout destination (standalone only) */}
-          {isStandalone && (vault as StandaloneVaultSummary).landlord_name && (
-            <div className="flex items-center gap-2 px-3 py-2 rounded-xl border border-teal-500/20 bg-teal-500/5">
-              <ShieldCheck size={11} className="text-teal-500 shrink-0" />
-              <span className="text-[9px] text-teal-400 font-mono font-bold">
-                Payout → {(vault as StandaloneVaultSummary).landlord_name}
-                {(vault as StandaloneVaultSummary).landlord_email &&
-                  ` · ${(vault as StandaloneVaultSummary).landlord_email}`}
-              </span>
-            </div>
-          )}
-        </div>
-      </div>
-      <button
-        onClick={onPay}
-        className="w-full py-3 bg-teal-500 text-black text-[10px] font-black uppercase rounded-xl hover:bg-teal-400 transition-all tracking-widest flex items-center justify-center gap-2"
+    <svg width={size} height={size} style={{ transform: 'rotate(-90deg)' }}>
+      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="rgba(20,184,166,0.12)" strokeWidth={4} />
+      <circle
+        cx={size / 2} cy={size / 2} r={r} fill="none"
+        stroke={color} strokeWidth={4}
+        strokeDasharray={circ} strokeDashoffset={stroke}
+        strokeLinecap="round"
+        style={{ transition: 'stroke-dashoffset 0.8s ease' }}
+      />
+      <text
+        x="50%" y="50%"
+        textAnchor="middle" dominantBaseline="central"
+        style={{ transform: 'rotate(90deg)', transformOrigin: `${size / 2}px ${size / 2}px` }}
+        fill={color} fontSize={10} fontWeight={700} fontFamily="monospace"
       >
-        <DollarSign size={13} /> Pay {fmt(safeN(vault.installment_amount))}
-      </button>
-    </div>
+        {pct}%
+      </text>
+    </svg>
   );
 }
 
-// ── RecentPayments (from new) ─────────────────────────────────────────────────
-function RecentPayments({ payments }: { payments: any[] }) {
-  if (!payments.length) return null;
-  return (
-    <div className="p-5 rounded-2xl border border-zinc-800 bg-zinc-900/20 space-y-3">
-      <p className="text-[9px] text-zinc-500 uppercase font-black tracking-widest">Recent Contributions</p>
-      <div className="space-y-3">
-        {payments.map((p: any, i: number) => (
-          <div key={p.id ?? i}
-            className={`flex items-center justify-between gap-4 ${
-              i < payments.length - 1 ? 'pb-3 border-b border-zinc-800/60' : ''
-            }`}
-          >
-            <div>
-              <p className="font-mono font-bold text-sm text-white">{fmt(parseFloat(p.amount_ngn) || 0)}</p>
-              <p className="text-[9px] text-zinc-600 mt-0.5">
-                {p.period_label || p.period_month || '—'} · {p.paid_at ? new Date(p.paid_at).toLocaleDateString('en-NG') : '—'}
-              </p>
-            </div>
-            <span className={`text-[8px] px-2 py-1 rounded border font-bold uppercase ${
-              p.status === 'SUCCESS' ? 'border-teal-500/30 text-teal-400' : 'border-amber-500/30 text-amber-400'
-            }`}>{p.status}</span>
-          </div>
-        ))}
-      </div>
-      <Link href="/tenant/contributions"
-        className="flex items-center justify-center gap-1.5 text-[9px] text-teal-500 font-bold hover:underline pt-1">
-        View all contributions <ArrowRight size={10} />
-      </Link>
-    </div>
-  );
-}
-
-// ── STATE A: Full linked tenant dashboard ─────────────────────────────────────
-function LinkedTenantDashboard({ data, name }: { data: DashboardData; name: string }) {
-  const router   = useRouter();
-  const t        = data.tenancy;
-  const vault    = data.vault;
-  const notices  = data.recent_notices ?? [];
-  const activeNotices = notices.filter((n: any) => n.status === 'ISSUED' || n.status === 'SERVED');
-  const fundedPct = vault
-    ? Math.min(Math.round((safeN(vault.vault_balance) / (safeN(vault.target_amount) || 1)) * 100), 100)
-    : 0;
-
-  return (
-    <div className="min-h-screen bg-[#050505] text-white flex flex-col">
-      <Navbar />
-
-      {/* Active notice banner (from old) */}
-      {data.active_notice_count > 0 && activeNotices[0] && (
-        <div className="bg-red-500 px-6 py-3 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <Bell size={14} className="text-white flex-shrink-0" />
-            <p className="text-white text-xs font-black uppercase tracking-wide">
-              {activeNotices[0].notice_type?.replace(/_/g, ' ')} — {activeNotices[0].days_overdue ?? 0} days overdue. Please pay immediately.
-            </p>
-          </div>
-          <Link href="/tenant/pay"
-            className="px-4 py-1.5 bg-white text-red-500 rounded-lg text-[9px] font-black uppercase tracking-widest hover:bg-red-100 transition-all flex-shrink-0">
-            Pay Now
-          </Link>
-        </div>
-      )}
-
-      <main className="flex-1 max-w-4xl mx-auto px-6 py-10 space-y-8 w-full">
-
-        {/* Header */}
-        <div className="border-l-2 border-teal-500 pl-5">
-          <p className="text-[9px] text-teal-500 font-mono font-black tracking-widest uppercase mb-1">Tenant Portal</p>
-          <h1 className="text-3xl font-black uppercase tracking-tighter">My Dashboard</h1>
-          <p className="text-zinc-500 text-xs mt-1">Welcome back, {name}</p>
-        </div>
-
-        {/* Unit card (from old) */}
-        <div className={`p-6 rounded-3xl border ${
-          data.active_notice_count > 0 ? 'border-red-500/30 bg-red-500/5' : 'border-teal-500/20 bg-teal-500/5'
-        }`}>
-          <p className="text-[9px] text-teal-500 uppercase font-black tracking-widest mb-2">Your Unit</p>
-          <h2 className="text-xl font-black uppercase">{t.unit_name || '—'}</h2>
-          <p className="text-zinc-400 text-sm mt-0.5">{t.project_title || ''}</p>
-          <div className="flex items-center gap-3 mt-2 flex-wrap text-[10px] text-zinc-500">
-            {t.project_number && (
-              <span className="flex items-center gap-1"><Building2 size={9} />{t.project_number}</span>
-            )}
-            {t.tenant_score && (
-              <span className="flex items-center gap-1 text-amber-400 font-bold">
-                <Star size={9} /> Score: {t.tenant_score}/100
-              </span>
-            )}
-            {t.location && (
-              <span className="flex items-center gap-1"><MapPin size={9} />{t.location}</span>
-            )}
-          </div>
-          <div className={`mt-2 inline-flex items-center gap-1 text-[8px] font-black uppercase px-2 py-1 rounded border ${
-            data.active_notice_count > 0
-              ? 'border-red-500/30 text-red-400 bg-red-500/10'
-              : 'border-teal-500/30 text-teal-400 bg-teal-500/10'
-          }`}>
-            {data.active_notice_count > 0 ? <AlertCircle size={8} /> : <CheckCircle2 size={8} />}
-            {data.active_notice_count > 0 ? 'NOTICE ISSUED' : 'ACTIVE'}
-          </div>
-        </div>
-
-        {/* Vault — EscrowRing + stats + EscrowSeal + RhythmCard */}
-        {vault && (
-          <div className="space-y-4">
-            <VaultCard vault={vault} isStandalone={false} onPay={() => router.push('/tenant/pay')} />
-            <EscrowSeal status={vault.status} />
-            <RhythmCard vault={vault} nextDueDate={data.next_due_date} />
-          </div>
-        )}
-
-        {/* KPI strip (from old) */}
-        <div className="grid grid-cols-2 gap-4">
-          {[
-            {
-              label: 'Vault Balance',
-              value: vault ? fmt(safeN(vault.vault_balance)) : '—',
-              color: 'text-teal-400',
-            },
-            {
-              label: 'Active Notices',
-              value: data.active_notice_count,
-              color: data.active_notice_count > 0 ? 'text-red-400' : 'text-teal-400',
-            },
-          ].map(s => (
-            <div key={s.label} className="p-5 rounded-2xl border border-zinc-800 bg-zinc-900/20 space-y-1.5">
-              <p className={`text-xl font-black font-mono tabular-nums ${s.color}`}>{s.value}</p>
-              <p className="text-[8px] text-zinc-600 uppercase font-bold tracking-widest">{s.label}</p>
-            </div>
-          ))}
-        </div>
-
-        {/* 4-card quick actions (from old) */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {[
-            { href: '/tenant/pay',           Icon: DollarSign, ic: 'text-teal-400',  bd: 'border-teal-500/30 bg-teal-500/10 hover:bg-teal-500/20', ac: 'text-teal-500',  t: 'Pay Installment', s: 'Flex-Pay via Paystack' },
-            { href: '/tenant/vault',          Icon: TrendingUp, ic: 'text-amber-400', bd: 'border-zinc-800 bg-zinc-900/20 hover:border-zinc-700',    ac: 'text-zinc-500',  t: 'My Vault',        s: 'Flex-Pay balance'     },
-            { href: '/tenant/notices',        Icon: Gavel,      ic: 'text-red-400',   bd: 'border-red-500/10 bg-red-500/5 hover:border-red-500/20',  ac: 'text-red-400',   t: 'My Notices',      s: 'Legal notices'        },
-            { href: '/tenant/contributions',  Icon: FileText,   ic: 'text-teal-400',  bd: 'border-zinc-800 bg-zinc-900/20 hover:border-zinc-700',    ac: 'text-zinc-500',  t: 'History',         s: 'All contributions'    },
-          ].map(a => (
-            <Link key={a.href} href={a.href}
-              className={`p-5 rounded-2xl border ${a.bd} transition-all flex items-center justify-between group`}>
-              <div>
-                <a.Icon size={20} className={`${a.ic} mb-2`} />
-                <p className="font-black text-sm uppercase tracking-tight">{a.t}</p>
-                <p className="text-[10px] text-zinc-500 mt-0.5">{a.s}</p>
-              </div>
-              <ArrowRight size={16} className={`${a.ac} group-hover:translate-x-1 transition-transform`} />
-            </Link>
-          ))}
-        </div>
-
-        {/* Recent contributions (from new) */}
-        <RecentPayments payments={data.recent_payments} />
-
-        {/* Notices list (from old) */}
-        {notices.length > 0 && (
-          <div className="space-y-3">
-            <p className="text-[9px] text-red-400 uppercase font-black tracking-widest">Legal Notices</p>
-            {notices.map((n: any) => (
-              <div key={n.id}
-                className="p-4 rounded-2xl border border-red-500/20 bg-red-500/5 flex items-center justify-between gap-4 flex-wrap">
-                <div>
-                  <p className="font-bold text-sm text-red-300">{n.notice_type?.replace(/_/g, ' ')}</p>
-                  <p className="text-[9px] text-zinc-500">
-                    {n.notice_number} · Issued: {n.issued_at?.split('T')[0]}
-                    {n.days_overdue ? ` · ${n.days_overdue} days overdue` : ''}
-                  </p>
-                </div>
-                <span className={`text-[8px] px-2 py-1 rounded border font-bold uppercase ${
-                  n.status === 'SERVED'  ? 'border-red-500/30 text-red-400'
-                  : n.status === 'ISSUED' ? 'border-amber-500/30 text-amber-400'
-                  :                         'border-zinc-700 text-zinc-500'
-                }`}>{n.status}</span>
-              </div>
-            ))}
-          </div>
-        )}
-
-      </main>
-      <Footer />
-    </div>
-  );
-}
-
-// ── STATE B: Independent tenant hub ──────────────────────────────────────────
-function IndependentTenantHub({ data, name }: { data: DashboardData; name: string }) {
+// ─── Main Dashboard ───────────────────────────────────────────────────────────
+export default function TenantDashboardPage() {
   const router = useRouter();
-  const sv     = data.standalone_vault;
-
-  return (
-    <div className="min-h-screen bg-[#050505] text-white flex flex-col">
-      <Navbar />
-      <main className="flex-1 max-w-4xl mx-auto px-6 py-10 space-y-8 w-full">
-
-        {/* Header */}
-        <div className="border-l-2 border-green-500 pl-5">
-          <p className="text-[9px] text-green-500 font-mono font-black tracking-widest uppercase mb-1">Tenant Portal</p>
-          <h1 className="text-3xl font-black uppercase tracking-tighter">My Dashboard</h1>
-          <p className="text-zinc-500 text-xs mt-1">
-            Welcome{name ? `, ${name}` : ''}! Your account is active and ready.
-          </p>
-        </div>
-
-        {/* Onboarding steps (from new — server-driven, no localStorage) */}
-        {data.onboarding_steps?.length > 0 && (
-          <OnboardingProgress steps={data.onboarding_steps} />
-        )}
-
-        {/* Standalone vault or init CTA (from new) */}
-        {sv ? (
-          <>
-            <VaultCard vault={sv} isStandalone={true} onPay={() => router.push('/tenant/pay')} />
-            <RecentPayments payments={data.recent_payments} />
-          </>
-        ) : (
-          <div className="p-6 rounded-2xl border border-zinc-800 bg-zinc-900/20 flex items-start gap-4">
-            <div className="w-10 h-10 rounded-xl bg-zinc-800 flex items-center justify-center flex-shrink-0">
-              <Home size={18} className="text-zinc-500" />
-            </div>
-            <div className="flex-1">
-              <p className="font-bold text-sm">No unit linked yet</p>
-              <p className="text-[10px] text-zinc-500 mt-1 leading-relaxed">
-                Your account is an independent savings profile. Browse the marketplace to find
-                and apply for a property, or ask your landlord to send you an invite link.
-                Once linked, your escrow vault activates automatically and tracks your rent target.
-              </p>
-              <div className="flex gap-3 mt-3 flex-wrap">
-                <Link href="/tenant/vault"
-                  className="flex items-center gap-1.5 px-4 py-2 bg-teal-500 text-black text-[9px] font-black uppercase rounded-xl hover:bg-teal-400 transition-all tracking-widest">
-                  <Zap size={11} /> Initialize Savings Vault
-                </Link>
-                <Link href="/marketplace"
-                  className="flex items-center gap-1.5 px-4 py-2 border border-zinc-700 text-zinc-400 text-[9px] font-black uppercase rounded-xl hover:border-zinc-600 transition-all tracking-widest">
-                  <Search size={11} /> Browse Properties
-                </Link>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Vault feature highlights (from new) */}
-        <div className="p-5 rounded-2xl border border-green-500/20 bg-green-500/5 space-y-4">
-          <div className="flex items-center gap-2">
-            <Wallet size={16} className="text-green-400" />
-            <p className="text-[9px] text-green-400 uppercase font-black tracking-widest">Your Escrow Savings Vault</p>
-          </div>
-          <p className="text-[10px] text-zinc-400 leading-relaxed">
-            {sv
-              ? 'Keep contributing. When your target is reached, funds auto-disburse to your landlord. You carry your vault history and tenant score across properties.'
-              : 'Once you initialize, your Flex-Pay vault activates automatically. Contributions accumulate in Paystack escrow and auto-disburse to your landlord when the target is reached.'}
-          </p>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            {[
-              { icon: '🔒', label: 'Escrow-held'    },
-              { icon: '📅', label: 'Your rhythm'     },
-              { icon: '⚡', label: 'Auto-disburse'   },
-              { icon: '🧾', label: 'SHA-256 receipts'},
-            ].map(f => (
-              <div key={f.label} className="p-3 rounded-xl border border-zinc-800 bg-zinc-900/40 text-center">
-                <div className="text-lg mb-1">{f.icon}</div>
-                <p className="text-[8px] text-zinc-500 uppercase font-bold tracking-widest">{f.label}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Property shortcuts (from old) */}
-        <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <p className="text-[9px] text-zinc-500 uppercase font-black tracking-widest">Find a Property</p>
-            <Link href="/marketplace" className="text-[9px] text-teal-500 font-bold hover:underline flex items-center gap-1">
-              View All <ArrowRight size={10} />
-            </Link>
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {[
-              { label: 'For Rent', icon: Home,      href: '/marketplace?type=rent',   iconColor: 'text-teal-400'  },
-              { label: 'For Sale', icon: Building2, href: '/marketplace?type=sale',   iconColor: 'text-amber-400' },
-              { label: 'Near Me',  icon: MapPin,    href: '/marketplace?nearby=true', iconColor: 'text-blue-400'  },
-            ].map(c => (
-              <Link key={c.label} href={c.href}
-                className="p-5 rounded-2xl border border-zinc-800 bg-zinc-900/20 hover:border-zinc-700 transition-all flex items-center justify-between group">
-                <div className="flex items-center gap-3">
-                  <c.icon size={18} className={c.iconColor} />
-                  <p className="font-bold text-sm">{c.label}</p>
-                </div>
-                <ArrowRight size={14} className="text-zinc-600 group-hover:text-zinc-400 transition-all" />
-              </Link>
-            ))}
-          </div>
-        </div>
-
-        {/* Quick links */}
-        <div className="grid grid-cols-2 gap-4">
-          <Link href="/marketplace"
-            className="p-5 rounded-2xl border border-teal-500/30 bg-teal-500/10 hover:bg-teal-500/20 transition-all flex items-center justify-between group">
-            <div>
-              <Search size={20} className="text-teal-400 mb-2" />
-              <p className="font-black text-sm uppercase tracking-tight">Marketplace</p>
-              <p className="text-[10px] text-zinc-500 mt-0.5">Find your next home</p>
-            </div>
-            <ArrowRight size={16} className="text-teal-500 group-hover:translate-x-1 transition-transform" />
-          </Link>
-          <Link href="/dashboard"
-            className="p-5 rounded-2xl border border-zinc-800 bg-zinc-900/20 hover:border-zinc-700 transition-all flex items-center justify-between group">
-            <div>
-              <Zap size={20} className="text-amber-400 mb-2" />
-              <p className="font-black text-sm uppercase tracking-tight">Platform Hub</p>
-              <p className="text-[10px] text-zinc-500 mt-0.5">Full overview</p>
-            </div>
-            <ArrowRight size={16} className="text-zinc-500 group-hover:translate-x-1 transition-transform" />
-          </Link>
-        </div>
-
-      </main>
-      <Footer />
-    </div>
-  );
-}
-
-// ── Orchestrator ──────────────────────────────────────────────────────────────
-function TenantDashboardContent() {
-  const { user } = useAuth();
-  const router   = useRouter();
-  const [data,    setData]    = useState<DashboardData | null>(null);
+  const [data, setData]       = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError]     = useState('');
 
   useEffect(() => {
     (async () => {
+      const token = getToken();
+      if (!token) { router.push('/login'); return; }
       try {
-        // Single endpoint — returns full dashboard state including hasActiveTenancy
-        const res = await api.get('/api/tenant/dashboard');
-        setData(res.data);
-      } catch (e: any) {
-        // 401 — redirect to login
-        if (e?.response?.status === 401) { router.push('/login'); return; }
-        // 404 / other — set empty state so STATE B renders
-        setData({
-          success: false, hasActiveTenancy: false, tenancy: null,
-          vault: null, standalone_vault: null, next_due_date: null,
-          active_notice_count: 0, recent_payments: [], recent_maintenance: [],
-          recent_notices: [], onboarding_steps: [],
-          profile: { user_id: '', email: '', full_name: user?.full_name ?? '', phone: '', created_at: '' },
+        const res = await fetch(`${API_BASE}/tenant/dashboard`, {
+          headers: { Authorization: `Bearer ${token}` },
         });
+        const json = await res.json();
+        if (!json.success && json.error) throw new Error(json.error);
+        setData(json);
+      } catch (e: any) {
+        setError(e.message || 'Failed to load dashboard');
       } finally {
         setLoading(false);
       }
     })();
-  }, [router, user]);
+  }, []);
 
-  if (loading) return (
-    <div className="min-h-screen bg-[#050505] text-white">
-      <Navbar />
-      <div className="flex items-center justify-center py-40">
-        <Loader2 className="animate-spin text-teal-500" size={28} />
+  // ── Derived state ─────────────────────────────────────────────────────────
+  const tenantType: TenantType = data
+    ? data.hasActiveTenancy
+      ? 'linked'
+      : data.standalone_vault
+        ? 'standalone'
+        : 'none'
+    : 'none';
+
+  const activeVault: VaultData | null = data
+    ? (data.vault || data.standalone_vault || null)
+    : null;
+
+  const tenancy = data?.tenancy ?? null;
+  const profile = data?.profile ?? null;
+  const displayName = tenancy?.tenant_name || profile?.full_name || 'Tenant';
+  const firstName   = displayName.split(' ')[0];
+
+  // ── Shared styles ─────────────────────────────────────────────────────────
+  const S = {
+    shell: {
+      maxWidth: 900,
+      margin: '0 auto',
+      padding: '28px 20px 48px',
+      fontFamily: "'DM Sans', 'Segoe UI', sans-serif",
+    } as React.CSSProperties,
+
+    card: {
+      background: 'linear-gradient(135deg, #0d1f1f 0%, #091818 100%)',
+      border: '1px solid rgba(20,184,166,0.18)',
+      borderRadius: 16,
+    } as React.CSSProperties,
+
+    cardPad: (extra?: React.CSSProperties) => ({
+      background: 'linear-gradient(135deg, #0d1f1f 0%, #091818 100%)',
+      border: '1px solid rgba(20,184,166,0.18)',
+      borderRadius: 16,
+      padding: '20px 22px',
+      ...extra,
+    } as React.CSSProperties),
+
+    label: {
+      color: '#6b7280',
+      fontSize: 10,
+      letterSpacing: 1.5,
+      textTransform: 'uppercase' as const,
+      marginBottom: 4,
+    } as React.CSSProperties,
+
+    val: {
+      color: '#ffffff',
+      fontSize: 15,
+      fontWeight: 600,
+    } as React.CSSProperties,
+
+    tealVal: {
+      color: '#14b8a6',
+      fontSize: 15,
+      fontWeight: 700,
+      fontFamily: 'monospace',
+    } as React.CSSProperties,
+
+    sectionTitle: {
+      color: '#9ca3af',
+      fontSize: 11,
+      fontWeight: 700,
+      letterSpacing: 1.5,
+      textTransform: 'uppercase' as const,
+      marginBottom: 14,
+    } as React.CSSProperties,
+
+    navLink: {
+      color: '#14b8a6',
+      fontSize: 12,
+      fontWeight: 600,
+      textDecoration: 'none',
+      letterSpacing: 0.3,
+    } as React.CSSProperties,
+
+    dimLink: {
+      color: '#4b5563',
+      fontSize: 12,
+      textDecoration: 'none',
+    } as React.CSSProperties,
+  };
+
+  // ─── Loading ───────────────────────────────────────────────────────────────
+  if (loading) {
+    return (
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        minHeight: '60vh', background: '#050d0d',
+      }}>
+        <div style={{ textAlign: 'center' }}>
+          <div style={{
+            width: 36, height: 36, border: '3px solid rgba(20,184,166,0.2)',
+            borderTopColor: '#14b8a6', borderRadius: '50%',
+            animation: 'spin 0.8s linear infinite', margin: '0 auto 12px',
+          }} />
+          <div style={{ color: '#14b8a6', fontFamily: 'monospace', fontSize: 12, letterSpacing: 2 }}>
+            LOADING PORTAL
+          </div>
+        </div>
+        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
       </div>
-      <Footer />
-    </div>
-  );
-
-  if (!data) return (
-    <div className="min-h-screen bg-[#050505] text-white">
-      <Navbar />
-      <div className="flex items-center justify-center py-40 text-zinc-500 text-sm">
-        Failed to load dashboard. Please refresh.
-      </div>
-      <Footer />
-    </div>
-  );
-
-  const displayName =
-    data.profile?.full_name?.split(' ')[0] ||
-    user?.full_name?.split(' ')[0] ||
-    data.profile?.email?.split('@')[0] ||
-    'Tenant';
-
-  if (data.hasActiveTenancy && data.tenancy) {
-    return <LinkedTenantDashboard data={data} name={displayName} />;
+    );
   }
-  return <IndependentTenantHub data={data} name={displayName} />;
+
+  // ─── Error ─────────────────────────────────────────────────────────────────
+  if (error) {
+    return (
+      <div style={S.shell}>
+        <div style={{ ...S.cardPad(), borderColor: 'rgba(239,68,68,0.3)', color: '#ef4444', fontSize: 13 }}>
+          ⚠️ {error}
+        </div>
+      </div>
+    );
+  }
+
+  // ─── No vault / no tenancy → onboarding CTA ───────────────────────────────
+  if (tenantType === 'none') {
+    return (
+      <div style={S.shell}>
+        {/* Header */}
+        <PageHeader firstName={firstName} tenantType="none" />
+
+        <div style={{ ...S.cardPad({ textAlign: 'center', padding: '48px 28px' }) }}>
+          <div style={{ fontSize: 52, marginBottom: 20 }}>🏦</div>
+          <h2 style={{ margin: '0 0 10px', color: '#ffffff', fontSize: 20, fontWeight: 700 }}>
+            Welcome to Nested Ark
+          </h2>
+          <p style={{ color: '#6b7280', fontSize: 14, lineHeight: 1.7, maxWidth: 420, margin: '0 auto 28px' }}>
+            {data?.message || 'Initialize your personal savings vault to start building toward rent — no landlord required.'}
+          </p>
+
+          {/* Onboarding steps */}
+          {data?.onboarding_steps && (
+            <div style={{ marginBottom: 28, maxWidth: 360, margin: '0 auto 28px' }}>
+              {data.onboarding_steps.map((step, i) => (
+                <div key={step.key} style={{
+                  display: 'flex', alignItems: 'center', gap: 12,
+                  padding: '10px 0',
+                  borderBottom: i < (data.onboarding_steps?.length ?? 0) - 1
+                    ? '1px solid rgba(255,255,255,0.05)'
+                    : 'none',
+                }}>
+                  <div style={{
+                    width: 24, height: 24, borderRadius: '50%', flexShrink: 0,
+                    background: step.status === 'done'
+                      ? 'rgba(16,185,129,0.2)'
+                      : step.status === 'skipped'
+                        ? 'rgba(107,114,128,0.15)'
+                        : 'rgba(245,158,11,0.15)',
+                    border: `2px solid ${step.status === 'done' ? '#10b981' : step.status === 'skipped' ? '#4b5563' : '#f59e0b'}`,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: 11,
+                  }}>
+                    {step.status === 'done' ? '✓' : step.status === 'skipped' ? '—' : '○'}
+                  </div>
+                  <span style={{
+                    fontSize: 13,
+                    color: step.status === 'done' ? '#ffffff' : step.status === 'skipped' ? '#4b5563' : '#9ca3af',
+                  }}>
+                    {step.label}
+                  </span>
+                  <span style={{
+                    marginLeft: 'auto', fontSize: 10, fontWeight: 700,
+                    color: step.status === 'done' ? '#10b981' : step.status === 'skipped' ? '#4b5563' : '#f59e0b',
+                    textTransform: 'uppercase', letterSpacing: 0.5,
+                  }}>
+                    {step.status}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <button
+            onClick={() => router.push('/tenant/vault')}
+            style={{
+              padding: '13px 32px', borderRadius: 12,
+              background: 'linear-gradient(135deg, #14b8a6, #0d9488)',
+              border: 'none', color: 'white', fontWeight: 700, fontSize: 14,
+              cursor: 'pointer', letterSpacing: 0.4,
+            }}
+          >
+            🚀 Initialize My Vault
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ─── Full Dashboard (linked OR standalone) ────────────────────────────────
+  return (
+    <div style={{ ...S.shell, background: 'transparent' }}>
+      <style>{`
+        @keyframes spin { to { transform: rotate(360deg); } }
+        @keyframes fadeUp {
+          from { opacity: 0; transform: translateY(10px); }
+          to   { opacity: 1; transform: translateY(0); }
+        }
+        .dash-section { animation: fadeUp 0.35s ease both; }
+        .dash-section:nth-child(2) { animation-delay: 0.05s; }
+        .dash-section:nth-child(3) { animation-delay: 0.10s; }
+        .dash-section:nth-child(4) { animation-delay: 0.15s; }
+        .dash-section:nth-child(5) { animation-delay: 0.20s; }
+        .row-hover:hover { background: rgba(20,184,166,0.04) !important; }
+        a { transition: color 0.15s; }
+        a:hover { color: #2dd4bf !important; }
+      `}</style>
+
+      {/* ── Header ── */}
+      <div className="dash-section">
+        <PageHeader firstName={firstName} tenantType={tenantType} />
+      </div>
+
+      {/* ── Stat Bar ── */}
+      <div className="dash-section" style={{ marginBottom: 20 }}>
+        <StatBar
+          data={data!}
+          vault={activeVault}
+          tenantType={tenantType}
+          fmt={fmt}
+          fmtDate={fmtDate}
+        />
+      </div>
+
+      {/* ── Main grid: vault + property info ── */}
+      <div className="dash-section" style={{
+        display: 'grid',
+        gridTemplateColumns: activeVault ? '1fr 1fr' : '1fr',
+        gap: 16,
+        marginBottom: 20,
+      }}>
+        {/* Vault card */}
+        {activeVault && (
+          <VaultCard vault={activeVault} tenantType={tenantType} fmt={fmt} S={S} />
+        )}
+
+        {/* Property / Profile info */}
+        {tenantType === 'linked' && tenancy ? (
+          <PropertyCard tenancy={tenancy} S={S} fmtDate={fmtDate} />
+        ) : (
+          <StandaloneInfoCard vault={activeVault} profile={profile} S={S} />
+        )}
+      </div>
+
+      {/* ── Recent payments ── */}
+      {(data?.recent_payments?.length ?? 0) > 0 && (
+        <div className="dash-section" style={{ marginBottom: 20 }}>
+          <RecentPayments
+            payments={data!.recent_payments}
+            tenantType={tenantType}
+            S={S}
+            fmt={fmt}
+            fmtDate={fmtDate}
+          />
+        </div>
+      )}
+
+      {/* ── Maintenance (linked only) ── */}
+      {tenantType === 'linked' && (data?.recent_maintenance?.length ?? 0) > 0 && (
+        <div className="dash-section" style={{ marginBottom: 20 }}>
+          <MaintenanceCard maintenance={data!.recent_maintenance} S={S} fmtDate={fmtDate} />
+        </div>
+      )}
+
+      {/* ── Notices banner (linked only) ── */}
+      {tenantType === 'linked' && (data?.active_notice_count ?? 0) > 0 && (
+        <div className="dash-section" style={{ marginBottom: 20 }}>
+          <div style={{
+            ...S.cardPad(),
+            borderColor: 'rgba(245,158,11,0.3)',
+            background: 'rgba(245,158,11,0.05)',
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span style={{ fontSize: 20 }}>⚠️</span>
+              <div>
+                <div style={{ color: '#f59e0b', fontWeight: 700, fontSize: 13 }}>
+                  {data!.active_notice_count} Active Legal Notice{data!.active_notice_count !== 1 ? 's' : ''}
+                </div>
+                <div style={{ color: '#6b7280', fontSize: 12 }}>Review your notices immediately</div>
+              </div>
+            </div>
+            <a href="/tenant/notices" style={{ ...S.navLink, color: '#f59e0b' }}>View →</a>
+          </div>
+        </div>
+      )}
+
+      {/* ── Quick actions ── */}
+      <div className="dash-section">
+        <QuickActions tenantType={tenantType} vault={activeVault} router={router} S={S} />
+      </div>
+
+      {/* ── Footer nav ── */}
+      <div style={{ marginTop: 32, display: 'flex', gap: 24, justifyContent: 'center', flexWrap: 'wrap' }}>
+        <a href="/tenant/vault"         style={S.navLink}>My Vault</a>
+        <a href="/tenant/pay"           style={S.navLink}>Pay Installment</a>
+        <a href="/tenant/contributions" style={S.navLink}>Contributions</a>
+        {tenantType === 'linked' && <a href="/tenant/maintenance" style={S.dimLink}>Maintenance</a>}
+        {tenantType === 'linked' && <a href="/tenant/notices"     style={S.dimLink}>Notices</a>}
+      </div>
+
+      <div style={{ marginTop: 20, textAlign: 'center', color: '#1f3030', fontSize: 10, fontFamily: 'monospace' }}>
+        🔐 SHA-256 LEDGER ACTIVE · NESTED ARK OS
+      </div>
+    </div>
+  );
 }
 
-export default function TenantDashboardPage() {
+// ─── Sub-components ───────────────────────────────────────────────────────────
+
+function PageHeader({ firstName, tenantType }: { firstName: string; tenantType: TenantType }) {
+  const tagMap: Record<TenantType, { label: string; color: string }> = {
+    linked:     { label: 'Linked Tenancy',            color: '#14b8a6' },
+    standalone: { label: 'Independent Savings Vault', color: '#818cf8' },
+    none:       { label: 'Tenant Portal',             color: '#6b7280' },
+  };
+  const tag = tagMap[tenantType];
   return (
-    <Suspense fallback={
-      <div className="h-screen bg-[#050505] flex items-center justify-center">
-        <Loader2 className="animate-spin text-teal-500" size={28} />
+    <div style={{ marginBottom: 28 }}>
+      <div style={{
+        display: 'inline-flex', alignItems: 'center', gap: 6,
+        background: `${tag.color}14`,
+        border: `1px solid ${tag.color}30`,
+        borderRadius: 20, padding: '3px 12px', marginBottom: 10,
+      }}>
+        <span style={{ width: 6, height: 6, borderRadius: '50%', background: tag.color, display: 'inline-block' }} />
+        <span style={{ color: tag.color, fontSize: 10, fontWeight: 700, letterSpacing: 1.5, textTransform: 'uppercase' }}>
+          {tag.label}
+        </span>
       </div>
-    }>
-      <TenantDashboardContent />
-    </Suspense>
+      <h1 style={{ margin: '0 0 6px', color: 'white', fontSize: 26, fontWeight: 800, letterSpacing: -0.5 }}>
+        Welcome back, {firstName}
+      </h1>
+      <p style={{ margin: 0, color: '#4b5563', fontSize: 13 }}>
+        Your Nested Ark tenant portal — all activity at a glance.
+      </p>
+    </div>
+  );
+}
+
+function StatBar({
+  data, vault, tenantType, fmt, fmtDate,
+}: {
+  data: DashboardData;
+  vault: VaultData | null;
+  tenantType: TenantType;
+  fmt: (n: number) => string;
+  fmtDate: (d: string | null) => string;
+}) {
+  const stats: { label: string; value: string; sub?: string; accent?: boolean }[] = [];
+
+  if (vault) {
+    stats.push({
+      label: 'Vault Balance',
+      value: fmt(vault.vault_balance),
+      sub: `${vault.funded_pct}% of target`,
+      accent: true,
+    });
+    stats.push({
+      label: 'Total Contributed',
+      value: fmt(vault.total_contributed),
+      sub: vault.contribution_count != null
+        ? `${vault.contribution_count} payment${vault.contribution_count !== 1 ? 's' : ''}`
+        : undefined,
+    });
+  }
+
+  if (tenantType === 'linked') {
+    stats.push({
+      label: 'Next Due',
+      value: fmtDate(data.next_due_date),
+      sub: data.tenancy?.payment_frequency?.toLowerCase() ?? '',
+    });
+    stats.push({
+      label: 'Active Notices',
+      value: String(data.active_notice_count),
+      sub: data.active_notice_count > 0 ? 'requires attention' : 'all clear',
+    });
+  } else if (tenantType === 'standalone' && vault) {
+    stats.push({
+      label: 'Vault Status',
+      value: vault.status,
+      sub: vault.frequency?.toLowerCase(),
+    });
+    stats.push({
+      label: 'Installment',
+      value: fmt(vault.installment_amount),
+      sub: 'per period',
+    });
+  }
+
+  return (
+    <div style={{
+      display: 'grid',
+      gridTemplateColumns: `repeat(${Math.min(stats.length, 4)}, 1fr)`,
+      gap: 12,
+    }}>
+      {stats.map(({ label, value, sub, accent }) => (
+        <div key={label} style={{
+          background: accent
+            ? 'linear-gradient(135deg, rgba(20,184,166,0.12), rgba(13,148,136,0.06))'
+            : 'linear-gradient(135deg, #0d1f1f 0%, #091818 100%)',
+          border: `1px solid ${accent ? 'rgba(20,184,166,0.35)' : 'rgba(20,184,166,0.12)'}`,
+          borderRadius: 14, padding: '16px 18px',
+        }}>
+          <div style={{ color: '#6b7280', fontSize: 10, letterSpacing: 1.5, textTransform: 'uppercase', marginBottom: 5 }}>
+            {label}
+          </div>
+          <div style={{
+            color: accent ? '#14b8a6' : '#ffffff',
+            fontWeight: 700, fontFamily: 'monospace', fontSize: 15,
+          }}>
+            {value}
+          </div>
+          {sub && (
+            <div style={{ color: '#4b5563', fontSize: 11, marginTop: 3 }}>{sub}</div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function VaultCard({
+  vault, tenantType, fmt, S,
+}: {
+  vault: VaultData;
+  tenantType: TenantType;
+  fmt: (n: number) => string;
+  S: any;
+}) {
+  const isStandalone = tenantType === 'standalone';
+  const color = vault.funded_pct >= 100 ? '#10b981' : vault.funded_pct >= 60 ? '#14b8a6' : '#f59e0b';
+
+  return (
+    <div style={{ ...S.cardPad() }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 18 }}>
+        <div>
+          <div style={S.label}>{isStandalone ? 'Independent Savings Vault' : 'Flex-Pay Vault'}</div>
+          <div style={{ color: '#ffffff', fontSize: 17, fontWeight: 800, fontFamily: 'monospace' }}>
+            {fmt(vault.vault_balance)}
+          </div>
+          <div style={{ color: '#4b5563', fontSize: 11, marginTop: 2 }}>
+            of {fmt(vault.target_amount)} target
+          </div>
+        </div>
+        <ProgressRing pct={vault.funded_pct} size={68} />
+      </div>
+
+      {/* Progress bar */}
+      <div style={{ height: 5, background: '#0a1a1a', borderRadius: 3, overflow: 'hidden', marginBottom: 14 }}>
+        <div style={{
+          height: '100%', width: `${vault.funded_pct}%`,
+          background: `linear-gradient(90deg, ${color}, ${color}cc)`,
+          borderRadius: 3, transition: 'width 0.8s ease',
+        }} />
+      </div>
+
+      {/* Key fields */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
+        {[
+          { label: 'Installment', value: fmt(vault.installment_amount) },
+          { label: 'Frequency',   value: vault.frequency?.toLowerCase() ?? '—' },
+          { label: 'Status',      value: vault.status },
+          { label: 'Funded',      value: `${vault.funded_pct}%` },
+        ].map(({ label, value }) => (
+          <div key={label} style={{
+            background: 'rgba(20,184,166,0.04)',
+            borderRadius: 8, padding: '8px 10px',
+          }}>
+            <div style={S.label}>{label}</div>
+            <div style={{ color: '#e5e7eb', fontSize: 12, fontWeight: 600, fontFamily: 'monospace' }}>{value}</div>
+          </div>
+        ))}
+      </div>
+
+      {vault.funded_pct >= 100 && (
+        <div style={{
+          background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.3)',
+          borderRadius: 8, padding: '8px 12px', textAlign: 'center',
+          color: '#10b981', fontSize: 12, fontWeight: 700, marginBottom: 12,
+        }}>
+          🎉 Vault Fully Funded — Awaiting Disbursement
+        </div>
+      )}
+
+      <a href="/tenant/vault" style={{ ...S.navLink, display: 'block', textAlign: 'center', marginTop: 4 }}>
+        View Full Vault →
+      </a>
+    </div>
+  );
+}
+
+function PropertyCard({
+  tenancy, S, fmtDate,
+}: {
+  tenancy: TenancyData;
+  S: any;
+  fmtDate: (d: string | null) => string;
+}) {
+  return (
+    <div style={{ ...S.cardPad() }}>
+      <div style={S.sectionTitle}>Property Details</div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {[
+          { label: 'Property',   value: tenancy.project_title },
+          { label: 'Unit',       value: `${tenancy.unit_name} · ${tenancy.unit_type}` },
+          { label: 'Location',   value: tenancy.location },
+          { label: 'Lease Start', value: fmtDate(tenancy.lease_start) },
+          { label: 'Lease End',  value: fmtDate(tenancy.lease_end) },
+          { label: 'Rent',       value: `${tenancy.currency} ${Number(tenancy.rent_amount).toLocaleString()}` },
+          { label: 'Frequency',  value: tenancy.payment_frequency?.toLowerCase() },
+          { label: 'Status',     value: tenancy.status },
+        ].map(({ label, value }) => (
+          <div key={label} style={{
+            display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start',
+            paddingBottom: 8, borderBottom: '1px solid rgba(255,255,255,0.04)',
+          }}>
+            <span style={{ color: '#4b5563', fontSize: 12 }}>{label}</span>
+            <span style={{
+              color: '#e5e7eb', fontSize: 12, fontWeight: 600,
+              textAlign: 'right', maxWidth: '55%', wordBreak: 'break-word',
+            }}>
+              {value || '—'}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function StandaloneInfoCard({
+  vault, profile, S,
+}: {
+  vault: VaultData | null;
+  profile: ProfileData | null;
+  S: any;
+}) {
+  return (
+    <div style={{ ...S.cardPad() }}>
+      <div style={S.sectionTitle}>Account Overview</div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {profile && [
+          { label: 'Name',    value: profile.full_name },
+          { label: 'Email',   value: profile.email },
+          { label: 'Phone',   value: profile.phone },
+          { label: 'Member Since', value: profile.created_at
+            ? new Date(profile.created_at).toLocaleDateString('en-NG', { month: 'short', year: 'numeric' })
+            : '—',
+          },
+        ].map(({ label, value }) => (
+          <div key={label} style={{
+            display: 'flex', justifyContent: 'space-between',
+            paddingBottom: 8, borderBottom: '1px solid rgba(255,255,255,0.04)',
+          }}>
+            <span style={{ color: '#4b5563', fontSize: 12 }}>{label}</span>
+            <span style={{ color: '#e5e7eb', fontSize: 12, fontWeight: 600 }}>{value || '—'}</span>
+          </div>
+        ))}
+        {vault?.landlord_name && (
+          <div style={{
+            background: 'rgba(20,184,166,0.06)', borderRadius: 8, padding: '10px 12px', marginTop: 6,
+            border: '1px solid rgba(20,184,166,0.12)',
+          }}>
+            <div style={{ color: '#6b7280', fontSize: 10, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 4 }}>
+              Saving Towards
+            </div>
+            <div style={{ color: '#14b8a6', fontSize: 13, fontWeight: 600 }}>{vault.landlord_name}</div>
+            {vault.landlord_email && (
+              <div style={{ color: '#4b5563', fontSize: 11, marginTop: 2 }}>{vault.landlord_email}</div>
+            )}
+          </div>
+        )}
+        {!vault?.landlord_name && (
+          <div style={{
+            background: 'rgba(99,102,241,0.06)', borderRadius: 8, padding: '10px 12px', marginTop: 6,
+            border: '1px solid rgba(99,102,241,0.15)',
+          }}>
+            <div style={{ color: '#818cf8', fontSize: 12, fontWeight: 600, marginBottom: 3 }}>
+              Independent Savings Mode
+            </div>
+            <div style={{ color: '#4b5563', fontSize: 11, lineHeight: 1.5 }}>
+              Saving without a linked landlord. Add landlord details in vault settings to enable direct disbursement.
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function RecentPayments({
+  payments, tenantType, S, fmt, fmtDate,
+}: {
+  payments: PaymentRow[];
+  tenantType: TenantType;
+  S: any;
+  fmt: (n: number) => string;
+  fmtDate: (d: string | null) => string;
+}) {
+  return (
+    <div style={{ ...S.card, overflow: 'hidden' }}>
+      {/* header */}
+      <div style={{
+        padding: '14px 20px',
+        borderBottom: '1px solid rgba(20,184,166,0.08)',
+        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+      }}>
+        <div style={S.sectionTitle}>Recent Payments</div>
+        <a href="/tenant/contributions" style={S.navLink}>View All →</a>
+      </div>
+
+      {/* table header */}
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: '1fr 120px 90px 110px',
+        padding: '10px 20px',
+        background: 'rgba(20,184,166,0.03)',
+        borderBottom: '1px solid rgba(20,184,166,0.06)',
+      }}>
+        {['Date', 'Amount', 'Status', 'Period'].map(h => (
+          <div key={h} style={{ color: '#374151', fontSize: 10, letterSpacing: 1, textTransform: 'uppercase' }}>{h}</div>
+        ))}
+      </div>
+
+      {payments.map((p, i) => (
+        <div
+          key={p.id}
+          className="row-hover"
+          style={{
+            display: 'grid',
+            gridTemplateColumns: '1fr 120px 90px 110px',
+            padding: '12px 20px',
+            borderBottom: i < payments.length - 1 ? '1px solid rgba(255,255,255,0.03)' : 'none',
+            alignItems: 'center',
+            transition: 'background 0.15s',
+          }}
+        >
+          <div style={{ color: '#d1d5db', fontSize: 12 }}>{fmtDate(p.paid_at)}</div>
+          <div style={{ color: '#ffffff', fontWeight: 700, fontFamily: 'monospace', fontSize: 12 }}>
+            {fmt(p.amount_ngn)}
+          </div>
+          <div><StatusBadge status={p.status} /></div>
+          <div style={{ color: '#6b7280', fontSize: 11, fontFamily: 'monospace' }}>
+            {p.period_month || p.period_label || '—'}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function MaintenanceCard({
+  maintenance, S, fmtDate,
+}: {
+  maintenance: MaintenanceRow[];
+  S: any;
+  fmtDate: (d: string | null) => string;
+}) {
+  return (
+    <div style={{ ...S.card, overflow: 'hidden' }}>
+      <div style={{
+        padding: '14px 20px',
+        borderBottom: '1px solid rgba(20,184,166,0.08)',
+        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+      }}>
+        <div style={S.sectionTitle}>Maintenance Requests</div>
+        <a href="/tenant/maintenance" style={S.navLink}>View All →</a>
+      </div>
+      {maintenance.map((m, i) => (
+        <div
+          key={m.id}
+          className="row-hover"
+          style={{
+            display: 'flex', alignItems: 'center', gap: 12,
+            padding: '12px 20px',
+            borderBottom: i < maintenance.length - 1 ? '1px solid rgba(255,255,255,0.03)' : 'none',
+            transition: 'background 0.15s',
+          }}
+        >
+          <div style={{
+            width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
+            background: SEVERITY_COLOR[m.severity] || '#6b7280',
+          }} />
+          <div style={{ flex: 1 }}>
+            <div style={{ color: '#e5e7eb', fontSize: 13, fontWeight: 600 }}>{m.title}</div>
+            <div style={{ color: '#4b5563', fontSize: 11, marginTop: 2 }}>
+              {m.category} · {fmtDate(m.created_at)}
+            </div>
+          </div>
+          <StatusBadge status={m.status} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function QuickActions({
+  tenantType, vault, router, S,
+}: {
+  tenantType: TenantType;
+  vault: VaultData | null;
+  router: any;
+  S: any;
+}) {
+  const actions: { icon: string; label: string; sub: string; href: string; primary?: boolean; disabled?: boolean }[] = [
+    {
+      icon: '⚡',
+      label: 'Pay Installment',
+      sub: vault ? `Next: ${new Intl.NumberFormat('en-NG', { style: 'currency', currency: 'NGN', minimumFractionDigits: 0 }).format(vault.installment_amount)}` : 'Contribute to vault',
+      href: '/tenant/pay',
+      primary: true,
+      disabled: vault?.funded_pct === 100,
+    },
+    {
+      icon: '📊',
+      label: 'Contribution History',
+      sub: 'SHA-256 ledger records',
+      href: '/tenant/contributions',
+    },
+    {
+      icon: '🏦',
+      label: 'My Vault',
+      sub: tenantType === 'standalone' ? 'Independent savings' : 'Flex-Pay vault',
+      href: '/tenant/vault',
+    },
+  ];
+
+  if (tenantType === 'linked') {
+    actions.push({
+      icon: '🔧',
+      label: 'Maintenance',
+      sub: 'Submit a request',
+      href: '/tenant/maintenance',
+    });
+  }
+
+  return (
+    <div>
+      <div style={S.sectionTitle}>Quick Actions</div>
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: `repeat(${Math.min(actions.length, 4)}, 1fr)`,
+        gap: 12,
+      }}>
+        {actions.map(({ icon, label, sub, href, primary, disabled }) => (
+          <button
+            key={label}
+            onClick={() => !disabled && router.push(href)}
+            disabled={disabled}
+            style={{
+              background: primary && !disabled
+                ? 'linear-gradient(135deg, rgba(20,184,166,0.15), rgba(13,148,136,0.08))'
+                : 'linear-gradient(135deg, #0d1f1f, #091818)',
+              border: `1px solid ${primary && !disabled ? 'rgba(20,184,166,0.4)' : 'rgba(20,184,166,0.12)'}`,
+              borderRadius: 14, padding: '16px 14px', cursor: disabled ? 'not-allowed' : 'pointer',
+              textAlign: 'left', opacity: disabled ? 0.45 : 1,
+              transition: 'all 0.15s',
+            }}
+          >
+            <div style={{ fontSize: 22, marginBottom: 8 }}>{icon}</div>
+            <div style={{
+              color: primary && !disabled ? '#14b8a6' : '#e5e7eb',
+              fontWeight: 700, fontSize: 13, marginBottom: 3,
+            }}>
+              {label}
+            </div>
+            <div style={{ color: '#4b5563', fontSize: 11 }}>{sub}</div>
+          </button>
+        ))}
+      </div>
+    </div>
   );
 }
