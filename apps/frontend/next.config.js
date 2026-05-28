@@ -46,6 +46,10 @@ const nextConfig = {
   // time on Vercel — they resolve to an empty string, causing /api/* requests
   // to stay on Vercel instead of proxying to Render.
   // API_URL is a server-side-only variable; Next.js resolves it correctly here.
+  //
+  // NOTE: Do NOT add internal page-to-page rewrites here (e.g. /tenant/dashboard
+  // → /tenant/dashboard/). With trailingSlash: true, Next.js already handles
+  // this automatically. Adding such rewrites causes routing loops and 404s.
   async rewrites() {
     return [
       {
@@ -90,4 +94,3 @@ const nextConfig = {
 };
 
 module.exports = nextConfig;
-

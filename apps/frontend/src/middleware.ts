@@ -4,6 +4,8 @@
 // 1. infinite /login ↔ /login/ redirect loop
 // 2. _rsc prefetch auth collisions
 // 3. public FAQ route incorrectly resolving to 404
+// 4. Trailing-slash normalization so /tenant/dashboard and /tenant/dashboard/
+//    both correctly match the TENANT guard (was the root cause of the 404)
 
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
@@ -57,7 +59,14 @@ function isPublic(pathname: string): boolean {
 }
 
 export function middleware(req: NextRequest) {
-  const { pathname, searchParams } = req.nextUrl;
+  const { searchParams } = req.nextUrl;
+
+  // Normalise pathname once: strip trailing slash (except bare "/")
+  // This means /tenant/dashboard/ and /tenant/dashboard both hit the same checks.
+  const rawPath  = req.nextUrl.pathname;
+  const pathname = rawPath.length > 1 && rawPath.endsWith('/')
+    ? rawPath.slice(0, -1)
+    : rawPath;
 
   // ── 1. Static assets / Next.js internals ───────────────────────────────
   if (
@@ -73,33 +82,28 @@ export function middleware(req: NextRequest) {
     return NextResponse.next();
   }
 
-  // ── 2. Public routes ───────────────────────────────────────────────────
-  if (isPublic(pathname)) {
+  // ── 2. Public routes (check both raw and normalised) ───────────────────
+  if (isPublic(pathname) || isPublic(rawPath)) {
     return NextResponse.next();
   }
 
   // ── 3. _rsc prefetch safety valve ──────────────────────────────────────
   if (searchParams.has('_rsc')) {
-    const isAuthPage =
-      pathname === '/login' ||
-      pathname === '/login/' ||
-      pathname === '/register' ||
-      pathname === '/register/';
-
+    const isAuthPage = pathname === '/login' || pathname === '/register';
     if (isAuthPage) {
       return NextResponse.next();
     }
   }
 
   // ── 4. Read auth cookies ───────────────────────────────────────────────
-  const role = req.cookies.get('ark_role')?.value ?? '';
+  const role        = req.cookies.get('ark_role')?.value         ?? '';
   const accountType = req.cookies.get('ark_account_type')?.value ?? '';
 
   // ── Redirect helper ────────────────────────────────────────────────────
   const toLogin = (reason: string) => {
-    const url = req.nextUrl.clone();
-    url.pathname = '/login';
-    url.search = `?reason=${reason}`;
+    const url      = req.nextUrl.clone();
+    url.pathname   = '/login';
+    url.search     = `?reason=${reason}`;
     return NextResponse.redirect(url);
   };
 
@@ -114,11 +118,9 @@ export function middleware(req: NextRequest) {
   // ── 6. LANDLORD routes ─────────────────────────────────────────────────
   if (pathname.startsWith('/landlord')) {
     const ok = ['DEVELOPER', 'PROJECT_SPONSOR', 'ADMIN'].includes(role);
-
     if (!ok) {
       return toLogin('landlord_only');
     }
-
     return NextResponse.next();
   }
 
@@ -127,71 +129,44 @@ export function middleware(req: NextRequest) {
     if (role !== 'ADMIN') {
       return toLogin('admin_only');
     }
-
     return NextResponse.next();
   }
 
   // ── 8. GOVERNMENT routes ───────────────────────────────────────────────
   if (pathname.startsWith('/gov')) {
     const ok = ['GOVERNMENT', 'VERIFIER', 'ADMIN'].includes(role);
-
     if (!ok) {
       return toLogin('gov_only');
     }
-
     return NextResponse.next();
   }
 
   // ── 9. Rental management ───────────────────────────────────────────────
   if (pathname.includes('/rental-management')) {
-    const ok = [
-      'DEVELOPER',
-      'PROJECT_SPONSOR',
-      'ADMIN',
-      'GOVERNMENT',
-    ].includes(role);
-
+    const ok = ['DEVELOPER', 'PROJECT_SPONSOR', 'ADMIN', 'GOVERNMENT'].includes(role);
     if (!ok) {
       return toLogin('access_denied');
     }
-
     return NextResponse.next();
   }
 
   // ── 10. Portfolio / investments ───────────────────────────────────────
-  if (
-    pathname.startsWith('/portfolio') ||
-    pathname.startsWith('/investments')
-  ) {
-    const ok = [
-      'INVESTOR',
-      'DEVELOPER',
-      'PROJECT_SPONSOR',
-      'ADMIN',
-    ].includes(role);
-
+  if (pathname.startsWith('/portfolio') || pathname.startsWith('/investments')) {
+    const ok = ['INVESTOR', 'DEVELOPER', 'PROJECT_SPONSOR', 'ADMIN'].includes(role);
     if (!ok) {
       return toLogin('investor_only');
     }
-
     return NextResponse.next();
   }
 
   // ── 11. Catch-all auth gate ────────────────────────────────────────────
   if (!role) {
-    if (
-      pathname === '/login' ||
-      pathname === '/login/' ||
-      pathname === '/register' ||
-      pathname === '/register/'
-    ) {
+    if (pathname === '/login' || pathname === '/register') {
       return NextResponse.next();
     }
-
-    const url = req.nextUrl.clone();
-    url.pathname = '/login';
-    url.search = '';
-
+    const url      = req.nextUrl.clone();
+    url.pathname   = '/login';
+    url.search     = '';
     return NextResponse.redirect(url);
   }
 
