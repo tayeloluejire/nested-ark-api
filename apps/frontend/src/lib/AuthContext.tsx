@@ -15,6 +15,13 @@
  *   - `role` = DB/auth role (DEVELOPER, TENANT, INVESTOR, etc.)
  *   - `accountType` = business context derived at login time, stored in
  *     localStorage as 'ark_account_type'. NOT sent to backend.
+ *
+ * FIX APPLIED:
+ *   - setCookie now also writes `ark_token` so middleware's `!token` check
+ *     does not falsely trigger the auth_required redirect loop.
+ *   - login() and register() use window.location.href so the browser fully
+ *     commits all cookies before navigation begins (eliminates race condition).
+ *   - Secure flag added on HTTPS origins.
  */
 
 import {
@@ -124,7 +131,6 @@ export const canAccess = (
   allowedRoles: DbRole[]
 ): boolean => {
   if (!userRole) return false;
-
   return allowedRoles.includes(userRole);
 };
 
@@ -137,20 +143,25 @@ function setCookie(name: string, value: string, days = 7) {
 
   const expires = new Date(Date.now() + days * 864e5).toUTCString();
 
+  const secure =
+    typeof window !== 'undefined' && window.location.protocol === 'https:'
+      ? '; Secure'
+      : '';
+
   document.cookie =
     `${name}=${encodeURIComponent(value)}; ` +
-    `expires=${expires}; path=/; SameSite=Lax`;
+    `expires=${expires}; path=/; SameSite=Lax${secure}`;
 }
 
 function deleteCookie(name: string) {
   if (typeof document === 'undefined') return;
 
   document.cookie =
-    `${name}=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/`;
+    `${name}=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/; SameSite=Lax`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ACCOUNT TYPE DERIVATION (FIX 1 APPLIED)
+// ACCOUNT TYPE DERIVATION
 // ─────────────────────────────────────────────────────────────────────────────
 
 function deriveAccountType(
@@ -158,67 +169,40 @@ function deriveAccountType(
   storedType?: string | null
 ): AccountType {
   // HARD LOCK FOR TENANTS
-  // Prevents accidental landlord/developer hydration
-  if (role === 'TENANT') {
-    return 'TENANT';
-  }
+  if (role === 'TENANT') return 'TENANT';
 
-  // Respect previously selected compatible type
   if (storedType) {
     const compatible: Record<string, DbRole[]> = {
-      LANDLORD: ['DEVELOPER', 'PROJECT_SPONSOR'],
+      LANDLORD:       ['DEVELOPER', 'PROJECT_SPONSOR'],
       INFRASTRUCTURE: ['DEVELOPER', 'PROJECT_SPONSOR'],
-      DIASPORA: ['DEVELOPER', 'PROJECT_SPONSOR', 'INVESTOR'],
-      INVESTOR: ['INVESTOR'],
-      CONTRACTOR: ['CONTRACTOR'],
-      SUPPLIER: ['SUPPLIER'],
-      BANK: ['BANK'],
-      GOVERNMENT: ['GOVERNMENT', 'VERIFIER'],
-      TENANT: ['TENANT'],
-      ADMIN: ['ADMIN'],
+      DIASPORA:       ['DEVELOPER', 'PROJECT_SPONSOR', 'INVESTOR'],
+      INVESTOR:       ['INVESTOR'],
+      CONTRACTOR:     ['CONTRACTOR'],
+      SUPPLIER:       ['SUPPLIER'],
+      BANK:           ['BANK'],
+      GOVERNMENT:     ['GOVERNMENT', 'VERIFIER'],
+      TENANT:         ['TENANT'],
+      ADMIN:          ['ADMIN'],
     };
-
     if (compatible[storedType]?.includes(role)) {
       return storedType as AccountType;
     }
   }
 
   switch (role) {
-    case 'INVESTOR':
-      return 'INVESTOR';
-
-    case 'CONTRACTOR':
-      return 'CONTRACTOR';
-
-    case 'SUPPLIER':
-      return 'SUPPLIER';
-
-    case 'BANK':
-      return 'BANK';
-
+    case 'INVESTOR':    return 'INVESTOR';
+    case 'CONTRACTOR':  return 'CONTRACTOR';
+    case 'SUPPLIER':    return 'SUPPLIER';
+    case 'BANK':        return 'BANK';
     case 'GOVERNMENT':
-    case 'VERIFIER':
-      return 'GOVERNMENT';
-
-    case 'ADMIN':
-      return 'ADMIN';
-
+    case 'VERIFIER':    return 'GOVERNMENT';
+    case 'ADMIN':       return 'ADMIN';
     case 'DEVELOPER':
     case 'PROJECT_SPONSOR':
-      // IMPORTANT:
-      // Preserve LANDLORD if already chosen
-      if (storedType === 'LANDLORD') {
-        return 'LANDLORD';
-      }
-
-      if (storedType === 'DIASPORA') {
-        return 'DIASPORA';
-      }
-
+      if (storedType === 'LANDLORD') return 'LANDLORD';
+      if (storedType === 'DIASPORA') return 'DIASPORA';
       return 'INFRASTRUCTURE';
-
-    default:
-      return 'INFRASTRUCTURE';
+    default:            return 'INFRASTRUCTURE';
   }
 }
 
@@ -231,38 +215,19 @@ export function roleHomePath(
   accountType: AccountType
 ): string {
   switch (role) {
-    case 'TENANT':
-      return '/tenant/dashboard';
-
-    case 'INVESTOR':
-      return '/portfolio';
-
-    case 'ADMIN':
-      return '/admin';
-
+    case 'TENANT':                  return '/tenant/dashboard';
+    case 'INVESTOR':                return '/portfolio';
+    case 'ADMIN':                   return '/admin';
     case 'GOVERNMENT':
-    case 'VERIFIER':
-      return '/admin';
-
+    case 'VERIFIER':                return '/admin';
     case 'CONTRACTOR':
     case 'SUPPLIER':
-    case 'BANK':
-      return '/dashboard';
-
+    case 'BANK':                    return '/dashboard';
     case 'DEVELOPER':
     case 'PROJECT_SPONSOR':
-      switch (accountType) {
-        case 'LANDLORD':
-          return '/landlord/tenants';
-
-        case 'DIASPORA':
-        case 'INFRASTRUCTURE':
-        default:
-          return '/projects/my';
-      }
-
-    default:
-      return '/dashboard';
+      if (accountType === 'LANDLORD') return '/landlord/tenants';
+      return '/projects/my';
+    default:                        return '/dashboard';
   }
 }
 
@@ -270,57 +235,45 @@ export function roleHomePath(
 // PROVIDER
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function AuthProvider({
-  children,
-}: {
-  children: ReactNode;
-}) {
+export function AuthProvider({ children }: { children: ReactNode }) {
   const router = useRouter();
 
-  const [user, setUser] = useState<AuthUser | null>(null);
-
-  const [token, setToken] = useState<string | null>(null);
-
+  const [user,    setUser]    = useState<AuthUser | null>(null);
+  const [token,   setToken]   = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // ───────────────────────────────────────────────────────────────────────────
-
+  // ── Build typed user from raw backend user ────────────────────────────────
   const buildUser = useCallback(
     (backendUser: any, storedAccountType?: string | null): AuthUser => {
-      const accountType = deriveAccountType(
-        backendUser.role,
-        storedAccountType
-      );
-
-      return {
-        ...backendUser,
-        accountType,
-      };
+      const accountType = deriveAccountType(backendUser.role, storedAccountType);
+      return { ...backendUser, accountType };
     },
     []
   );
 
-  // ───────────────────────────────────────────────────────────────────────────
-
+  // ── Persist to localStorage + cookies ────────────────────────────────────
+  // FIX: ark_token cookie is now written here so middleware's !token check
+  //      never falsely fires after a successful login.
   const persist = useCallback((jwt: string, u: AuthUser) => {
-    localStorage.setItem('ark_token', jwt);
-    localStorage.setItem('token', jwt);
+    localStorage.setItem('ark_token',       jwt);
+    localStorage.setItem('token',           jwt);
     localStorage.setItem('ark_account_type', u.accountType);
 
-    setCookie('ark_role', u.role);
+    setCookie('ark_token',       jwt);          // ← THE FIX: middleware reads this
+    setCookie('ark_role',        u.role);
     setCookie('ark_account_type', u.accountType);
 
     setToken(jwt);
     setUser(u);
   }, []);
 
-  // ───────────────────────────────────────────────────────────────────────────
-
+  // ── Clear all auth state ──────────────────────────────────────────────────
   const clearAuth = useCallback(() => {
     localStorage.removeItem('ark_token');
     localStorage.removeItem('token');
     localStorage.removeItem('ark_account_type');
 
+    deleteCookie('ark_token');
     deleteCookie('ark_role');
     deleteCookie('ark_account_type');
 
@@ -328,15 +281,13 @@ export function AuthProvider({
     setUser(null);
   }, []);
 
-  // ───────────────────────────────────────────────────────────────────────────
-
+  // ── Hydrate from storage on mount ─────────────────────────────────────────
   const hydrateFromStorage = useCallback(async () => {
     const stored =
       localStorage.getItem('ark_token') ||
       localStorage.getItem('token');
 
-    const storedAT =
-      localStorage.getItem('ark_account_type');
+    const storedAT = localStorage.getItem('ark_account_type');
 
     if (!stored) {
       setLoading(false);
@@ -347,15 +298,11 @@ export function AuthProvider({
 
     try {
       const res = await api.get('/api/auth/me');
-
-      const u = buildUser(
-        res.data.user ?? res.data,
-        storedAT
-      );
-
+      const u   = buildUser(res.data.user ?? res.data, storedAT);
       setUser(u);
-
-      setCookie('ark_role', u.role);
+      // Re-sync cookies in case they expired (e.g. after browser restart)
+      setCookie('ark_token',       stored);
+      setCookie('ark_role',        u.role);
       setCookie('ark_account_type', u.accountType);
     } catch {
       clearAuth();
@@ -364,176 +311,97 @@ export function AuthProvider({
     }
   }, [buildUser, clearAuth]);
 
-  // ───────────────────────────────────────────────────────────────────────────
-
   useEffect(() => {
     hydrateFromStorage();
   }, [hydrateFromStorage]);
 
-  // ───────────────────────────────────────────────────────────────────────────
-
-  const login = async (
-    email: string,
-    password: string
-  ) => {
-    const res = await api.post('/api/auth/login', {
-      email,
-      password,
-    });
+  // ── Login ─────────────────────────────────────────────────────────────────
+  // FIX: window.location.href (hard navigation) ensures the browser sends the
+  //      freshly written cookies on the very first request to the new route,
+  //      eliminating the middleware race condition that caused the login loop.
+  const login = async (email: string, password: string) => {
+    const res = await api.post('/api/auth/login', { email, password });
 
     const jwt =
       res.data.tokens?.access_token ??
       res.data.token;
 
-    const storedAT =
-      localStorage.getItem('ark_account_type');
-
-    const u = buildUser(
-      res.data.user,
-      storedAT
-    );
+    const storedAT = localStorage.getItem('ark_account_type');
+    const u        = buildUser(res.data.user, storedAT);
 
     persist(jwt, u);
 
-    router.push(
-      roleHomePath(u.role, u.accountType)
-    );
+    // Hard navigation: cookies are guaranteed committed before the new page loads
+    window.location.href = roleHomePath(u.role, u.accountType);
   };
 
-  // ───────────────────────────────────────────────────────────────────────────
+  // ── Register ──────────────────────────────────────────────────────────────
+  const register = async (data: RegisterData) => {
+    const { accountType, ...backendData } = data;
 
-  const register = async (
-    data: RegisterData
-  ) => {
-    const {
-      accountType,
-      ...backendData
-    } = data;
-
-    // Persist intended account type BEFORE auth hydration
     if (accountType) {
-      localStorage.setItem(
-        'ark_account_type',
-        accountType
-      );
+      localStorage.setItem('ark_account_type', accountType);
     }
 
-    const res = await api.post(
-      '/api/auth/register',
-      backendData
-    );
+    const res = await api.post('/api/auth/register', backendData);
 
     const jwt =
       res.data.tokens?.access_token ??
       res.data.token;
 
-    // HARD ENFORCE TENANT ACCOUNT TYPE (FIX 2 APPLIED)
     const enforcedAccountType =
-      backendData.role === 'TENANT'
-        ? 'TENANT'
-        : (accountType ?? null);
+      backendData.role === 'TENANT' ? 'TENANT' : (accountType ?? null);
 
-    const u = buildUser(
-      res.data.user,
-      enforcedAccountType
-    );
+    const u = buildUser(res.data.user, enforcedAccountType);
 
     persist(jwt, u);
 
-    // IMPORTANT:
-    // Prevent redirect race condition.
-    // Tenant invite flow handles redirect itself.
+    // Tenant invite flow handles its own redirect
     if (backendData.role !== 'TENANT') {
-      router.push(
-        roleHomePath(
-          u.role,
-          u.accountType
-        )
-      );
+      window.location.href = roleHomePath(u.role, u.accountType);
     }
   };
 
-  // ───────────────────────────────────────────────────────────────────────────
-
+  // ── Logout ────────────────────────────────────────────────────────────────
   const logout = () => {
     clearAuth();
     router.push('/login');
   };
 
-  // ───────────────────────────────────────────────────────────────────────────
-
+  // ── Refresh ───────────────────────────────────────────────────────────────
   const refresh = async () => {
     try {
-      const res = await api.get('/api/auth/me');
-
-      const storedAT =
-        localStorage.getItem('ark_account_type');
-
-      const u = buildUser(
-        res.data.user ?? res.data,
-        storedAT
-      );
-
+      const res    = await api.get('/api/auth/me');
+      const storedAT = localStorage.getItem('ark_account_type');
+      const u      = buildUser(res.data.user ?? res.data, storedAT);
       setUser(u);
-
-      setCookie('ark_role', u.role);
+      setCookie('ark_role',        u.role);
       setCookie('ark_account_type', u.accountType);
     } catch {
       logout();
     }
   };
 
-  // ───────────────────────────────────────────────────────────────────────────
-
-  const setAccountType = (
-    type: AccountType
-  ) => {
+  // ── setAccountType ────────────────────────────────────────────────────────
+  const setAccountType = (type: AccountType) => {
     if (!user) return;
-
-    const updated = {
-      ...user,
-      accountType: type,
-    };
-
-    localStorage.setItem(
-      'ark_account_type',
-      type
-    );
-
-    setCookie(
-      'ark_account_type',
-      type
-    );
-
+    const updated = { ...user, accountType: type };
+    localStorage.setItem('ark_account_type', type);
+    setCookie('ark_account_type', type);
     setUser(updated);
   };
 
-  // ───────────────────────────────────────────────────────────────────────────
-
-  const isLandlord =
-    user?.accountType === 'LANDLORD';
-
+  const isLandlord    = user?.accountType === 'LANDLORD';
   const isInfraBuilder =
     user?.accountType === 'INFRASTRUCTURE' ||
     user?.accountType === 'DIASPORA';
 
-  // ───────────────────────────────────────────────────────────────────────────
-
   return (
     <AuthContext.Provider
       value={{
-        user,
-        token,
-        loading,
-
-        isLandlord,
-        isInfraBuilder,
-
-        login,
-        register,
-        logout,
-        refresh,
-        setAccountType,
+        user, token, loading,
+        isLandlord, isInfraBuilder,
+        login, register, logout, refresh, setAccountType,
       }}
     >
       {children}
@@ -547,12 +415,6 @@ export function AuthProvider({
 
 export function useAuth(): AuthContextValue {
   const ctx = useContext(AuthContext);
-
-  if (!ctx) {
-    throw new Error(
-      'useAuth must be used inside <AuthProvider>'
-    );
-  }
-
+  if (!ctx) throw new Error('useAuth must be used inside <AuthProvider>');
   return ctx;
 }
