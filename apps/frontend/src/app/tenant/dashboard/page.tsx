@@ -4,10 +4,12 @@ export const dynamic = 'force-dynamic';
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
-// Backend URL — NEXT_PUBLIC_API_URL must be set in Vercel env vars
-// pointing to the Render backend e.g. https://nested-ark-backend.onrender.com/api
-// Falls back to relative /api for local dev only
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || '/api';
+// Backend URL — NEXT_PUBLIC_API_URL may or may not include /api suffix.
+// We normalise here so this file works regardless of how the env var is set.
+const _rawBase = process.env.NEXT_PUBLIC_API_URL || '';
+const API_BASE = _rawBase
+  ? _rawBase.replace(/\/api\/?$/, '') + '/api'   // strip trailing /api then re-add cleanly
+  : '/api';                                        // local dev fallback
 
 function getToken(): string | null {
   if (typeof window === 'undefined') return null;
