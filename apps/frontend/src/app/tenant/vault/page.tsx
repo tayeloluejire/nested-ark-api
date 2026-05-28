@@ -1,12 +1,98 @@
 'use client';
-export const dynamic = 'force-dynamic';
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import Navbar from '@/components/Navbar';
-import Footer from '@/components/Footer';
-import MobileBottomNav from '@/components/navigation/MobileBottomNav';
-import { Loader2, ShieldCheck, Wallet, ArrowLeft, RefreshCw, ChevronDown, ChevronUp, Download, CheckCircle2 } from 'lucide-react';
+import Link from 'next/link';
+
+// ─── Shared Visual Components Placeholder Layouts ────────────────────────────
+// Replace these paths with your actual project workspace imports
+function BrandLogo() {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 800, letterSpacing: '0.05em', color: '#white', fontFamily: 'monospace' }}>
+      <span style={{ color: '#14b8a6' }}>⚡</span> NESTED<span style={{ color: '#14b8a6' }}>ARK</span>
+    </div>
+  );
+}
+
+function NavBar() {
+  return (
+    <nav style={{
+      width: '100%',
+      background: 'rgba(10,26,26,0.8)',
+      backdropFilter: 'blur(12px)',
+      borderBottom: '1px solid rgba(20,184,166,0.15)',
+      padding: '16px 24px',
+      position: 'sticky',
+      top: 0,
+      zIndex: 100,
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'between',
+    }}>
+      <div style={{ display: 'flex', width: '100%', maxWidth: 1200, margin: '0 auto', justifyContent: 'space-between', alignItems: 'center' }}>
+        <BrandLogo />
+        <div style={{ display: 'flex', gap: 20, fontSize: 13, color: '#9ca3af' }}>
+          <Link href="/tenant/dashboard" style={{ color: '#14b8a6', textDecoration: 'none' }}>Dashboard</Link>
+          <Link href="/tenant/contributions" style={{ color: 'inherit', textDecoration: 'none' }}>History</Link>
+        </div>
+      </div>
+    </nav>
+  );
+}
+
+function Footer() {
+  return (
+    <footer style={{
+      width: '100%',
+      padding: '40px 24px',
+      borderTop: '1px solid rgba(20,184,166,0.1)',
+      background: '#050d0d',
+      marginTop: 'auto',
+    }}>
+      <div style={{ maxWidth: 1200, margin: '0 auto', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 16 }}>
+        <BrandLogo />
+        <div style={{ color: '#374151', fontSize: 12, fontFamily: 'monospace' }}>
+          SECURE ESCROW INFRASTRUCTURE // SHA-256 ENCRYPTED
+        </div>
+      </div>
+    </footer>
+  );
+}
+
+function MobileBottomButton({ label, onClick, disabled }: { label: string; onClick: () => void; disabled?: boolean }) {
+  return (
+    <div style={{
+      position: 'fixed',
+      bottom: 0,
+      left: 0,
+      right: 0,
+      padding: '16px',
+      background: 'linear-gradient(to top, #0a1a1a 80%, transparent)',
+      borderTop: '1px solid rgba(20,184,166,0.15)',
+      zIndex: 90,
+    }}>
+      <button
+        onClick={onClick}
+        disabled={disabled}
+        style={{
+          width: '100%',
+          padding: '16px',
+          borderRadius: 12,
+          background: disabled ? '#0d2d2d' : 'linear-gradient(135deg, #14b8a6, #0d9488)',
+          border: 'none',
+          color: 'white',
+          fontWeight: 700,
+          fontSize: 15,
+          letterSpacing: 0.5,
+          cursor: disabled ? 'not-allowed' : 'pointer',
+          boxShadow: '0 4px 20px rgba(20,184,166,0.25)',
+        }}
+      >
+        {label}
+      </button>
+    </div>
+  );
+}
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 interface StandaloneVault {
@@ -60,29 +146,24 @@ interface InitForm {
   landlord_account_name: string;
 }
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || '/api';
+const API_BASE = '/api';
 
 function getToken(): string | null {
   if (typeof window === 'undefined') return null;
-  return (
-    localStorage.getItem('ark_token') ||
-    localStorage.getItem('token') ||
-    sessionStorage.getItem('ark_token') ||
-    sessionStorage.getItem('token')
-  );
+  return localStorage.getItem('token') || sessionStorage.getItem('token');
 }
 
 const fmt = (n: number) =>
   new Intl.NumberFormat('en-NG', { style: 'currency', currency: 'NGN', minimumFractionDigits: 2 }).format(n);
 
-// ─── Global Reusable Components ───────────────────────────────────────────────
+// ─── Sub-components ───────────────────────────────────────────────────────────
 function ProgressRing({ pct }: { pct: number }) {
   const r = 54;
   const circ = 2 * Math.PI * r;
-  const dash = (Math.min(100, Math.max(0, pct)) / 100) * circ;
+  const dash = (pct / 100) * circ;
   return (
-    <svg width="110" height="110" viewBox="0 0 130 130" className="progress-ring flex-shrink-0">
-      <circle cx="65" cy="65" r={r} fill="none" stroke="#111" strokeWidth="10" />
+    <svg width="130" height="130" viewBox="0 0 130 130" className="progress-ring">
+      <circle cx="65" cy="65" r={r} fill="none" stroke="#1a2a2a" strokeWidth="10" />
       <circle
         cx="65" cy="65" r={r} fill="none"
         stroke={pct >= 100 ? '#10b981' : '#14b8a6'}
@@ -92,10 +173,10 @@ function ProgressRing({ pct }: { pct: number }) {
         strokeLinecap="round"
         style={{ transition: 'stroke-dasharray 0.8s ease' }}
       />
-      <text x="65" y="62" textAnchor="middle" fill="white" fontSize="22" fontWeight="900" fontFamily="monospace">
+      <text x="65" y="60" textAnchor="middle" fill="white" fontSize="20" fontWeight="700" fontFamily="monospace">
         {pct}%
       </text>
-      <text x="65" y="78" textAnchor="middle" fill="#14b8a6" fontSize="9" fontWeight="bold" tracking="widest" fontFamily="monospace">
+      <text x="65" y="78" textAnchor="middle" fill="#14b8a6" fontSize="10" fontFamily="monospace">
         FUNDED
       </text>
     </svg>
@@ -104,82 +185,21 @@ function ProgressRing({ pct }: { pct: number }) {
 
 function StatCard({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (
-    <div className="bg-zinc-950/40 border border-zinc-900 rounded-xl p-4 shadow-sm">
-      <div className="text-zinc-500 text-[9px] font-bold tracking-widest uppercase mb-1.5">{label}</div>
-      <div className="text-sm font-black text-white font-mono tracking-tight">{value}</div>
-      {sub && <div className="text-zinc-600 text-[10px] uppercase font-medium mt-0.5">{sub}</div>}
+    <div style={{
+      background: 'rgba(20,184,166,0.06)',
+      border: '1px solid rgba(20,184,166,0.15)',
+      borderRadius: 10,
+      padding: '16px 18px',
+    }}>
+      <div style={{ color: '#6b7280', fontSize: 11, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 6 }}>{label}</div>
+      <div style={{ color: 'white', fontSize: 18, fontWeight: 700, fontFamily: 'monospace' }}>{value}</div>
+      {sub && <div style={{ color: '#6b7280', fontSize: 11, marginTop: 4 }}>{sub}</div>}
     </div>
   );
 }
 
-// ─── Interactive Cryptographic Receipt Block ──────────────────────────────────
-function ReceiptBlock() {
-  const handleDownloadReceipt = () => {
-    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify({
-      receipt_id: "3ea6b768c2f3e8f9b1c0d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3",
-      timestamp: "2026-05-26 16:46:00 WAT",
-      amount: "NGN 110.00",
-      status: "SUCCESS",
-      billing_period: "2026-05",
-      network: "Paystack Gateway Escrow Processor",
-      signature: "SHA-256 Verified Ledger Confirmation"
-    }, null, 2));
-    
-    const downloadAnchor = document.createElement('a');
-    downloadAnchor.setAttribute("href", dataStr);
-    downloadAnchor.setAttribute("download", "nested_ark_receipt_3ea6b768.json");
-    document.body.appendChild(downloadAnchor);
-    downloadAnchor.click();
-    downloadAnchor.remove();
-  };
-
-  return (
-    <div className="mt-6 border border-zinc-900 bg-black rounded-xl overflow-hidden shadow-xl">
-      <div className="bg-zinc-950/80 px-4 py-3 border-b border-zinc-900 flex justify-between items-center">
-        <div className="flex items-center gap-2">
-          <CheckCircle2 size={14} className="text-emerald-500" />
-          <span className="text-[10px] font-bold tracking-wider text-zinc-400 uppercase">Most Recent Transaction Ledger</span>
-        </div>
-        <span className="text-emerald-400 text-[9px] font-mono font-bold uppercase tracking-widest bg-emerald-500/10 px-2 py-0.5 rounded">
-          SUCCESS
-        </span>
-      </div>
-      <div className="p-4 grid grid-cols-2 sm:grid-cols-3 gap-y-3 gap-x-4 text-xs font-mono border-b border-zinc-900/60">
-        <div>
-          <div className="text-[9px] font-bold text-zinc-600 uppercase tracking-wider mb-0.5">Payment Date</div>
-          <div className="text-zinc-300 text-[11px] font-bold">26 May 2026</div>
-        </div>
-        <div>
-          <div className="text-[9px] font-bold text-zinc-600 uppercase tracking-wider mb-0.5">Execution Time</div>
-          <div className="text-zinc-300 text-[11px] font-bold">16:46</div>
-        </div>
-        <div>
-          <div className="text-[9px] font-bold text-zinc-600 uppercase tracking-wider mb-0.5">Settled Gross</div>
-          <div className="text-teal-400 text-[11px] font-black">₦110.00</div>
-        </div>
-        <div>
-          <div className="text-[9px] font-bold text-zinc-600 uppercase tracking-wider mb-0.5">Target Period</div>
-          <div className="text-zinc-400 text-[11px]">2026-05</div>
-        </div>
-        <div className="col-span-2">
-          <div className="text-[9px] font-bold text-zinc-600 uppercase tracking-wider mb-0.5">Cryptographic Signature Hash Chain</div>
-          <div className="text-zinc-500 text-[10px] block truncate select-all" title="3ea6b768c2f3...">
-            3ea6b768c2f3...
-          </div>
-        </div>
-      </div>
-      <button
-        onClick={handleDownloadReceipt}
-        className="w-full bg-zinc-950 hover:bg-zinc-900 py-3 text-center text-zinc-400 hover:text-white font-bold text-[10px] tracking-widest uppercase transition-colors flex items-center justify-center gap-2 border-t border-zinc-900/30"
-      >
-        <Download size={12} className="text-teal-500" /> Click to Download Sealed Receipt (.JSON)
-      </button>
-    </div>
-  );
-}
-
-// ─── Init Vault Form Sub-component ───────────────────────────────────────────
-function InitVaultForm({ onSuccess }: { onSuccess: () => void }) {
+// ─── Init Form Component ──────────────────────────────────────────────────────
+function InitVaultForm({ onSuccess, triggerSubmitRef }: { onSuccess: () => void; triggerSubmitRef: { current: (() => void) | null } }) {
   const [form, setForm] = useState<InitForm>({
     target_amount: '',
     installment_amount: '',
@@ -221,48 +241,74 @@ function InitVaultForm({ onSuccess }: { onSuccess: () => void }) {
           landlord_account_number: form.landlord_account_number || undefined,
           landlord_account_name:   form.landlord_account_name || undefined,
         }),
-        credentials: 'include'
       });
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.error || 'Failed to initialize vault');
       onSuccess();
     } catch (e: any) {
-      setError(e.message || 'Error occurred connecting to architecture pool');
+      setError(e.message);
     } finally {
       setLoading(false);
     }
   };
 
+  // Bind execution pipeline to ref trigger for mobile button action tracking
+  useEffect(() => {
+    triggerSubmitRef.current = handleSubmit;
+    return () => { triggerSubmitRef.current = null; };
+  }, [form]);
+
+  const inputStyle: React.CSSProperties = {
+    width: '100%', background: '#0d1f1f', border: '1px solid rgba(20,184,166,0.2)',
+    borderRadius: 8, padding: '11px 14px', color: 'white', fontSize: 14,
+    outline: 'none', boxSizing: 'border-box',
+  };
+  const labelStyle: React.CSSProperties = {
+    display: 'block', color: '#9ca3af', fontSize: 11,
+    letterSpacing: 1, textTransform: 'uppercase', marginBottom: 6,
+  };
+
   return (
-    <div className="bg-gradient-to-b from-zinc-950 to-black border border-zinc-800/80 rounded-2xl p-6 shadow-2xl relative">
-      <div className="mb-6 flex items-start gap-4">
-        <div className="w-12 h-12 bg-teal-500/10 text-teal-500 rounded-xl flex items-center justify-center text-xl flex-shrink-0 border border-teal-500/10">🔒</div>
-        <div>
-          <h2 className="text-white text-base font-black uppercase tracking-tight">Initialize Your Savings Vault</h2>
-          <p className="text-zinc-500 text-xs mt-1 leading-relaxed">
-            Start saving toward rent independently — no landlord connection required to deploy.
-          </p>
+    <div style={{
+      background: 'linear-gradient(135deg, #0d1f1f 0%, #0a1a1a 100%)',
+      border: '1px solid rgba(20,184,166,0.25)',
+      borderRadius: 16, padding: 32, marginBottom: 80, // buffer zone for mobile sticky action items
+    }}>
+      <div style={{ marginBottom: 28 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10 }}>
+          <div style={{
+            width: 40, height: 40, borderRadius: 10,
+            background: 'rgba(20,184,166,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+            fontSize: 20,
+          }}>🔒</div>
+          <div>
+            <h2 style={{ margin: 0, color: 'white', fontSize: 18, fontWeight: 700 }}>Initialize Your Savings Vault</h2>
+            <p style={{ margin: 0, color: '#6b7280', fontSize: 12, marginTop: 2 }}>
+              Start saving toward rent independently — no landlord required to begin
+            </p>
+          </div>
         </div>
-      </div>
-      
-      <div className="bg-teal-500/[0.02] border border-teal-500/10 rounded-xl p-4 text-zinc-400 text-xs leading-relaxed mb-6">
-        💡 Your savings are safely anchored in Paystack Escrow. When your landlord claims this vault token, funds auto-release. Add their data now to fully pre-configure execution routing.
+        <div style={{
+          background: 'rgba(20,184,166,0.08)', border: '1px solid rgba(20,184,166,0.15)',
+          borderRadius: 8, padding: '10px 14px', fontSize: 12, color: '#14b8a6', lineHeight: 1.5,
+        }}>
+          💡 Your savings are held securely in Paystack escrow. When your landlord onboards, funds auto-release to them. You can also add their bank details now to pre-configure the payout.
+        </div>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
         <div>
-          <label className="block text-zinc-500 text-[10px] font-bold tracking-widest uppercase mb-2">Target Amount (₦) *</label>
-          <input className="w-full bg-zinc-950 border border-zinc-900 rounded-xl px-4 py-3 text-white text-sm font-mono focus:outline-none focus:border-teal-500/30 transition-colors" type="number" placeholder="e.g. 150000" value={form.target_amount} onChange={set('target_amount')} />
+          <label style={labelStyle}>Target Amount (₦) *</label>
+          <input style={inputStyle} type="number" placeholder="e.g. 150000" value={form.target_amount} onChange={set('target_amount')} />
         </div>
         <div>
-          <label className="block text-zinc-500 text-[10px] font-bold tracking-widest uppercase mb-2">Installment Amount (₦) *</label>
-          <input className="w-full bg-zinc-950 border border-zinc-900 rounded-xl px-4 py-3 text-white text-sm font-mono focus:outline-none focus:border-teal-500/30 transition-colors" type="number" placeholder="e.g. 25000" value={form.installment_amount} onChange={set('installment_amount')} />
+          <label style={labelStyle}>Installment Amount (₦) *</label>
+          <input style={inputStyle} type="number" placeholder="e.g. 25000" value={form.installment_amount} onChange={set('installment_amount')} />
         </div>
       </div>
-
-      <div className="mb-6">
-        <label className="block text-zinc-500 text-[10px] font-bold tracking-widest uppercase mb-2">Payment Frequency</label>
-        <select className="w-full bg-zinc-950 border border-zinc-900 rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:border-teal-500/30 transition-colors cursor-pointer" value={form.frequency} onChange={set('frequency')}>
+      <div style={{ marginBottom: 20 }}>
+        <label style={labelStyle}>Payment Frequency</label>
+        <select style={{ ...inputStyle, cursor: 'pointer' }} value={form.frequency} onChange={set('frequency')}>
           <option value="DAILY">Daily</option>
           <option value="WEEKLY">Weekly</option>
           <option value="BIWEEKLY">Bi-Weekly</option>
@@ -271,40 +317,47 @@ function InitVaultForm({ onSuccess }: { onSuccess: () => void }) {
         </select>
       </div>
 
-      <div className="mb-6">
+      <div style={{ marginBottom: 20 }}>
         <button
-          type="button"
           onClick={() => setShowLandlord(!showLandlord)}
-          className="w-full bg-zinc-950/40 hover:bg-zinc-950 border border-zinc-900 border-dashed rounded-xl px-4 py-3 text-teal-400 hover:text-teal-300 text-xs font-bold uppercase tracking-wider flex items-center justify-between transition-colors"
+          style={{
+            background: 'none', border: '1px dashed rgba(20,184,166,0.3)',
+            borderRadius: 8, padding: '10px 16px', color: '#14b8a6',
+            fontSize: 13, cursor: 'pointer', width: '100%', textAlign: 'left',
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          }}
         >
-          <span>🏠 Add Landlord Payout Destination <span className="text-zinc-600 font-normal lowercase">(optional mapping)</span></span>
-          {showLandlord ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+          <span>🏠 Add Landlord Payout Details <span style={{ color: '#6b7280' }}>(optional — configures auto-release)</span></span>
+          <span style={{ fontSize: 16 }}>{showLandlord ? '▲' : '▼'}</span>
         </button>
 
         {showLandlord && (
-          <div className="mt-3 p-5 bg-black/40 border border-zinc-900 rounded-xl space-y-4 shadow-inner">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div style={{
+            marginTop: 12, padding: '20px', background: 'rgba(0,0,0,0.3)',
+            borderRadius: 10, border: '1px solid rgba(20,184,166,0.1)',
+          }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 14 }}>
               <div>
-                <label className="block text-zinc-600 text-[9px] font-bold tracking-widest uppercase mb-1.5">Landlord Name</label>
-                <input className="w-full bg-zinc-950 border border-zinc-900 rounded-lg px-3 py-2.5 text-white text-xs focus:outline-none" placeholder="Full name" value={form.landlord_name} onChange={set('landlord_name')} />
+                <label style={labelStyle}>Landlord Name</label>
+                <input style={inputStyle} placeholder="Full name" value={form.landlord_name} onChange={set('landlord_name')} />
               </div>
               <div>
-                <label className="block text-zinc-600 text-[9px] font-bold tracking-widest uppercase mb-1.5">Landlord Email</label>
-                <input className="w-full bg-zinc-950 border border-zinc-900 rounded-lg px-3 py-2.5 text-white text-xs focus:outline-none" type="email" placeholder="landlord@email.com" value={form.landlord_email} onChange={set('landlord_email')} />
+                <label style={labelStyle}>Landlord Email</label>
+                <input style={inputStyle} type="email" placeholder="landlord@email.com" value={form.landlord_email} onChange={set('landlord_email')} />
               </div>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 14 }}>
               <div>
-                <label className="block text-zinc-600 text-[9px] font-bold tracking-widest uppercase mb-1.5">Bank Name</label>
-                <input className="w-full bg-zinc-950 border border-zinc-900 rounded-lg px-3 py-2.5 text-white text-xs focus:outline-none" placeholder="GTBank" value={form.landlord_bank_name} onChange={set('landlord_bank_name')} />
+                <label style={labelStyle}>Bank Name</label>
+                <input style={inputStyle} placeholder="GTBank" value={form.landlord_bank_name} onChange={set('landlord_bank_name')} />
               </div>
               <div>
-                <label className="block text-zinc-600 text-[9px] font-bold tracking-widest uppercase mb-1.5">Account Number</label>
-                <input className="w-full bg-zinc-950 border border-zinc-900 rounded-lg px-3 py-2.5 text-white text-xs focus:outline-none" placeholder="0123456789" value={form.landlord_account_number} onChange={set('landlord_account_number')} />
+                <label style={labelStyle}>Account Number</label>
+                <input style={inputStyle} placeholder="0123456789" value={form.landlord_account_number} onChange={set('landlord_account_number')} />
               </div>
               <div>
-                <label className="block text-zinc-600 text-[9px] font-bold tracking-widest uppercase mb-1.5">Account Name</label>
-                <input className="w-full bg-zinc-950 border border-zinc-900 rounded-lg px-3 py-2.5 text-white text-xs focus:outline-none" placeholder="As on bank" value={form.landlord_account_name} onChange={set('landlord_account_name')} />
+                <label style={labelStyle}>Account Name</label>
+                <input style={inputStyle} placeholder="As on bank" value={form.landlord_account_name} onChange={set('landlord_account_name')} />
               </div>
             </div>
           </div>
@@ -312,161 +365,152 @@ function InitVaultForm({ onSuccess }: { onSuccess: () => void }) {
       </div>
 
       {error && (
-        <div className="bg-red-500/5 border border-red-500/20 rounded-xl p-3 text-red-400 font-mono text-xs mb-4">
-          {error}
-        </div>
+        <div style={{
+          background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)',
+          borderRadius: 8, padding: '10px 14px', color: '#ef4444', fontSize: 13, marginBottom: 16,
+        }}>{error}</div>
       )}
-
-      <button
-        onClick={handleSubmit}
-        disabled={loading}
-        className={`w-full py-3.5 rounded-xl text-xs font-black uppercase tracking-wider border transition-all duration-200 ${
-          loading
-            ? 'bg-zinc-900 border-zinc-800 text-zinc-600 cursor-not-allowed'
-            : 'bg-gradient-to-r from-teal-500 to-emerald-500 border-teal-400 text-black shadow-xl shadow-teal-500/5 hover:opacity-90 active:scale-[0.99]'
-        }`}
-      >
-        {loading ? '⏳ Initializing Vault Ledger...' : '🚀 Initialize My Savings Vault'}
-      </button>
     </div>
   );
 }
 
-// ─── Active Vault Display (Standalone Case) ───────────────────────────────────
+// ─── Active Vault Display Component ──────────────────────────────────────────
 function StandaloneVaultDisplay({ vault, onPay }: { vault: StandaloneVault; onPay: () => void }) {
-  const statusColor = vault.status === 'FUNDED_READY' ? 'border-emerald-500/30' : 'border-teal-500/20';
+  const statusColor = vault.status === 'FUNDED_READY' ? '#10b981' : vault.status === 'ACTIVE' ? '#14b8a6' : '#f59e0b';
 
   return (
-    <div className="space-y-4">
-      {/* Target Hit Metric Banner */}
+    <div style={{ marginBottom: 80 }}>
       {vault.status === 'FUNDED_READY' && (
-        <div className="border border-emerald-500/30 bg-emerald-500/[0.03] rounded-xl p-4 flex items-start gap-3 shadow-2xl">
-          <span className="text-xl">🎯</span>
+        <div style={{
+          background: 'rgba(16,185,129,0.12)', border: '1px solid rgba(16,185,129,0.3)',
+          borderRadius: 10, padding: '12px 18px', marginBottom: 20,
+          display: 'flex', alignItems: 'center', gap: 10,
+        }}>
+          <span style={{ fontSize: 20 }}>🎯</span>
           <div>
-            <div className="text-emerald-400 font-black text-xs uppercase tracking-widest">Vault Fully Funded!</div>
-            <p className="text-zinc-500 text-xs leading-relaxed mt-0.5">
-              Awaiting host landlord claiming actions for platform settlement execution. Deliver your explicit hash sequence parameters to them.
-            </p>
+            <div style={{ color: '#10b981', fontWeight: 700, fontSize: 14 }}>Vault Fully Funded!</div>
+            <div style={{ color: '#6b7280', fontSize: 12 }}>Awaiting landlord onboarding for escrow release. Share your vault ID with your landlord.</div>
           </div>
         </div>
       )}
 
-      {/* Main Core Vault Grid Card */}
-      <div className={`bg-gradient-to-b from-zinc-950 to-black border ${statusColor} rounded-2xl p-6 shadow-2xl relative`}>
-        <div className="flex justify-between items-start gap-4 mb-6">
+      <div style={{
+        background: 'linear-gradient(135deg, #0d1f1f 0%, #0a1a1a 100%)',
+        border: `1px solid ${statusColor}30`,
+        borderRadius: 16, padding: 28, marginBottom: 20,
+      }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 24 }}>
           <div>
-            <div className="text-zinc-500 text-[9px] font-bold tracking-widest uppercase mb-1.5">Independent Flex-Pay Vault</div>
-            <div className="text-2xl font-black text-white font-mono tracking-tight">{fmt(vault.vault_balance)}</div>
-            <div className="text-zinc-600 text-xs font-medium uppercase mt-1">
-              of {fmt(vault.target_amount)} objective &bull; {vault.frequency.toLowerCase()}
+            <div style={{ color: '#6b7280', fontSize: 11, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 6 }}>
+              Independent Flex-Pay Vault
+            </div>
+            <div style={{ color: 'white', fontSize: 22, fontWeight: 700, fontFamily: 'monospace' }}>
+              {fmt(vault.vault_balance)}
+            </div>
+            <div style={{ color: '#6b7280', fontSize: 12, marginTop: 4 }}>
+              of {fmt(vault.target_amount)} target · {vault.frequency.toLowerCase()}
             </div>
           </div>
-          <ProgressRing pct={vault.funded_pct} />
+          <div style={{ textAlign: 'right' }}>
+            <ProgressRing pct={vault.funded_pct} />
+          </div>
         </div>
 
-        {/* Dynamic Inner KPIs Grid */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-6">
-          <StatCard label="Total Capital Saved" value={fmt(vault.total_contributed)} sub={`${vault.contribution_count} payloads`} />
-          <StatCard label="Installment Target" value={fmt(vault.installment_amount)} sub={vault.frequency.toLowerCase()} />
-          <StatCard label="Pipeline Status" value={vault.status.replace('_', ' ')} sub={vault.funded_periods > 0 ? `${vault.funded_periods} bounds locked` : 'saving processing'} />
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 20 }}>
+          <StatCard label="Total Saved" value={fmt(vault.total_contributed)} sub={`${vault.contribution_count} payments`} />
+          <StatCard label="Installment" value={fmt(vault.installment_amount)} sub={vault.frequency.toLowerCase()} />
+          <StatCard label="Status" value={vault.status.replace('_', ' ')} sub={vault.funded_periods > 0 ? `${vault.funded_periods} period(s) funded` : 'Saving in progress'} />
         </div>
 
-        {/* Escrow Destination Resolution Data */}
         {vault.landlord_name || vault.landlord_email ? (
-          <div className="bg-zinc-950/60 border border-zinc-900 rounded-xl p-4 mb-6 space-y-2">
-            <div className="text-zinc-500 text-[9px] font-bold tracking-widest uppercase">Landlord Payout Profile Node</div>
-            <div className="flex gap-x-4 gap-y-2 flex-wrap text-xs text-zinc-400">
-              {vault.landlord_name && <span className="font-bold text-white">👤 {vault.landlord_name}</span>}
-              {vault.landlord_email && <span className="text-teal-400">✉️ {vault.landlord_email}</span>}
-              {vault.landlord_bank_name && <span className="font-mono text-[11px]">🏦 {vault.landlord_bank_name}</span>}
-              {vault.landlord_account_name && <span className="text-zinc-500 font-medium">{vault.landlord_account_name}</span>}
+          <div style={{
+            background: 'rgba(20,184,166,0.06)', border: '1px solid rgba(20,184,166,0.15)',
+            borderRadius: 10, padding: '14px 18px', marginBottom: 20,
+          }}>
+            <div style={{ color: '#6b7280', fontSize: 11, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 8 }}>
+              Landlord Payout Destination
             </div>
-            <div className="text-[10px] text-zinc-600 pt-1 border-t border-zinc-900/40">
-              ✅ Liquidity route finalized — payout delivers automatically upon verified claims block.
+            <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
+              {vault.landlord_name && <span style={{ color: 'white', fontSize: 13 }}>👤 {vault.landlord_name}</span>}
+              {vault.landlord_email && <span style={{ color: '#14b8a6', fontSize: 13 }}>✉️ {vault.landlord_email}</span>}
+              {vault.landlord_bank_name && <span style={{ color: '#9ca3af', fontSize: 13 }}>🏦 {vault.landlord_bank_name}</span>}
+              {vault.landlord_account_name && <span style={{ color: '#9ca3af', fontSize: 13 }}>{vault.landlord_account_name}</span>}
+            </div>
+            <div style={{ color: '#6b7280', fontSize: 11, marginTop: 8 }}>
+              ✅ Payout auto-configured — funds release to this account when vault is claimed by landlord
             </div>
           </div>
         ) : (
-          <div className="bg-amber-500/[0.02] border border-amber-500/20 rounded-xl p-4 text-amber-400 text-xs leading-relaxed mb-6">
-            ⚠️ Missing secondary landlord payout registry. Assets remain held safely inside centralized escrow. Supply destination route parameters later or distribute short identifier node <code className="bg-black text-amber-500/80 px-1.5 py-0.5 rounded border border-zinc-900 font-mono text-[11px] font-bold">{vault.id.slice(0, 8)}...</code> to verify ownership claims.
+          <div style={{
+            background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.2)',
+            borderRadius: 10, padding: '12px 16px', marginBottom: 20,
+          }}>
+            <div style={{ color: '#f59e0b', fontSize: 12 }}>
+              ⚠️ No landlord payout details added. Your savings are secure in escrow. Add your landlord's bank details to pre-configure the release, or share your vault ID <code style={{ background: 'rgba(0,0,0,0.3)', padding: '2px 6px', borderRadius: 4 }}>{vault.id.slice(0, 8)}...</code> with your landlord so they can claim it when they onboard.
+            </div>
           </div>
         )}
 
-        {/* Tracking Context Footprint */}
-        <div className="text-zinc-700 text-[10px] font-mono uppercase tracking-wider select-all pt-2 border-t border-zinc-900/40">
-          VAULT PAYLOAD ID &bull; {vault.id} &bull; {new Date(vault.created_at).toLocaleDateString('en-NG')}
+        <div style={{ color: '#374151', fontSize: 11, fontFamily: 'monospace' }}>
+          VAULT · {vault.id} · {new Date(vault.created_at).toLocaleDateString('en-NG')}
         </div>
       </div>
-
-      {/* Downstream Interactive Receipts Chain Component */}
-      <ReceiptBlock />
-
-      {/* Action Dispatcher Hook */}
-      {vault.status !== 'FUNDED_READY' && (
-        <button
-          onClick={onPay}
-          className="w-full py-3.5 rounded-xl bg-gradient-to-r from-teal-500 to-emerald-500 text-black border border-teal-400 font-black text-xs uppercase tracking-widest shadow-lg shadow-teal-500/5 hover:opacity-95 transition-all"
-        >
-          ⚡ Execute Contribution Payload &bull; {fmt(vault.installment_amount)}
-        </button>
-      )}
     </div>
   );
 }
 
-// ─── Linked Vault Display (Standard Mapped Path) ───────────────────────────────
+// ─── Linked Vault Display Component ──────────────────────────────────────────
 function LinkedVaultDisplay({ vault }: { vault: LinkedVault }) {
   return (
-    <div className="space-y-4">
-      <div className="bg-gradient-to-b from-zinc-950 to-black border border-zinc-800/80 rounded-2xl p-6 shadow-2xl relative">
-        <div className="flex justify-between items-start gap-4 mb-6">
-          <div>
-            <div className="text-zinc-500 text-[9px] font-bold tracking-widest uppercase mb-1.5">Flex-Pay Operational Vault</div>
-            <div className="text-2xl font-black text-white font-mono tracking-tight">{fmt(vault.vault_balance)}</div>
-            <div className="text-zinc-600 text-xs font-medium uppercase mt-1">of {fmt(vault.target_amount)} objective</div>
+    <div style={{
+      background: 'linear-gradient(135deg, #0d1f1f 0%, #0a1a1a 100%)',
+      border: '1px solid rgba(20,184,166,0.25)', borderRadius: 16, padding: 28,
+    }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24 }}>
+        <div>
+          <div style={{ color: '#6b7280', fontSize: 11, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 6 }}>
+            Flex-Pay Vault
           </div>
-          <ProgressRing pct={vault.funded_pct} />
+          <div style={{ color: 'white', fontSize: 24, fontWeight: 700, fontFamily: 'monospace' }}>
+            {fmt(vault.vault_balance)}
+          </div>
+          <div style={{ color: '#6b7280', fontSize: 13, marginTop: 4 }}>
+            of {fmt(vault.target_amount)} target
+          </div>
         </div>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <StatCard label="Total Liquidity Contributed" value={fmt(vault.total_contributed)} />
-          <StatCard label="Installment Velocity" value={fmt(vault.installment_amount)} sub={vault.frequency.toLowerCase()} />
-          <StatCard label="State" value={vault.status} />
-        </div>
+        <ProgressRing pct={vault.funded_pct} />
       </div>
-
-      {/* Downstream Interactive Receipts Chain Component */}
-      <ReceiptBlock />
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
+        <StatCard label="Contributed" value={fmt(vault.total_contributed)} />
+        <StatCard label="Installment" value={fmt(vault.installment_amount)} sub={vault.frequency.toLowerCase()} />
+        <StatCard label="Status" value={vault.status} />
+      </div>
     </div>
   );
 }
 
-// ─── Main Interface Container Router ──────────────────────────────────────────
+// ─── Main Page Shell Layer ───────────────────────────────────────────────────
 export default function TenantVaultPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState<VaultApiResponse | null>(null);
   const [error, setError] = useState('');
 
+  // Execution anchor used by programmatic structural component mapping
+  const formSubmitRef = useState<{ current: (() => void) | null }>({ current: null })[0];
+
   const fetchVault = async () => {
     setLoading(true);
     try {
       const token = getToken();
       if (!token) { router.push('/login'); return; }
-      
       const res = await fetch(`${API_BASE}/tenant/my-vault`, {
         headers: { Authorization: `Bearer ${token}` },
-        credentials: 'include',
-        cache: 'no-store'
       });
-      
-      if (res.status === 401) {
-        router.push('/login');
-        return;
-      }
-      
       const json = await res.json();
       setData(json);
     } catch (e: any) {
-      setError(e.message || 'Fatal architecture handshake validation failure');
+      setError(e.message);
     } finally {
       setLoading(false);
     }
@@ -474,125 +518,129 @@ export default function TenantVaultPage() {
 
   useEffect(() => { fetchVault(); }, []);
 
-  // ── Rendering Matrices Loading Loop ───────────────────────────────────────
   if (loading) return (
-    <div className="min-h-screen bg-[#050505] text-white flex flex-col">
-      <Navbar />
-      <div className="flex-grow flex flex-col items-center justify-center py-40 gap-4">
-        <Loader2 className="animate-spin text-teal-500" size={32} />
-        <span className="text-zinc-500 font-mono text-sm tracking-wider">Loading storage engine indices...</span>
+    <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh', background: '#050d0d' }}>
+      <NavBar />
+      <div style={{ display: 'flex', flex: 1, alignItems: 'center', justifyContent: 'center', color: '#14b8a6', fontSize: 14 }}>
+        <span style={{ fontFamily: 'monospace' }}>⟳ Loading core vault matrix...</span>
       </div>
       <Footer />
     </div>
   );
 
-  // ── Rendering Error Boundaries ────────────────────────────────────────────
   if (error) return (
-    <div className="min-h-screen bg-[#050505] text-white flex flex-col">
-      <Navbar />
-      <div className="flex-grow max-w-xl w-full mx-auto px-4 py-20 text-center">
-        <div className="border border-red-500/30 bg-red-500/5 rounded-2xl p-6 shadow-2xl">
-          <div className="text-red-500 font-black text-xs uppercase tracking-widest mb-2">⚠️ Pipeline Interrupted</div>
-          <p className="text-zinc-400 text-sm mb-4">{error}</p>
-          <button onClick={fetchVault} className="inline-flex items-center gap-2 px-4 py-2 border border-zinc-800 rounded-lg text-xs font-bold text-zinc-300 hover:text-white uppercase">
-            <RefreshCw size={12} /> Retry Mapping
-          </button>
-        </div>
-      </div>
+    <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh', background: '#050d0d' }}>
+      <NavBar />
+      <div style={{ padding: 24, color: '#ef4444', fontSize: 14, maxWidth: 720, margin: '40px auto' }}>Error: {error}</div>
       <Footer />
     </div>
   );
+
+  const shell: React.CSSProperties = {
+    maxWidth: 720, margin: '0 auto', padding: '40px 20px', width: '100%', boxSizing: 'border-box'
+  };
 
   const pageHeader = (
-    <div className="mb-8">
-      <div className="text-teal-500 text-[10px] font-bold tracking-[0.2em] uppercase mb-2">
-        Tenant Portal Environment
+    <div style={{ marginBottom: 28 }}>
+      <div style={{ color: '#6b7280', fontSize: 11, letterSpacing: 2, textTransform: 'uppercase', marginBottom: 6 }}>
+        Tenant Portal
       </div>
-      <h1 className="text-3xl font-black tracking-tight text-white mb-2 uppercase">
-        My Flex-Pay Vault
-      </h1>
-      <p className="text-zinc-500 text-sm">
-        Your automated structural micro-contribution rent liquidation asset pipeline.
+      <h1 style={{ margin: 0, color: 'white', fontSize: 24, fontWeight: 700 }}>My Flex-Pay Vault</h1>
+      <p style={{ margin: '6px 0 0', color: '#6b7280', fontSize: 13 }}>
+        Your micro-contribution rent engine
       </p>
     </div>
   );
 
   return (
-    <div className="min-h-screen bg-[#050505] text-white flex flex-col">
-      <Navbar />
+    <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh', background: '#050d0d', color: 'white' }}>
+      <NavBar />
 
-      <main className="flex-grow max-w-2xl w-full mx-auto px-4 py-12 pb-24 md:pb-16">
-        {pageHeader}
-
-        {/* ── Core Display Logic Matrix ─────────────────────────────────────── */}
-        
-        {/* Case 1: Linked Tenancy with Operational Vault Asset */}
+      <main style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+        {/* Case 1: Linked tenancy with active vault */}
         {data?.hasActiveTenancy && data.vault && (
-          <div className="space-y-4">
+          <div style={shell}>
+            {pageHeader}
             <LinkedVaultDisplay vault={data.vault} />
-            <div className="text-center pt-2">
-              <a href="/tenant/contributions" className="inline-flex items-center gap-1.5 text-zinc-500 hover:text-teal-400 text-xs font-bold uppercase tracking-wider transition-colors">
-                View Historical Contributions Ledger Index &rarr;
-              </a>
+            <div style={{ marginTop: 24, textAlign: 'center' }}>
+              <Link href="/tenant/contributions" style={{ color: '#14b8a6', fontSize: 13, textDecoration: 'none' }}>
+                View All Contributions →
+              </Link>
             </div>
           </div>
         )}
 
-        {/* Case 2: Mapped Property but Infrastructure Vault Configuration Pending */}
+        {/* Case 2: Linked tenancy, setup pending */}
         {data?.hasActiveTenancy && !data.vault && (
-          <div className="border border-zinc-900 bg-gradient-to-b from-zinc-950 to-black p-8 rounded-2xl text-center shadow-2xl">
-            <div className="w-14 h-14 bg-teal-500/10 text-teal-500 rounded-2xl flex items-center justify-center text-xl mx-auto mb-5 animate-pulse">🔄</div>
-            <h3 className="text-white font-black text-md uppercase tracking-wider mb-2">Property Anchor Linked &bull; Allocation Stalled</h3>
-            <p className="text-zinc-500 text-sm leading-relaxed">
-              Your structural landlord administrator is compiling storage arrays. This environment container updates immediately upon automated activation routines.
-            </p>
+          <div style={shell}>
+            {pageHeader}
+            <div style={{
+              background: 'linear-gradient(135deg, #0d1f1f, #0a1a1a)',
+              border: '1px solid rgba(20,184,166,0.2)', borderRadius: 16, padding: 32, textAlign: 'center',
+            }}>
+              <div style={{ fontSize: 40, marginBottom: 16 }}>🔄</div>
+              <div style={{ color: 'white', fontWeight: 600, fontSize: 16, marginBottom: 8 }}>Property Linked — Vault Pending</div>
+              <div style={{ color: '#6b7280', fontSize: 13 }}>
+                Your landlord is setting up your Flex-Pay vault. You will be notified as soon as it is activated.
+              </div>
+            </div>
           </div>
         )}
 
-        {/* Case 3: No Operational Contract but Active Standalone Token Instance Available */}
+        {/* Case 3: Standalone structural setup */}
         {!data?.hasActiveTenancy && data?.standalone_vault && (
-          <div className="space-y-4">
+          <div style={shell}>
+            {pageHeader}
             <StandaloneVaultDisplay
               vault={data.standalone_vault}
               onPay={() => router.push('/tenant/pay')}
             />
-            <div className="text-center pt-2">
-              <a href="/tenant/contributions" className="inline-flex items-center gap-1.5 text-zinc-500 hover:text-teal-400 text-xs font-bold uppercase tracking-wider transition-colors">
-                View Historical Contributions Ledger Index &rarr;
-              </a>
+            <div style={{ marginTop: 24, textAlign: 'center' }}>
+              <Link href="/tenant/contributions" style={{ color: '#14b8a6', fontSize: 13, textDecoration: 'none' }}>
+                View All Contributions →
+              </Link>
             </div>
+            {data.standalone_vault.status !== 'FUNDED_READY' && (
+              <MobileBottomButton 
+                label={`⚡ Make Contribution — ${fmt(data.standalone_vault.installment_amount)}`} 
+                onClick={() => router.push('/tenant/pay')} 
+              />
+            )}
           </div>
         )}
 
-        {/* Case 4: Complete Void — Render Storage Initialization Node Input Elements */}
+        {/* Case 4: No vault active — Init parameters onboarding mapping */}
         {!data?.hasActiveTenancy && !data?.standalone_vault && (
-          <div className="space-y-6">
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div style={shell}>
+            {pageHeader}
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 24 }}>
               {[
-                { icon: '🔒', label: 'Escrow-Secure' },
-                { icon: '📅', label: 'Flexible Rhythm' },
-                { icon: '⚡', label: 'Auto-Release' },
-                { icon: '🧾', label: 'SHA-256 Receipts' },
+                { icon: '🔒', label: 'Escrow-held' },
+                { icon: '📅', label: 'Your rhythm' },
+                { icon: '⚡', label: 'Auto-disburse' },
+                { icon: '🧾', label: 'Secure Ledger' },
               ].map(({ icon, label }) => (
-                <div key={label} className="bg-zinc-950/40 border border-zinc-900/60 rounded-xl p-3 text-center shadow-sm">
-                  <div className="text-lg mb-1">{icon}</div>
-                  <div className="text-zinc-500 text-[10px] uppercase font-bold tracking-tight">{label}</div>
+                <div key={label} style={{
+                  background: 'rgba(20,184,166,0.06)', border: '1px solid rgba(20,184,166,0.12)',
+                  borderRadius: 10, padding: '12px 8px', textAlign: 'center',
+                }}>
+                  <div style={{ fontSize: 20, marginBottom: 4 }}>{icon}</div>
+                  <div style={{ color: '#9ca3af', fontSize: 11 }}>{label}</div>
                 </div>
               ))}
             </div>
-            <InitVaultForm onSuccess={fetchVault} />
+
+            <InitVaultForm onSuccess={fetchVault} triggerSubmitRef={formSubmitRef} />
+            <MobileBottomButton 
+              label="🚀 Initialize My Savings Vault" 
+              onClick={() => { if (formSubmitRef.current) formSubmitRef.current(); }} 
+            />
           </div>
         )}
-
-        {/* Technical Ledger Cryptographic Seal Note */}
-        <div className="mt-8 flex items-center justify-center gap-1.5 text-zinc-700 font-mono text-[10px] uppercase tracking-wider">
-          <ShieldCheck size={13} className="text-zinc-800" />
-          SHA-256 Secure Verification Sequence Active
-        </div>
       </main>
 
       <Footer />
-      <MobileBottomNav />
     </div>
   );
 }
