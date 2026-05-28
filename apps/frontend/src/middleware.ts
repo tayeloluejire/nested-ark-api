@@ -1,180 +1,251 @@
 // src/middleware.ts
-// Next.js Edge Middleware — role-based route protection.
-// Fixes:
-// 1. infinite /login ↔ /login/ redirect loop
-// 2. _rsc prefetch auth collisions
-// 3. public FAQ route incorrectly resolving to 404
-// 4. Trailing-slash normalization so /tenant/dashboard and /tenant/dashboard/
-//    both correctly match the TENANT guard (was the root cause of the 404)
 
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
-// ── Exact paths that bypass ALL auth checks ───────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// Public exact routes
+// ─────────────────────────────────────────────────────────────
+
 const PUBLIC_PATHS = new Set([
   '/',
   '/login',
-  '/login/',
   '/register',
-  '/register/',
   '/about',
-  '/about/',
   '/faq',
-  '/faq/',
   '/map',
   '/projects',
   '/search',
   '/ledger',
   '/forgot-password',
-  '/forgot-password/',
   '/reset-password',
-  '/reset-password/',
   '/verify-email',
-  '/verify-email/',
   '/payment-success',
   '/payment-callback',
   '/marketplace',
-  '/marketplace/',
 ]);
 
-// ── Path prefixes that bypass ALL auth checks ─────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// Public prefixes
+// ─────────────────────────────────────────────────────────────
+
 const PUBLIC_PREFIXES = [
-  '/projects/',
-  '/onboard/',
-  '/onboard',
   '/_next/',
   '/api/',
   '/favicon',
   '/nested_ark',
-  '/reset-password/',
-  '/verify-email/',
+  '/projects/',
+  '/onboard',
   '/tenant/invite',
   '/marketplace',
   '/faq',
 ];
 
-function isPublic(pathname: string): boolean {
-  if (PUBLIC_PATHS.has(pathname)) return true;
-  return PUBLIC_PREFIXES.some(p => pathname.startsWith(p));
+// ─────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────
+
+function normalizePath(pathname: string): string {
+  if (pathname.length > 1 && pathname.endsWith('/')) {
+    return pathname.slice(0, -1);
+  }
+
+  return pathname;
 }
 
+function isPublic(pathname: string): boolean {
+  const path = normalizePath(pathname);
+
+  if (PUBLIC_PATHS.has(path)) {
+    return true;
+  }
+
+  return PUBLIC_PREFIXES.some(prefix =>
+    path.startsWith(prefix)
+  );
+}
+
+function hasStaticExtension(pathname: string): boolean {
+  return /\.[a-zA-Z0-9]+$/.test(pathname);
+}
+
+// ─────────────────────────────────────────────────────────────
+// Middleware
+// ─────────────────────────────────────────────────────────────
+
 export function middleware(req: NextRequest) {
-  const { searchParams } = req.nextUrl;
+  const rawPath = req.nextUrl.pathname;
+  const pathname = normalizePath(rawPath);
 
-  // Normalise pathname once: strip trailing slash (except bare "/")
-  // This means /tenant/dashboard/ and /tenant/dashboard both hit the same checks.
-  const rawPath  = req.nextUrl.pathname;
-  const pathname = rawPath.length > 1 && rawPath.endsWith('/')
-    ? rawPath.slice(0, -1)
-    : rawPath;
+  // ─────────────────────────────────────────────────────────
+  // Skip static/internal assets
+  // ─────────────────────────────────────────────────────────
 
-  // ── 1. Static assets / Next.js internals ───────────────────────────────
   if (
     pathname.startsWith('/_next') ||
     pathname.includes('/static/') ||
-    pathname.endsWith('.ico') ||
-    pathname.endsWith('.png') ||
-    pathname.endsWith('.svg') ||
-    pathname.endsWith('.jpg') ||
-    pathname.endsWith('.webp') ||
-    pathname.endsWith('.json')
+    hasStaticExtension(pathname)
   ) {
     return NextResponse.next();
   }
 
-  // ── 2. Public routes (check both raw and normalised) ───────────────────
-  if (isPublic(pathname) || isPublic(rawPath)) {
+  // ─────────────────────────────────────────────────────────
+  // Public routes
+  // ─────────────────────────────────────────────────────────
+
+  if (isPublic(pathname)) {
     return NextResponse.next();
   }
 
-  // ── 3. _rsc prefetch safety valve ──────────────────────────────────────
-  if (searchParams.has('_rsc')) {
-    const isAuthPage = pathname === '/login' || pathname === '/register';
-    if (isAuthPage) {
-      return NextResponse.next();
-    }
+  // ─────────────────────────────────────────────────────────
+  // Prevent _rsc auth collisions
+  // ─────────────────────────────────────────────────────────
+
+  if (req.nextUrl.searchParams.has('_rsc')) {
+    return NextResponse.next();
   }
 
-  // ── 4. Read auth cookies ───────────────────────────────────────────────
-  const role        = req.cookies.get('ark_role')?.value         ?? '';
-  const accountType = req.cookies.get('ark_account_type')?.value ?? '';
+  // ─────────────────────────────────────────────────────────
+  // Read auth state
+  // ─────────────────────────────────────────────────────────
 
-  // ── Redirect helper ────────────────────────────────────────────────────
-  const toLogin = (reason: string) => {
-    const url      = req.nextUrl.clone();
-    url.pathname   = '/login';
-    url.search     = `?reason=${reason}`;
+  const role =
+    req.cookies.get('ark_role')?.value ?? '';
+
+  const token =
+    req.cookies.get('ark_token')?.value ?? '';
+
+  // ─────────────────────────────────────────────────────────
+  // Redirect helper
+  // ─────────────────────────────────────────────────────────
+
+  const redirectToLogin = (reason: string) => {
+    const url = req.nextUrl.clone();
+
+    url.pathname = '/login';
+    url.search = `?reason=${reason}`;
+
     return NextResponse.redirect(url);
   };
 
-  // ── 5. TENANT routes ───────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────
+  // Auth existence check
+  // ─────────────────────────────────────────────────────────
+
+  if (!token || !role) {
+    return redirectToLogin('auth_required');
+  }
+
+  // ─────────────────────────────────────────────────────────
+  // TENANT routes
+  // ─────────────────────────────────────────────────────────
+
   if (pathname.startsWith('/tenant')) {
     if (role !== 'TENANT') {
-      return toLogin('tenant_only');
+      return redirectToLogin('tenant_only');
     }
+
     return NextResponse.next();
   }
 
-  // ── 6. LANDLORD routes ─────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────
+  // LANDLORD routes
+  // ─────────────────────────────────────────────────────────
+
   if (pathname.startsWith('/landlord')) {
-    const ok = ['DEVELOPER', 'PROJECT_SPONSOR', 'ADMIN'].includes(role);
-    if (!ok) {
-      return toLogin('landlord_only');
+    const allowed = [
+      'DEVELOPER',
+      'PROJECT_SPONSOR',
+      'ADMIN',
+    ];
+
+    if (!allowed.includes(role)) {
+      return redirectToLogin('landlord_only');
     }
+
     return NextResponse.next();
   }
 
-  // ── 7. ADMIN routes ────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────
+  // ADMIN routes
+  // ─────────────────────────────────────────────────────────
+
   if (pathname.startsWith('/admin')) {
     if (role !== 'ADMIN') {
-      return toLogin('admin_only');
+      return redirectToLogin('admin_only');
     }
+
     return NextResponse.next();
   }
 
-  // ── 8. GOVERNMENT routes ───────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────
+  // GOVERNMENT routes
+  // ─────────────────────────────────────────────────────────
+
   if (pathname.startsWith('/gov')) {
-    const ok = ['GOVERNMENT', 'VERIFIER', 'ADMIN'].includes(role);
-    if (!ok) {
-      return toLogin('gov_only');
+    const allowed = [
+      'GOVERNMENT',
+      'VERIFIER',
+      'ADMIN',
+    ];
+
+    if (!allowed.includes(role)) {
+      return redirectToLogin('gov_only');
     }
+
     return NextResponse.next();
   }
 
-  // ── 9. Rental management ───────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────
+  // Rental management
+  // ─────────────────────────────────────────────────────────
+
   if (pathname.includes('/rental-management')) {
-    const ok = ['DEVELOPER', 'PROJECT_SPONSOR', 'ADMIN', 'GOVERNMENT'].includes(role);
-    if (!ok) {
-      return toLogin('access_denied');
+    const allowed = [
+      'DEVELOPER',
+      'PROJECT_SPONSOR',
+      'ADMIN',
+      'GOVERNMENT',
+    ];
+
+    if (!allowed.includes(role)) {
+      return redirectToLogin('access_denied');
     }
+
     return NextResponse.next();
   }
 
-  // ── 10. Portfolio / investments ───────────────────────────────────────
-  if (pathname.startsWith('/portfolio') || pathname.startsWith('/investments')) {
-    const ok = ['INVESTOR', 'DEVELOPER', 'PROJECT_SPONSOR', 'ADMIN'].includes(role);
-    if (!ok) {
-      return toLogin('investor_only');
-    }
-    return NextResponse.next();
-  }
+  // ─────────────────────────────────────────────────────────
+  // Portfolio / investments
+  // ─────────────────────────────────────────────────────────
 
-  // ── 11. Catch-all auth gate ────────────────────────────────────────────
-  if (!role) {
-    if (pathname === '/login' || pathname === '/register') {
-      return NextResponse.next();
+  if (
+    pathname.startsWith('/portfolio') ||
+    pathname.startsWith('/investments')
+  ) {
+    const allowed = [
+      'INVESTOR',
+      'DEVELOPER',
+      'PROJECT_SPONSOR',
+      'ADMIN',
+    ];
+
+    if (!allowed.includes(role)) {
+      return redirectToLogin('investor_only');
     }
-    const url      = req.nextUrl.clone();
-    url.pathname   = '/login';
-    url.search     = '';
-    return NextResponse.redirect(url);
+
+    return NextResponse.next();
   }
 
   return NextResponse.next();
 }
 
+// ─────────────────────────────────────────────────────────────
+// Matcher
+// ─────────────────────────────────────────────────────────────
+
 export const config = {
   matcher: [
-    '/((?!_next/static|_next/image|favicon.ico|.*\\.[a-zA-Z0-9]+$).*)',
+    '/((?!_next/static|_next/image|favicon.ico).*)',
   ],
 };

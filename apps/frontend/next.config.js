@@ -1,4 +1,9 @@
 /** @type {import('next').NextConfig} */
+
+const API_URL =
+  process.env.API_URL ||
+  'https://nested-ark-api-v3.onrender.com';
+
 const nextConfig = {
   // Prevent ESLint from blocking production deploys
   eslint: {
@@ -10,7 +15,7 @@ const nextConfig = {
     ignoreBuildErrors: true,
   },
 
-  // Fix 404 on dynamic path refresh by forcing consistent directory resolution structures
+  // Force canonical slash handling across refreshes and deep links
   trailingSlash: true,
 
   // Reduce stale route/data caching issues
@@ -24,7 +29,7 @@ const nextConfig = {
   // Force consistent runtime behavior
   reactStrictMode: true,
 
-  // Disable powered-by header for infrastructure obfuscation
+  // Infrastructure hardening
   poweredByHeader: false,
 
   // Compress payloads efficiently
@@ -40,26 +45,29 @@ const nextConfig = {
     ],
   },
 
-  // API rewrites — routes all /api/* calls to the Render backend.
-  // IMPORTANT: Use API_URL (no NEXT_PUBLIC_ prefix).
-  // NEXT_PUBLIC_ vars are NOT reliably interpolated inside rewrites() at build
-  // time on Vercel — they resolve to an empty string, causing /api/* requests
-  // to stay on Vercel instead of proxying to Render.
-  // API_URL is a server-side-only variable; Next.js resolves it correctly here.
-  //
-  // NOTE: Do NOT add internal page-to-page rewrites here (e.g. /tenant/dashboard
-  // → /tenant/dashboard/). With trailingSlash: true, Next.js already handles
-  // this automatically. Adding such rewrites causes routing loops and 404s.
+  /**
+   * API rewrites
+   *
+   * IMPORTANT:
+   * - Never use NEXT_PUBLIC_* variables here.
+   * - Rewrites execute server-side during build/runtime.
+   * - Using NEXT_PUBLIC vars can resolve incorrectly on Vercel.
+   */
+
   async rewrites() {
     return [
       {
         source: '/api/:path*',
-        destination: 'https://nested-ark-api-v3.onrender.com/api/:path*',
+        destination: `${API_URL}/api/:path*`,
       },
     ];
   },
 
-  // Critical for App Router view stability and cache breaking
+  /**
+   * Response headers
+   * Prevent stale dashboard/auth rendering.
+   */
+
   async headers() {
     return [
       {
@@ -67,25 +75,41 @@ const nextConfig = {
         headers: [
           {
             key: 'Cache-Control',
-            value: 'no-store, no-cache, must-revalidate, proxy-revalidate',
+            value:
+              'no-store, no-cache, must-revalidate, proxy-revalidate',
           },
         ],
       },
-      {
-        source: '/landlord/:path*',
-        headers: [
-          {
-            key: 'Cache-Control',
-            value: 'no-store',
-          },
-        ],
-      },
+
       {
         source: '/tenant/:path*',
         headers: [
           {
             key: 'Cache-Control',
-            value: 'no-store, no-cache, must-revalidate',
+            value:
+              'private, no-store, no-cache, must-revalidate',
+          },
+        ],
+      },
+
+      {
+        source: '/landlord/:path*',
+        headers: [
+          {
+            key: 'Cache-Control',
+            value:
+              'private, no-store, no-cache, must-revalidate',
+          },
+        ],
+      },
+
+      {
+        source: '/admin/:path*',
+        headers: [
+          {
+            key: 'Cache-Control',
+            value:
+              'private, no-store, no-cache, must-revalidate',
           },
         ],
       },
