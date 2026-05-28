@@ -1,177 +1,271 @@
 'use client';
-export const dynamic = 'force-dynamic';
-/**
- * /tenant/contributions/page.tsx
- * Real API: GET /api/tenant/my-contributions
- * Returns: contributions[] { id, amount, currency, period_label, paid_at,
- * status, ledger_hash, receipt_id }
- * Receipt download: GET /api/tenant/receipt/:contributionId/
- * NOTE: endpoint requires auth — uses api.get with blob responseType, not bare <a href>
- */
-import { useState, useEffect, Suspense } from 'react';
-import Link from 'next/link';
-import Navbar from '@/components/Navbar';
-import Footer from '@/components/Footer';
-import api from '@/lib/api';
-import { Receipt, Loader2, AlertCircle, ArrowLeft, Download, ShieldCheck, CheckCircle2, Clock } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 
-const safeN = (v:any) => { const n=Number(v); return(v==null||isNaN(n))?0:n; };
-const safeF = (v:any) => safeN(v).toLocaleString();
+const API_BASE = '/api';
 
-function ContributionsContent() {
-  const [items,       setItems]       = useState<any[]>([]);
-  const [loading,     setLoading]     = useState(true);
-  const [error,       setError]       = useState('');
-  const [downloading, setDownloading] = useState<string|null>(null);
+function getToken(): string | null {
+  if (typeof window === 'undefined') return null;
+  return localStorage.getItem('token') || sessionStorage.getItem('token');
+}
 
-  useEffect(() => {
-    api.get('/api/tenant/my-contributions')
-      .then(r => setItems(r.data.contributions ?? []))
-      .catch(e => setError(e?.response?.data?.error ?? 'Could not load contributions.'))
-      .finally(() => setLoading(false));
-  }, []);
+const fmt = (n: number) =>
+  new Intl.NumberFormat('en-NG', { style: 'currency', currency: 'NGN', minimumFractionDigits: 2 }).format(n);
 
-  // FIX: Appended exact trailing slash and added inline Blob JSON-reader inside catch to capture true exceptions safely
-  const downloadReceipt = async (receiptId: string, label: string) => {
-    setDownloading(receiptId);
-    try {
-      const res = await api.get(`/api/tenant/receipt/${receiptId}/`, { responseType: 'blob' });
-      const contentType = res.headers?.['content-type'] ?? 'application/pdf';
-      const ext  = contentType.includes('pdf') ? 'pdf' : 'html';
-      const url  = URL.createObjectURL(new Blob([res.data], { type: contentType }));
-      const a    = document.createElement('a');
-      a.href = url; 
-      a.download = `Receipt-${label || receiptId}.${ext}`; 
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-    } catch(e:any) {
-      // If responseType is 'blob' and the server errors out with JSON data, Axios intercepts it as a blob.
-      if (e.response?.data instanceof Blob) {
-        const reader = new FileReader();
-        reader.onload = () => {
-          try {
-            const jsonRes = JSON.parse(reader.result as string);
-            alert(jsonRes.error || 'Download failed. Please try again.');
-          } catch {
-            alert('Download failed. Server returned an invalid response file format.');
-          }
-        };
-        reader.readAsText(e.response.data);
-      } else {
-        alert(e?.response?.data?.error ?? 'Download failed. Please check network connection.');
-      }
-    } finally { setDownloading(null); }
+interface Contribution {
+  id: string;
+  amount: number;
+  currency: string;
+  period_label: string;
+  paid_at: string | null;
+  status: string;
+  ledger_hash: string | null;
+  receipt_id: string;
+  source?: string;
+}
+
+interface Summary {
+  total_paid: number;
+  count: number;
+  source: 'linked' | 'standalone' | 'none';
+}
+
+const STATUS_COLOR: Record<string, string> = {
+  SUCCESS: '#10b981',
+  PENDING: '#f59e0b',
+  FAILED:  '#ef4444',
+};
+
+function HashBadge({ hash }: { hash: string | null }) {
+  const [copied, setCopied] = useState(false);
+  if (!hash) return <span style={{ color: '#374151', fontSize: 11 }}>—</span>;
+  const short = hash.slice(0, 12) + '…';
+  const copy = () => {
+    navigator.clipboard.writeText(hash).catch(() => {});
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
   };
-
-  if (loading) return (
-    <div className="min-h-screen bg-[#050505] text-white"><Navbar />
-      <div className="flex items-center justify-center py-40"><Loader2 className="animate-spin text-teal-500" size={28} /></div>
-    <Footer /></div>
-  );
-
-  const totalPaid = items.filter(c => c.status === 'SUCCESS').reduce((s, c) => s + safeN(c.amount), 0);
-  const currency  = items[0]?.currency || 'NGN';
-
   return (
-    <div className="min-h-screen bg-[#050505] text-white flex flex-col">
-      <Navbar />
-      <main className="flex-1 max-w-4xl mx-auto px-6 py-10 space-y-8 w-full">
-
-        <Link href="/tenant/dashboard" className="flex items-center gap-2 text-zinc-500 hover:text-white text-xs font-bold uppercase tracking-widest transition-colors">
-          <ArrowLeft size={13} /> Dashboard
-        </Link>
-
-        <div className="border-l-2 border-teal-500 pl-5">
-          <p className="text-[9px] text-teal-500 font-mono font-black tracking-widest uppercase mb-1">Tenant Portal</p>
-          <h1 className="text-3xl font-black uppercase tracking-tighter">My Contributions</h1>
-          <p className="text-zinc-500 text-xs mt-1">Complete payment history — SHA-256 hashed &amp; court-admissible</p>
-        </div>
-
-        {error && (
-          <div className="p-4 rounded-xl border border-red-500/20 bg-red-500/5 text-red-400 text-sm font-bold flex items-center gap-2">
-            <AlertCircle size={14} /> {error}
-          </div>
-        )}
-
-        {/* Summary Panels */}
-        <div className="grid grid-cols-3 gap-4">
-          {[
-            { label: 'Total Paid',     value: `${currency} ${safeF(totalPaid)}`,                   color: 'text-teal-400' },
-            { label: 'Payments Made',  value: items.filter(c=>c.status==='SUCCESS').length,                 color: 'text-white'    },
-            { label: 'Total Records',  value: items.length,                                               color: 'text-zinc-400' },
-          ].map(s => (
-            <div key={s.label} className="p-5 rounded-2xl border border-zinc-800 bg-zinc-900/20 space-y-1.5">
-              <p className={`text-xl font-black font-mono ${s.color}`}>{s.value}</p>
-              <p className="text-[8px] text-zinc-600 uppercase font-bold tracking-widest">{s.label}</p>
-            </div>
-          ))}
-        </div>
-
-        {/* Ledger Rows */}
-        {items.length === 0 && !error ? (
-          <div className="py-16 text-center border border-dashed border-zinc-800 rounded-2xl space-y-3">
-            <Receipt className="text-zinc-700 mx-auto" size={36} />
-            <p className="text-zinc-500 font-bold">No contributions yet</p>
-            <p className="text-zinc-600 text-sm">Payment history appears here after your first Flex-Pay installment.</p>
-            <Link href="/tenant/pay"
-              className="inline-flex items-center gap-2 px-6 py-3 bg-teal-500 text-black font-bold text-xs uppercase tracking-widest rounded-xl hover:bg-white transition-all">
-              Make First Payment
-            </Link>
-          </div>
-        ) : (
-          <div className="space-y-3">
-            {items.map(c => (
-              <div key={c.id} className="p-5 rounded-2xl border border-zinc-800 bg-zinc-900/20 flex items-center justify-between gap-4 flex-wrap">
-                <div className="space-y-1 flex-1 min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    {c.status === 'SUCCESS'
-                      ? <CheckCircle2 size={12} className="text-teal-500 flex-shrink-0" />
-                      : <Clock size={12} className="text-zinc-600 flex-shrink-0" />
-                    }
-                    <p className="font-bold text-sm">{c.period_label || 'Flex-Pay contribution'}</p>
-                    <span className={`text-[7px] px-1.5 py-0.5 rounded border font-black uppercase ${c.status==='SUCCESS'?'border-teal-500/30 text-teal-400':'border-zinc-700 text-zinc-500'}`}>
-                      {c.status}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-3 text-[9px] text-zinc-500 flex-wrap">
-                    {c.paid_at && <span>{new Date(c.paid_at).toLocaleDateString('en-GB')}</span>}
-                    {c.ledger_hash && (
-                      <span className="flex items-center gap-1 font-mono text-[8px] text-zinc-700">
-                        <ShieldCheck size={8} className="text-teal-500/50" /> {c.ledger_hash.slice(0, 18)}…
-                      </span>
-                    )}
-                  </div>
-                </div>
-                <div className="flex items-center gap-3 flex-shrink-0">
-                  <div className="text-right">
-                    <p className="font-mono font-bold text-lg text-teal-400">{currency} {safeF(c.amount)}</p>
-                    <p className="text-[8px] text-zinc-600 uppercase font-bold">contribution</p>
-                  </div>
-                  {c.receipt_id && (
-                    <button
-                      onClick={() => downloadReceipt(c.receipt_id, c.period_label || c.id)}
-                      disabled={downloading === c.receipt_id}
-                      className="flex items-center gap-1.5 px-3 py-2 border border-zinc-700 text-zinc-400 rounded-xl text-[9px] font-bold uppercase hover:text-teal-400 hover:border-teal-500/30 transition-all disabled:opacity-50">
-                      {downloading === c.receipt_id
-                        ? <Loader2 size={10} className="animate-spin" />
-                        : <Download size={10} />} PDF
-                    </button>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </main>
-      <Footer />
-    </div>
+    <span
+      onClick={copy}
+      title={hash}
+      style={{
+        fontFamily: 'monospace', fontSize: 11, color: copied ? '#10b981' : '#14b8a6',
+        cursor: 'pointer', background: 'rgba(20,184,166,0.08)',
+        padding: '2px 7px', borderRadius: 4,
+      }}
+    >
+      {copied ? 'Copied!' : short}
+    </span>
   );
 }
 
 export default function TenantContributionsPage() {
+  const router = useRouter();
+  const [contributions, setContributions] = useState<Contribution[]>([]);
+  const [summary, setSummary]             = useState<Summary>({ total_paid: 0, count: 0, source: 'none' });
+  const [loading, setLoading]             = useState(true);
+  const [filter, setFilter]               = useState<'ALL' | 'SUCCESS' | 'PENDING' | 'FAILED'>('ALL');
+
+  useEffect(() => {
+    (async () => {
+      const token = getToken();
+      if (!token) { router.push('/login'); return; }
+      try {
+        const res  = await fetch(`${API_BASE}/tenant/my-contributions`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const data = await res.json();
+        const list: Contribution[] = (data.contributions || []).map((c: any) => ({
+          id:          c.id,
+          amount:      parseFloat(c.amount) || 0,
+          currency:    c.currency || 'NGN',
+          period_label: c.period_label || '—',
+          paid_at:     c.paid_at || null,
+          status:      c.status || 'UNKNOWN',
+          ledger_hash: c.ledger_hash || null,
+          receipt_id:  c.receipt_id || c.id,
+          source:      c.source || 'linked',
+        }));
+        setContributions(list);
+        const successOnly = list.filter(c => c.status === 'SUCCESS');
+        setSummary({
+          total_paid: successOnly.reduce((s, c) => s + c.amount, 0),
+          count:      successOnly.length,
+          source:     data.source || (list.length > 0 ? 'linked' : 'none'),
+        });
+      } catch (e) {
+        console.error(e);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  const visible = filter === 'ALL' ? contributions : contributions.filter(c => c.status === filter);
+
+  const card: React.CSSProperties = {
+    background: 'linear-gradient(135deg, #0d1f1f 0%, #0a1a1a 100%)',
+    border: '1px solid rgba(20,184,166,0.2)',
+    borderRadius: 14,
+  };
+
+  if (loading) return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '60vh' }}>
+      <span style={{ color: '#14b8a6', fontFamily: 'monospace', fontSize: 14 }}>⟳ Loading contributions...</span>
+    </div>
+  );
+
   return (
-    <Suspense fallback={<div className="h-screen bg-[#050505] flex items-center justify-center"><Loader2 className="animate-spin text-teal-500" size={28} /></div>}>
-      <ContributionsContent />
-    </Suspense>
+    <div style={{ maxWidth: 800, margin: '0 auto', padding: '24px 20px' }}>
+
+      {/* Header */}
+      <div style={{ marginBottom: 28 }}>
+        <div style={{ color: '#6b7280', fontSize: 11, letterSpacing: 2, textTransform: 'uppercase', marginBottom: 6 }}>
+          Tenant Portal
+        </div>
+        <h1 style={{ margin: 0, color: 'white', fontSize: 24, fontWeight: 700 }}>My Contributions</h1>
+        <p style={{ margin: '6px 0 0', color: '#6b7280', fontSize: 13 }}>
+          {summary.source === 'standalone'
+            ? 'Independent savings vault · SHA-256 ledger'
+            : 'Flex-Pay vault history · SHA-256 ledger'}
+        </p>
+      </div>
+
+      {/* Summary Cards */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 24 }}>
+        {[
+          { label: 'Total Saved', value: fmt(summary.total_paid), sub: `${summary.count} successful payment${summary.count !== 1 ? 's' : ''}` },
+          { label: 'Vault Type',  value: summary.source === 'standalone' ? 'Independent' : summary.source === 'linked' ? 'Linked' : '—', sub: summary.source === 'standalone' ? 'Self-initiated vault' : summary.source === 'linked' ? 'Landlord-linked vault' : 'No vault yet' },
+          { label: 'Ledger',      value: 'SHA-256', sub: 'Bulletproof hash chain' },
+        ].map(({ label, value, sub }) => (
+          <div key={label} style={{ ...card, padding: '16px 18px' }}>
+            <div style={{ color: '#6b7280', fontSize: 11, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 6 }}>{label}</div>
+            <div style={{ color: 'white', fontSize: 17, fontWeight: 700, fontFamily: 'monospace' }}>{value}</div>
+            {sub && <div style={{ color: '#4b5563', fontSize: 11, marginTop: 4 }}>{sub}</div>}
+          </div>
+        ))}
+      </div>
+
+      {/* Filter Bar */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 18, flexWrap: 'wrap' }}>
+        {(['ALL', 'SUCCESS', 'PENDING', 'FAILED'] as const).map(f => (
+          <button
+            key={f}
+            onClick={() => setFilter(f)}
+            style={{
+              padding: '6px 16px', borderRadius: 20, fontSize: 12, cursor: 'pointer',
+              background: filter === f ? 'rgba(20,184,166,0.2)' : 'rgba(20,184,166,0.05)',
+              border: `1px solid ${filter === f ? '#14b8a6' : 'rgba(20,184,166,0.15)'}`,
+              color: filter === f ? '#14b8a6' : '#6b7280',
+              fontWeight: filter === f ? 700 : 400,
+            }}
+          >
+            {f === 'ALL' ? `All (${contributions.length})` : `${f} (${contributions.filter(c => c.status === f).length})`}
+          </button>
+        ))}
+      </div>
+
+      {/* Empty State */}
+      {visible.length === 0 && (
+        <div style={{ ...card, padding: 40, textAlign: 'center' }}>
+          {contributions.length === 0 ? (
+            <>
+              <div style={{ fontSize: 40, marginBottom: 16 }}>💳</div>
+              <div style={{ color: 'white', fontWeight: 600, marginBottom: 8 }}>No contributions yet</div>
+              <div style={{ color: '#6b7280', fontSize: 13, marginBottom: 24 }}>
+                Make your first installment to start building your rent history.
+              </div>
+              <button
+                onClick={() => router.push('/tenant/pay')}
+                style={{
+                  padding: '10px 24px', borderRadius: 8,
+                  background: 'linear-gradient(135deg, #14b8a6, #0d9488)',
+                  border: 'none', color: 'white', fontWeight: 700, fontSize: 13, cursor: 'pointer',
+                }}
+              >
+                Make First Contribution
+              </button>
+            </>
+          ) : (
+            <div style={{ color: '#6b7280', fontSize: 13 }}>No {filter} contributions found.</div>
+          )}
+        </div>
+      )}
+
+      {/* Contributions Table */}
+      {visible.length > 0 && (
+        <div style={{ ...card, overflow: 'hidden' }}>
+          {/* Table Header */}
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: '1fr 120px 90px 130px 130px',
+            padding: '12px 20px',
+            borderBottom: '1px solid rgba(20,184,166,0.1)',
+            background: 'rgba(20,184,166,0.04)',
+          }}>
+            {['Date', 'Amount', 'Status', 'Period', 'Ledger Hash'].map(h => (
+              <div key={h} style={{ color: '#6b7280', fontSize: 11, letterSpacing: 1, textTransform: 'uppercase' }}>{h}</div>
+            ))}
+          </div>
+
+          {/* Rows */}
+          {visible.map((c, i) => (
+            <div
+              key={c.id}
+              style={{
+                display: 'grid',
+                gridTemplateColumns: '1fr 120px 90px 130px 130px',
+                padding: '14px 20px',
+                borderBottom: i < visible.length - 1 ? '1px solid rgba(255,255,255,0.04)' : 'none',
+                alignItems: 'center',
+                transition: 'background 0.15s',
+              }}
+              onMouseEnter={e => (e.currentTarget.style.background = 'rgba(20,184,166,0.04)')}
+              onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+            >
+              {/* Date */}
+              <div>
+                <div style={{ color: 'white', fontSize: 13 }}>
+                  {c.paid_at ? new Date(c.paid_at).toLocaleDateString('en-NG', { day: '2-digit', month: 'short', year: 'numeric' }) : '—'}
+                </div>
+                <div style={{ color: '#4b5563', fontSize: 11, marginTop: 2, fontFamily: 'monospace' }}>
+                  {c.paid_at ? new Date(c.paid_at).toLocaleTimeString('en-NG', { hour: '2-digit', minute: '2-digit' }) : ''}
+                </div>
+              </div>
+              {/* Amount */}
+              <div style={{ color: 'white', fontWeight: 700, fontFamily: 'monospace', fontSize: 13 }}>
+                {fmt(c.amount)}
+              </div>
+              {/* Status */}
+              <div>
+                <span style={{
+                  fontSize: 11, fontWeight: 700, padding: '3px 9px', borderRadius: 20,
+                  background: `${STATUS_COLOR[c.status] || '#6b7280'}18`,
+                  color: STATUS_COLOR[c.status] || '#6b7280',
+                  border: `1px solid ${STATUS_COLOR[c.status] || '#6b7280'}40`,
+                }}>
+                  {c.status}
+                </span>
+              </div>
+              {/* Period */}
+              <div style={{ color: '#9ca3af', fontSize: 12, fontFamily: 'monospace' }}>
+                {c.period_label}
+              </div>
+              {/* Ledger Hash */}
+              <div>
+                <HashBadge hash={c.ledger_hash} />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Footer nav */}
+      <div style={{ marginTop: 24, display: 'flex', gap: 20, justifyContent: 'center' }}>
+        <a href="/tenant/vault" style={{ color: '#14b8a6', fontSize: 13, textDecoration: 'none' }}>← My Vault</a>
+        <a href="/tenant/pay"   style={{ color: '#14b8a6', fontSize: 13, textDecoration: 'none' }}>Pay Installment →</a>
+      </div>
+    </div>
   );
 }
