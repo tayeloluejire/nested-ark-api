@@ -8793,11 +8793,13 @@ app.get('/api/tenant/my-tenancy', authenticate, async (req: Request, res: Respon
       ru.rent_amount, ru.currency,
       ru.security_deposit, ru.agency_fee, ru.legal_fee, ru.caution_fee, ru.service_charge,
       ru.bank_name, ru.account_number, ru.account_name, ru.sort_code,
+      ru.cover_image, ru.photo_urls_arr,
       -- Project details
       COALESCE(p.title,          'N/A') AS project_title,
       COALESCE(p.project_number, 'N/A') AS project_number,
       COALESCE(p.location,       '')    AS location,
-      COALESCE(p.country,        '')    AS country
+      COALESCE(p.country,        '')    AS country,
+      COALESCE(p.hero_image_url, '')    AS hero_image_url
     FROM tenancies t
     JOIN      rental_units ru ON ru.id = t.unit_id
     LEFT JOIN projects     p  ON p.id  = t.project_id
@@ -9609,6 +9611,39 @@ app.get('/api/tenant/verify-payment', authenticate, async (req: Request, res: Re
         target_amount: Math.max(0, Number(row.target_amount) || 0),
         funded_pct:    fundedPct,
         vault_status:  row.vault_status,
+        tenant_name:   row.tenant_name,
+        period_label:  row.period_label || new Date().toISOString().slice(0, 7),
+        ledger_hash:   row.ledger_hash || '',
+        paid_at:       row.paid_at,
+      });
+    }
+
+    // ── Layer 1b: Check standalone_contributions (independent tenant vault) ──
+    const sr = await pool.query(
+      `SELECT sc.id, sc.amount_ngn, sc.paystack_ref, sc.period_label, sc.ledger_hash,
+              sc.status, sc.paid_at,
+              sv.vault_balance, sv.target_amount, sv.status AS vault_status,
+              u.full_name AS tenant_name
+       FROM standalone_contributions sc
+       JOIN standalone_vaults sv ON sv.id = sc.vault_id
+       JOIN users u              ON u.id  = sv.tenant_user_id
+       WHERE sc.paystack_ref = $1`,
+      [reference]
+    ).catch(() => ({ rows: [] as any[] }));
+
+    if (sr.rows.length) {
+      const row     = sr.rows[0];
+      const balance = Math.max(0, Number(row.vault_balance) || 0);
+      const target  = Math.max(1, Number(row.target_amount) || 1);
+      return res.json({
+        verified:      true,
+        amount_ngn:    Math.max(0, Number(row.amount_ngn) || 0),
+        reference:     row.paystack_ref,
+        vault_balance: balance,
+        target_amount: Math.max(0, Number(row.target_amount) || 0),
+        funded_pct:    Math.min(Math.round((balance / target) * 100), 100),
+        vault_status:  row.vault_status,
+        vault_type:    'standalone',
         tenant_name:   row.tenant_name,
         period_label:  row.period_label || new Date().toISOString().slice(0, 7),
         ledger_hash:   row.ledger_hash || '',
