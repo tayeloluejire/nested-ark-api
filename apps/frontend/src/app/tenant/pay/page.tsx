@@ -1,6 +1,15 @@
 'use client';
-import { useEffect, useState } from 'react';
+export const dynamic = 'force-dynamic';
+/**
+ * /tenant/pay/page.tsx
+ * Handles both linked-tenancy and standalone vault payment flows.
+ */
+import { useEffect, useState, Suspense } from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
+import Navbar from '@/components/Navbar';
+import Footer from '@/components/Footer';
+import { ArrowLeft, Loader2, ShieldCheck, ExternalLink, AlertCircle, Zap } from 'lucide-react';
 
 const API_BASE = '/api';
 
@@ -10,84 +19,76 @@ function getToken(): string | null {
 }
 
 const fmt = (n: number) =>
-  new Intl.NumberFormat('en-NG', { style: 'currency', currency: 'NGN', minimumFractionDigits: 2 }).format(n);
+  new Intl.NumberFormat('en-NG', {
+    style: 'currency', currency: 'NGN', minimumFractionDigits: 2,
+  }).format(Number(n || 0));
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-type FlowState =
-  | 'loading'
-  | 'linked_vault'          // has tenancy + vault → normal pay flow
-  | 'standalone_vault'      // has standalone vault → route to standalone pay
-  | 'no_vault'              // no tenancy, no standalone vault → redirect to init
-  | 'error';
+// ── Types ─────────────────────────────────────────────────────────────────────
+type FlowState = 'loading' | 'linked_vault' | 'standalone_vault' | 'no_vault' | 'error';
 
 interface VaultInfo {
-  id: string;
+  id:                 string;
   installment_amount: number;
-  vault_balance: number;
-  target_amount: number;
-  funded_pct: number;
-  frequency: string;
-  status: string;
-  isStandalone?: boolean;
+  vault_balance:      number;
+  target_amount:      number;
+  funded_pct:         number;
+  frequency:          string;
+  status:             string;
+  isStandalone?:      boolean;
+  currency?:          string;
 }
 
-export default function PayInstallmentPage() {
+function PayContent() {
   const router = useRouter();
-  const [flow, setFlow]         = useState<FlowState>('loading');
-  const [vault, setVault]       = useState<VaultInfo | null>(null);
-  const [amount, setAmount]     = useState('');
-  const [paying, setPaying]     = useState(false);
-  const [error, setError]       = useState('');
-  const [statusMsg, setStatus]  = useState('');
+  const [flow,      setFlow]      = useState<FlowState>('loading');
+  const [vault,     setVault]     = useState<VaultInfo | null>(null);
+  const [amount,    setAmount]    = useState('');
+  const [paying,    setPaying]    = useState(false);
+  const [error,     setError]     = useState('');
+  const [statusMsg, setStatusMsg] = useState('');
 
-  // ── Resolve vault state on mount ─────────────────────────────────────────
+  // ── Resolve vault state ───────────────────────────────────────────────────
   useEffect(() => {
     (async () => {
       const token = getToken();
       if (!token) { router.push('/login'); return; }
-
       try {
-        // 1. Check linked vault first (my-vault returns standalone_vault too)
-        const mvRes  = await fetch(`${API_BASE}/tenant/my-vault`, {
+        const res  = await fetch(`${API_BASE}/tenant/my-vault`, {
           headers: { Authorization: `Bearer ${token}` },
         });
-        const mvData = await mvRes.json();
+        if (res.status === 401) { router.push('/login'); return; }
+        const data = await res.json();
 
-        if (mvData.hasActiveTenancy && mvData.vault) {
-          // Linked tenancy + vault: standard flow
-          setVault({ ...mvData.vault, isStandalone: false });
-          setAmount(String(mvData.vault.installment_amount || ''));
+        if (data.hasActiveTenancy && data.vault) {
+          setVault({ ...data.vault, isStandalone: false });
+          setAmount(String(data.vault.installment_amount || ''));
           setFlow('linked_vault');
           return;
         }
-
-        if (!mvData.hasActiveTenancy && mvData.standalone_vault) {
-          // Independent tenant with initialized standalone vault
-          setVault({ ...mvData.standalone_vault, isStandalone: true });
-          setAmount(String(mvData.standalone_vault.installment_amount || ''));
+        if (!data.hasActiveTenancy && data.standalone_vault) {
+          setVault({ ...data.standalone_vault, isStandalone: true });
+          setAmount(String(data.standalone_vault.installment_amount || ''));
           setFlow('standalone_vault');
           return;
         }
-
-        // No vault at all → redirect to vault init
         setFlow('no_vault');
       } catch (e: any) {
-        setError(e.message);
+        setError(e.message || 'Failed to load vault');
         setFlow('error');
       }
     })();
-  }, []);
+  }, [router]);
 
-  // ── Initiate payment ──────────────────────────────────────────────────────
+  // ── Pay handler ───────────────────────────────────────────────────────────
   const handlePay = async () => {
     if (!vault) return;
     const amt = Number(amount);
-    if (!amt || amt < 50) return setError('Minimum contribution is ₦50');
+    if (!amt || amt < 50) { setError('Minimum contribution is ₦50'); return; }
     setPaying(true);
     setError('');
-    setStatus('');
+    setStatusMsg('');
     try {
-      const token = getToken();
+      const token    = getToken();
       const endpoint = vault.isStandalone
         ? `${API_BASE}/tenant/standalone-vault/pay`
         : `${API_BASE}/tenant/pay-installment`;
@@ -98,10 +99,8 @@ export default function PayInstallmentPage() {
         body:    JSON.stringify({ amount: amt }),
       });
       const data = await res.json();
-
       if (!data.success) throw new Error(data.error || 'Payment initialization failed');
-
-      setStatus(`Redirecting to Paystack...`);
+      setStatusMsg('Redirecting to Paystack…');
       window.location.href = data.authorization_url;
     } catch (e: any) {
       setError(e.message);
@@ -109,231 +108,242 @@ export default function PayInstallmentPage() {
     }
   };
 
-  // ─── Shared styles ─────────────────────────────────────────────────────────
-  const shell: React.CSSProperties = {
-    maxWidth: 560, margin: '0 auto', padding: '24px 20px',
-  };
-  const card: React.CSSProperties = {
-    background: 'linear-gradient(135deg, #0d1f1f 0%, #0a1a1a 100%)',
-    border: '1px solid rgba(20,184,166,0.25)',
-    borderRadius: 16, padding: 28,
-  };
+  const cur     = vault?.currency || 'NGN';
+  const fundPct = vault?.funded_pct ?? 0;
 
-  const pageHeader = (
-    <div style={{ marginBottom: 28 }}>
-      <div style={{ color: '#6b7280', fontSize: 11, letterSpacing: 2, textTransform: 'uppercase', marginBottom: 6 }}>
-        Tenant Portal
+  // ── Loading ───────────────────────────────────────────────────────────────
+  if (flow === 'loading') return (
+    <div className="min-h-screen bg-[#050505] text-white flex flex-col">
+      <Navbar />
+      <div className="flex-1 flex items-center justify-center">
+        <Loader2 className="animate-spin text-teal-500" size={28} />
       </div>
-      <h1 style={{ margin: 0, color: 'white', fontSize: 24, fontWeight: 700 }}>Pay Installment</h1>
-      <p style={{ margin: '6px 0 0', color: '#6b7280', fontSize: 13 }}>
-        Contribute to your Flex-Pay vault via Paystack
-      </p>
+      <Footer />
     </div>
   );
 
-  // ── Loading ───────────────────────────────────────────────────────────────
-  if (flow === 'loading') {
-    return (
-      <div style={{ ...shell, display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '60vh' }}>
-        <span style={{ color: '#14b8a6', fontFamily: 'monospace', fontSize: 14 }}>⟳ Loading vault...</span>
-      </div>
-    );
-  }
-
   // ── Error ─────────────────────────────────────────────────────────────────
-  if (flow === 'error') {
-    return (
-      <div style={shell}>
-        {pageHeader}
-        <div style={{ ...card, borderColor: 'rgba(239,68,68,0.3)', color: '#ef4444', fontSize: 14 }}>
-          ⚠️ {error || 'Something went wrong. Please refresh and try again.'}
+  if (flow === 'error') return (
+    <div className="min-h-screen bg-[#050505] text-white flex flex-col">
+      <Navbar />
+      <main className="flex-1 max-w-xl mx-auto px-6 py-10 w-full space-y-6">
+        <div className="border-l-2 border-teal-500 pl-5">
+          <p className="text-[9px] text-teal-500 font-mono font-black tracking-widest uppercase mb-1">Tenant Portal</p>
+          <h1 className="text-3xl font-black uppercase tracking-tighter">Pay Installment</h1>
         </div>
-      </div>
-    );
-  }
-
-  // ── No vault — redirect to init ───────────────────────────────────────────
-  if (flow === 'no_vault') {
-    return (
-      <div style={shell}>
-        {pageHeader}
-        <div style={{ ...card, textAlign: 'center' }}>
-          <div style={{ fontSize: 48, marginBottom: 16 }}>🏦</div>
-          <h3 style={{ margin: '0 0 10px', color: 'white', fontWeight: 700 }}>No Active Vault Found</h3>
-          <p style={{ color: '#6b7280', fontSize: 14, lineHeight: 1.6, marginBottom: 24 }}>
-            Initialize your personal savings vault to start contributing toward rent.
-            No landlord required — you control your own savings timeline.
-          </p>
-          <button
-            onClick={() => router.push('/tenant/vault')}
-            style={{
-              padding: '12px 28px', borderRadius: 10,
-              background: 'linear-gradient(135deg, #14b8a6, #0d9488)',
-              border: 'none', color: 'white', fontWeight: 700, fontSize: 14,
-              cursor: 'pointer',
-            }}
-          >
-            🚀 Initialize My Vault
-          </button>
-          <div style={{ marginTop: 16 }}>
-            <a href="/tenant/dashboard" style={{ color: '#4b5563', fontSize: 12, textDecoration: 'none' }}>
-              ← Back to Dashboard
-            </a>
-          </div>
+        <div className="p-4 rounded-xl border border-red-500/20 bg-red-500/5 text-red-400 text-sm font-bold flex items-center gap-2">
+          <AlertCircle size={14} /> {error || 'Something went wrong. Please refresh.'}
         </div>
-      </div>
-    );
-  }
+        <Link href="/tenant/dashboard" className="text-teal-500 text-xs font-bold hover:underline flex items-center gap-1">
+          <ArrowLeft size={11} /> Back to Dashboard
+        </Link>
+      </main>
+      <Footer />
+    </div>
+  );
 
-  // ── Payment Form (linked_vault OR standalone_vault) ───────────────────────
-  return (
-    <div style={shell}>
-      {pageHeader}
-
-      {/* Vault Summary */}
-      {vault && (
-        <div style={{
-          background: 'rgba(20,184,166,0.06)', border: '1px solid rgba(20,184,166,0.15)',
-          borderRadius: 12, padding: '16px 20px', marginBottom: 20,
-          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-        }}>
+  // ── No vault ──────────────────────────────────────────────────────────────
+  if (flow === 'no_vault') return (
+    <div className="min-h-screen bg-[#050505] text-white flex flex-col">
+      <Navbar />
+      <main className="flex-1 max-w-xl mx-auto px-6 py-10 w-full space-y-8">
+        <Link href="/tenant/dashboard"
+          className="flex items-center gap-2 text-zinc-500 hover:text-white text-xs font-bold uppercase tracking-widest transition-colors w-fit">
+          <ArrowLeft size={13} /> Dashboard
+        </Link>
+        <div className="border-l-2 border-teal-500 pl-5">
+          <p className="text-[9px] text-teal-500 font-mono font-black tracking-widest uppercase mb-1">Tenant Portal</p>
+          <h1 className="text-3xl font-black uppercase tracking-tighter">Pay Installment</h1>
+          <p className="text-zinc-500 text-xs mt-1">Contribute to your Flex-Pay vault via Paystack</p>
+        </div>
+        <div className="p-8 rounded-2xl border border-zinc-800 bg-zinc-900/20 text-center space-y-5">
+          <div className="text-5xl">🏦</div>
           <div>
-            <div style={{ color: '#6b7280', fontSize: 11, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 4 }}>
-              {vault.isStandalone ? 'Independent Savings Vault' : 'Flex-Pay Vault'}
-            </div>
-            <div style={{ color: 'white', fontSize: 16, fontWeight: 700, fontFamily: 'monospace' }}>
-              {fmt(vault.vault_balance)} / {fmt(vault.target_amount)}
-            </div>
-            <div style={{ color: '#6b7280', fontSize: 12, marginTop: 2 }}>
-              {vault.funded_pct}% funded · {vault.frequency.toLowerCase()}
-            </div>
+            <p className="text-white font-black text-lg mb-2">No Active Vault Found</p>
+            <p className="text-zinc-500 text-sm leading-relaxed max-w-sm mx-auto">
+              Initialize your personal savings vault to start contributing toward rent.
+              No landlord required — you control your own savings timeline.
+            </p>
           </div>
-          {/* Mini progress bar */}
-          <div style={{ width: 80 }}>
-            <div style={{ height: 6, background: '#1a2a2a', borderRadius: 3, overflow: 'hidden' }}>
-              <div style={{
-                height: '100%', width: `${vault.funded_pct}%`,
-                background: vault.funded_pct >= 100 ? '#10b981' : '#14b8a6',
-                borderRadius: 3, transition: 'width 0.5s ease',
-              }} />
-            </div>
-            <div style={{ color: '#6b7280', fontSize: 10, textAlign: 'center', marginTop: 4 }}>
-              {vault.funded_pct}%
-            </div>
-          </div>
+          <Link href="/tenant/vault"
+            className="inline-flex items-center gap-2 px-6 py-3 bg-teal-500 text-black font-black text-sm uppercase rounded-xl hover:bg-teal-400 transition-all tracking-widest">
+            <Zap size={15} /> Initialize My Vault
+          </Link>
         </div>
-      )}
+      </main>
+      <Footer />
+    </div>
+  );
 
-      {/* Payment Card */}
-      <div style={card}>
-        <div style={{ marginBottom: 20 }}>
-          <label style={{
-            display: 'block', color: '#9ca3af', fontSize: 11,
-            letterSpacing: 1, textTransform: 'uppercase', marginBottom: 8,
-          }}>
-            Contribution Amount (₦)
-          </label>
+  // ── Payment form ──────────────────────────────────────────────────────────
+  const quickAmounts = vault
+    ? [vault.installment_amount * 0.5, vault.installment_amount, vault.installment_amount * 2].filter(v => v >= 50)
+    : [];
 
-          {/* Quick amount buttons */}
-          {vault && (
-            <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
-              {[vault.installment_amount, vault.installment_amount * 2, vault.installment_amount * 0.5]
-                .filter(v => v >= 50)
-                .map(v => (
-                  <button
-                    key={v}
-                    onClick={() => setAmount(String(v))}
-                    style={{
-                      padding: '6px 14px', borderRadius: 6, fontSize: 12,
-                      background: Number(amount) === v ? 'rgba(20,184,166,0.25)' : 'rgba(20,184,166,0.08)',
-                      border: `1px solid ${Number(amount) === v ? '#14b8a6' : 'rgba(20,184,166,0.2)'}`,
-                      color: Number(amount) === v ? '#14b8a6' : '#9ca3af',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    {fmt(v)}
-                  </button>
-                ))}
+  return (
+    <div className="min-h-screen bg-[#050505] text-white flex flex-col">
+      <Navbar />
+
+      <main className="flex-1 max-w-xl mx-auto px-6 py-10 w-full space-y-8">
+
+        <Link href="/tenant/dashboard"
+          className="flex items-center gap-2 text-zinc-500 hover:text-white text-xs font-bold uppercase tracking-widest transition-colors w-fit">
+          <ArrowLeft size={13} /> Dashboard
+        </Link>
+
+        {/* Header */}
+        <div className="border-l-2 border-teal-500 pl-5">
+          <p className="text-[9px] text-teal-500 font-mono font-black tracking-widest uppercase mb-1">Tenant Portal</p>
+          <h1 className="text-3xl font-black uppercase tracking-tighter">Pay Installment</h1>
+          <p className="text-zinc-500 text-xs mt-1">
+            Contribute to your {vault?.isStandalone ? 'independent' : 'Flex-Pay'} vault via Paystack
+          </p>
+        </div>
+
+        {/* Vault summary card */}
+        {vault && (
+          <div className={`p-5 rounded-2xl border ${
+            vault.isStandalone
+              ? 'border-green-500/20 bg-green-500/5'
+              : 'border-teal-500/20 bg-teal-500/5'
+          } space-y-3`}>
+            <p className="text-[9px] uppercase font-black tracking-widest text-zinc-500">
+              {vault.isStandalone ? 'Independent Savings Vault' : 'Flex-Pay Vault'}
+            </p>
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="font-mono font-black text-2xl text-teal-400">{cur} {vault.vault_balance.toLocaleString()}</p>
+                <p className="text-[9px] text-zinc-500 mt-0.5">Balance · {fundPct}% funded</p>
+              </div>
+              <div className="text-right">
+                <p className="text-sm text-zinc-400">Target</p>
+                <p className="font-mono font-bold text-white">{cur} {vault.target_amount.toLocaleString()}</p>
+              </div>
+            </div>
+            <div className="h-2 bg-zinc-800 rounded-full overflow-hidden">
+              <div className={`h-full rounded-full transition-all ${
+                fundPct >= 80 ? 'bg-teal-500' : fundPct >= 50 ? 'bg-amber-500' : 'bg-red-500'
+              }`} style={{ width: `${fundPct}%` }} />
+            </div>
+            <div className="flex items-center justify-between text-[9px] text-zinc-500">
+              <span>Installment: {cur} {vault.installment_amount.toLocaleString()}</span>
+              <span>{vault.frequency?.toLowerCase()}</span>
+            </div>
+          </div>
+        )}
+
+        {/* Payment form card */}
+        <div className="p-6 rounded-2xl border border-zinc-800 bg-zinc-900/20 space-y-5">
+          <p className="text-[9px] text-zinc-500 uppercase font-black tracking-widest">Contribution Amount</p>
+
+          {/* Quick-pick amounts */}
+          {quickAmounts.length > 0 && (
+            <div className="flex gap-2 flex-wrap">
+              {quickAmounts.map(v => (
+                <button key={v} onClick={() => setAmount(String(v))}
+                  className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border transition-all ${
+                    Number(amount) === v
+                      ? 'bg-teal-500/20 border-teal-500/50 text-teal-400'
+                      : 'bg-zinc-900/40 border-zinc-700 text-zinc-400 hover:border-zinc-600'
+                  }`}>
+                  {fmt(v)}
+                </button>
+              ))}
             </div>
           )}
 
-          <input
-            type="number"
-            value={amount}
-            onChange={e => setAmount(e.target.value)}
-            placeholder="Enter amount"
-            style={{
-              width: '100%', background: '#0d1f1f',
-              border: '1px solid rgba(20,184,166,0.2)', borderRadius: 8,
-              padding: '12px 14px', color: 'white', fontSize: 18,
-              outline: 'none', fontFamily: 'monospace', boxSizing: 'border-box',
-            }}
-          />
-        </div>
+          {/* Amount input */}
+          <div className="relative">
+            <span className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-500 font-mono text-sm">₦</span>
+            <input
+              type="number"
+              value={amount}
+              onChange={e => setAmount(e.target.value)}
+              placeholder="Enter amount e.g. 50000"
+              min={50}
+              className="w-full bg-zinc-900 border border-zinc-700 pl-9 pr-4 py-4 rounded-xl text-white font-mono text-lg outline-none focus:border-teal-500 transition-colors"
+            />
+          </div>
 
-        {/* Fee note */}
-        <div style={{
-          background: 'rgba(20,184,166,0.06)', borderRadius: 8,
-          padding: '10px 14px', marginBottom: 20,
-          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-        }}>
-          <div>
-            <div style={{ color: '#9ca3af', fontSize: 12 }}>You pay exactly</div>
-            <div style={{ color: 'white', fontWeight: 700, fontFamily: 'monospace', fontSize: 20 }}>
-              {amount && !isNaN(Number(amount)) ? fmt(Number(amount)) : '₦0.00'}
+          {/* Preview strip */}
+          {amount && !isNaN(Number(amount)) && Number(amount) >= 50 && (
+            <div className="flex items-center justify-between p-4 rounded-xl bg-zinc-900 border border-zinc-800">
+              <div>
+                <p className="text-[9px] text-zinc-500 uppercase font-bold">You Pay</p>
+                <p className="text-white font-black font-mono text-xl">{fmt(Number(amount))}</p>
+              </div>
+              <div className="text-right">
+                <p className="text-[9px] text-teal-500 font-bold">Platform covers Paystack fee</p>
+                <p className="text-[9px] text-zinc-600">2% platform fee deducted at disbursement</p>
+              </div>
             </div>
-          </div>
-          <div style={{ textAlign: 'right' }}>
-            <div style={{ color: '#14b8a6', fontSize: 11 }}>Platform covers Paystack fee</div>
-            <div style={{ color: '#6b7280', fontSize: 11 }}>Funds held in escrow · 2% platform fee at release</div>
-          </div>
+          )}
+
+          {/* Errors / status */}
+          {error && (
+            <div className="p-3 rounded-xl border border-red-500/20 bg-red-500/5 text-red-400 text-xs font-bold flex items-center gap-2">
+              <AlertCircle size={12} /> {error}
+            </div>
+          )}
+          {statusMsg && (
+            <div className="p-3 rounded-xl border border-teal-500/20 bg-teal-500/5 text-teal-400 text-xs font-bold flex items-center gap-2">
+              <Loader2 size={12} className="animate-spin" /> {statusMsg}
+            </div>
+          )}
+
+          {/* Pay button */}
+          <button
+            onClick={handlePay}
+            disabled={paying || !amount || Number(amount) < 50 || vault?.status === 'FUNDED_READY'}
+            className="w-full py-4 bg-teal-500 text-black font-black text-sm uppercase tracking-widest rounded-xl hover:bg-teal-400 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+          >
+            {paying
+              ? <><Loader2 size={16} className="animate-spin" /> Preparing Paystack…</>
+              : vault?.status === 'FUNDED_READY'
+                ? '🎉 Vault Already Funded'
+                : <><ExternalLink size={16} /> Pay {amount && !isNaN(Number(amount)) ? fmt(Number(amount)) : '…'} via Paystack</>
+            }
+          </button>
+
+          <p className="text-[9px] text-zinc-600 text-center leading-relaxed">
+            You will be redirected to a secure Paystack checkout.
+            Your payment is automatically recorded on the immutable SHA-256 ledger.
+          </p>
         </div>
 
-        {error && (
-          <div style={{
-            background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)',
-            borderRadius: 8, padding: '10px 14px', color: '#ef4444',
-            fontSize: 13, marginBottom: 16,
-          }}>{error}</div>
-        )}
+        {/* Trust badges */}
+        <div className="flex flex-wrap gap-2 justify-center">
+          {[
+            <><ShieldCheck size={9} /> Secured by Paystack</>,
+            <><ShieldCheck size={9} /> SHA-256 Ledger Receipt</>,
+            <><ShieldCheck size={9} /> Vault Auto-Updated</>,
+          ].map((b, i) => (
+            <span key={i} className="flex items-center gap-1 text-[8px] text-teal-500 border border-teal-500/20 px-3 py-1.5 rounded-lg font-bold uppercase tracking-widest">
+              {b}
+            </span>
+          ))}
+        </div>
 
-        {statusMsg && (
-          <div style={{
-            background: 'rgba(20,184,166,0.1)', border: '1px solid rgba(20,184,166,0.3)',
-            borderRadius: 8, padding: '10px 14px', color: '#14b8a6',
-            fontSize: 13, marginBottom: 16,
-          }}>{statusMsg}</div>
-        )}
-
-        <button
-          onClick={handlePay}
-          disabled={paying || !amount || Number(amount) < 50}
-          style={{
-            width: '100%', padding: 14, borderRadius: 10,
-            background: (paying || !amount || Number(amount) < 50)
-              ? '#0d2d2d'
-              : 'linear-gradient(135deg, #14b8a6, #0d9488)',
-            border: 'none', color: 'white', fontWeight: 700, fontSize: 15,
-            cursor: (paying || !amount || Number(amount) < 50) ? 'not-allowed' : 'pointer',
-            letterSpacing: 0.5,
-          }}
-        >
-          {paying ? '⏳ Preparing Paystack...' : `⚡ Pay ${amount && !isNaN(Number(amount)) ? fmt(Number(amount)) : ''} via Paystack`}
-        </button>
-
-        <div style={{ marginTop: 16, textAlign: 'center' }}>
-          <a href="/tenant/vault" style={{ color: '#4b5563', fontSize: 12, textDecoration: 'none' }}>
+        <div className="text-center">
+          <Link href="/tenant/vault" className="text-zinc-500 text-xs hover:text-teal-400 transition-colors">
             ← Back to Vault
-          </a>
+          </Link>
         </div>
-      </div>
 
-      {/* SHA note */}
-      <div style={{
-        marginTop: 16, textAlign: 'center', color: '#374151', fontSize: 11, fontFamily: 'monospace',
-      }}>
-        🔐 SHA-256 receipt issued on payment confirmation
-      </div>
+      </main>
+      <Footer />
     </div>
+  );
+}
+
+export default function TenantPayPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-[#050505] flex items-center justify-center">
+        <Loader2 className="animate-spin text-teal-500" size={28} />
+      </div>
+    }>
+      <PayContent />
+    </Suspense>
   );
 }
