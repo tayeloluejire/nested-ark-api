@@ -1068,6 +1068,10 @@ const ensureTablesExist = async () => {
       -- Fix: notes column (additional notes on the notice)
       ALTER TABLE legal_notices ADD COLUMN IF NOT EXISTS notes        TEXT;
 
+      -- ── flex_contributions: released tracking (prevents double-payout) ────────
+      ALTER TABLE flex_contributions ADD COLUMN IF NOT EXISTS released    BOOLEAN     DEFAULT FALSE;
+      ALTER TABLE flex_contributions ADD COLUMN IF NOT EXISTS released_at TIMESTAMPTZ DEFAULT NULL;
+
       -- ── flex_contributions: REAL named UNIQUE constraint (not partial index) ──
       -- ON CONFLICT (paystack_ref) requires a formal constraint, not a partial index.
       -- A partial index (WHERE paystack_ref IS NOT NULL) crashes every vault credit.
@@ -8793,13 +8797,11 @@ app.get('/api/tenant/my-tenancy', authenticate, async (req: Request, res: Respon
       ru.rent_amount, ru.currency,
       ru.security_deposit, ru.agency_fee, ru.legal_fee, ru.caution_fee, ru.service_charge,
       ru.bank_name, ru.account_number, ru.account_name, ru.sort_code,
-      ru.cover_image, ru.photo_urls_arr,
       -- Project details
       COALESCE(p.title,          'N/A') AS project_title,
       COALESCE(p.project_number, 'N/A') AS project_number,
       COALESCE(p.location,       '')    AS location,
-      COALESCE(p.country,        '')    AS country,
-      COALESCE(p.hero_image_url, '')    AS hero_image_url
+      COALESCE(p.country,        '')    AS country
     FROM tenancies t
     JOIN      rental_units ru ON ru.id = t.unit_id
     LEFT JOIN projects     p  ON p.id  = t.project_id
@@ -9611,39 +9613,6 @@ app.get('/api/tenant/verify-payment', authenticate, async (req: Request, res: Re
         target_amount: Math.max(0, Number(row.target_amount) || 0),
         funded_pct:    fundedPct,
         vault_status:  row.vault_status,
-        tenant_name:   row.tenant_name,
-        period_label:  row.period_label || new Date().toISOString().slice(0, 7),
-        ledger_hash:   row.ledger_hash || '',
-        paid_at:       row.paid_at,
-      });
-    }
-
-    // ── Layer 1b: Check standalone_contributions (independent tenant vault) ──
-    const sr = await pool.query(
-      `SELECT sc.id, sc.amount_ngn, sc.paystack_ref, sc.period_label, sc.ledger_hash,
-              sc.status, sc.paid_at,
-              sv.vault_balance, sv.target_amount, sv.status AS vault_status,
-              u.full_name AS tenant_name
-       FROM standalone_contributions sc
-       JOIN standalone_vaults sv ON sv.id = sc.vault_id
-       JOIN users u              ON u.id  = sv.tenant_user_id
-       WHERE sc.paystack_ref = $1`,
-      [reference]
-    ).catch(() => ({ rows: [] as any[] }));
-
-    if (sr.rows.length) {
-      const row     = sr.rows[0];
-      const balance = Math.max(0, Number(row.vault_balance) || 0);
-      const target  = Math.max(1, Number(row.target_amount) || 1);
-      return res.json({
-        verified:      true,
-        amount_ngn:    Math.max(0, Number(row.amount_ngn) || 0),
-        reference:     row.paystack_ref,
-        vault_balance: balance,
-        target_amount: Math.max(0, Number(row.target_amount) || 0),
-        funded_pct:    Math.min(Math.round((balance / target) * 100), 100),
-        vault_status:  row.vault_status,
-        vault_type:    'standalone',
         tenant_name:   row.tenant_name,
         period_label:  row.period_label || new Date().toISOString().slice(0, 7),
         ledger_hash:   row.ledger_hash || '',
@@ -10486,29 +10455,73 @@ const PORT = parseInt(process.env.PORT || "10000");
 // bank account at webhook time, OR where Paystack balance was ₦0 (T+1 clearing).
 // Retries the transfer automatically — landlords always get paid eventually.
 const startPendingPayoutCron = (pool: any) => {
-  const THIRTY_MINS = 30 * 60 * 1000;
+  const THIRTY_MINS             = 30 * 60 * 1000;
+  const PAYSTACK_TRANSFER_FLOOR = 5000; // ₦50.00 in kobo — Paystack hard minimum
+  const MAX_PAYOUT_ATTEMPTS     = 15;   // Stop infinite retries after 15 failed attempts
 
   const retryPendingPayouts = async () => {
     if (!PAYSTACK_SECRET) return;
     try {
+
+      // ── FIX 1: Pre-check Paystack transfer balance before attempting any payout ─
+      // Avoids wasting API calls when the platform balance is ₦0.
+      // If balance is insufficient, log once and exit the cron cycle gracefully.
+      let paystackBalance = 0;
+      try {
+        const balRes  = await fetch(`${PAYSTACK_BASE}/balance`, {
+          headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` },
+        });
+        const balData = await balRes.json() as any;
+        // Paystack returns array of currency balances
+        const ngn = (balData.data || []).find((b: any) => b.currency === 'NGN');
+        paystackBalance = ngn ? ngn.balance : 0; // in kobo
+        if (paystackBalance < PAYSTACK_TRANSFER_FLOOR) {
+          console.warn(`[PAYOUT-CRON] ⏸ Paystack NGN balance is ₦${(paystackBalance/100).toFixed(2)} — below ₦50 minimum. Skipping all payouts this cycle. Top up at: https://dashboard.paystack.com/#/balance`);
+          return;
+        }
+      } catch (balErr: any) {
+        console.warn('[PAYOUT-CRON] Could not fetch Paystack balance — proceeding anyway:', balErr.message);
+      }
+
+      // ── FIX 2: Retry ceiling + SUM of contributions as authoritative basis ──────
+      // payout_attempt_count >= MAX stops infinite retry noise (e.g. 119 attempts).
+      // actual_payout_total = SUM(flex_contributions) = financial truth.
+      // vault_balance is a cached display field that can diverge from ledger.
       const vaults = await pool.query(
-        `SELECT fpv.id AS vault_id, fpv.tenancy_id, fpv.target_amount,
-                fpv.vault_balance, fpv.cashout_mode, fpv.funded_periods,
-                p.sponsor_id, ru.rent_amount, ru.currency
+        `SELECT fpv.id           AS vault_id,
+                fpv.tenancy_id,
+                fpv.target_amount,
+                fpv.vault_balance,
+                fpv.cashout_mode,
+                fpv.funded_periods,
+                fpv.currency,
+                fpv.payout_attempt_count,
+                p.sponsor_id,
+                ru.rent_amount,
+                -- Authoritative payout amount: SUM of unreleased successful contributions
+                COALESCE((
+                  SELECT SUM(fc.amount_ngn)
+                  FROM flex_contributions fc
+                  WHERE fc.vault_id = fpv.id
+                    AND fc.status   = 'SUCCESS'
+                    AND fc.released IS NOT TRUE
+                ), 0) AS actual_payout_total
          FROM flex_pay_vaults fpv
-         JOIN tenancies t      ON t.id  = fpv.tenancy_id
-         JOIN rental_units ru  ON ru.id = COALESCE(fpv.unit_id, t.unit_id)
-         JOIN projects p       ON p.id  = COALESCE(fpv.project_id, ru.project_id)
+         JOIN tenancies    t  ON t.id  = fpv.tenancy_id
+         JOIN rental_units ru ON ru.id = COALESCE(fpv.unit_id, t.unit_id)
+         JOIN projects     p  ON p.id  = COALESCE(fpv.project_id, ru.project_id)
          WHERE fpv.status = 'FUNDED_READY'
            AND fpv.vault_balance >= fpv.target_amount
+           AND COALESCE(fpv.payout_attempt_count, 0) < $1
            AND NOT EXISTS (
              SELECT 1 FROM system_ledger sl
-             WHERE sl.transaction_type = 'LANDLORD_PAYOUT'
-               AND sl.payload->>'vault_id' = fpv.id::text
+             WHERE sl.transaction_type           = 'LANDLORD_PAYOUT'
+               AND sl.payload->>'vault_id'        = fpv.id::text
                AND sl.payload->>'transfer_status' = 'INITIATED'
                AND sl.created_at > NOW() - INTERVAL '25 hours'
            )
-         LIMIT 20`
+         LIMIT 20`,
+        [MAX_PAYOUT_ATTEMPTS]
       );
 
       if (!vaults.rows.length) return;
@@ -10516,100 +10529,152 @@ const startPendingPayoutCron = (pool: any) => {
 
       for (const v of vaults.rows) {
         try {
+          // ── Resolve landlord payout destination ───────────────────────────
+          // Chain: vault → tenancy → project → sponsor (landlord) → bank account
+          // MUST use paystack_recipient_code for outbound transfers.
+          // Subaccounts (ACCT_xxx) are for split collections — NOT outbound payouts.
           const bankRes = await pool.query(
-            `SELECT * FROM landlord_bank_accounts
-             WHERE user_id=$1 AND is_default=true
-               AND paystack_recipient_code IS NOT NULL LIMIT 1`,
+            `SELECT lba.*
+             FROM landlord_bank_accounts lba
+             WHERE lba.user_id    = $1
+               AND lba.is_default = true
+               AND lba.paystack_recipient_code IS NOT NULL
+             LIMIT 1`,
             [v.sponsor_id]
           );
+
           if (!bankRes.rows.length) {
-            console.log(`[PAYOUT-CRON] Landlord ${v.sponsor_id} still has no bank account — skipping vault ${v.vault_id}`);
+            console.log(`[PAYOUT-CRON] ⏸ Landlord ${v.sponsor_id} has no verified default bank account — skipping vault ${v.vault_id}`);
             continue;
           }
           const acct = bankRes.rows[0];
 
-          // Use actual vault_balance as payout basis — not unit rent_amount.
-          // vault_balance = real accumulated funds in platform Paystack escrow.
-          // This is what the tenant actually contributed and what the landlord is owed.
-          const vaultTotal  = parseFloat(v.vault_balance);
-          const platformFee = Math.round(vaultTotal * 0.02 * 100) / 100;
-          const netKobo     = Math.round((vaultTotal - platformFee) * 100);
+          // ── FIX 3: Compute payout from contribution ledger (not just vault_balance) ─
+          // Use actual_payout_total first (financial truth).
+          // Fall back to vault_balance if contribution sum is unexpectedly zero.
+          const rawTotal    = parseFloat(v.actual_payout_total) > 0
+                                ? parseFloat(v.actual_payout_total)
+                                : parseFloat(v.vault_balance) || 0;
+          const platformFee = Math.round(rawTotal * 0.02 * 100) / 100; // 2% platform fee
+          const netAmount   = Math.round((rawTotal - platformFee) * 100) / 100;
+          const netKobo     = Math.round(netAmount * 100); // Paystack uses kobo
+
+          // ── FIX 4: Log full recipient details for auditability ────────────
+          console.log(`[PAYOUT-CRON] Escrow release: vault=${v.vault_id} total=₦${rawTotal} net=₦${netAmount} fee=₦${platformFee} → recipient=${acct.paystack_recipient_code} (${acct.account_name} | ${acct.bank_name})`);
+
+          // ── ₦50 minimum floor guard ────────────────────────────────────────
+          if (netKobo < PAYSTACK_TRANSFER_FLOOR) {
+            console.warn(`[PAYOUT-CRON] ⚠ Skipped vault ${v.vault_id}: net ₦${netAmount} is below Paystack ₦50 minimum. Set a higher target_amount for live transfers.`);
+            await pool.query(
+              `UPDATE flex_pay_vaults
+               SET payout_failure_reason = $1,
+                   payout_failed_at      = NOW(),
+                   payout_attempt_count  = COALESCE(payout_attempt_count, 0) + 1
+               WHERE id = $2`,
+              [`Net payout ₦${netAmount} below Paystack ₦50 minimum — vault target_amount is too low for live transfers`, v.vault_id]
+            );
+            continue;
+          }
+
+          // ── Initiate Paystack transfer to landlord's bank ─────────────────
           const payRef      = `ESCROW-RELEASE-${crypto.randomUUID().split('-')[0].toUpperCase()}-${Date.now()}`;
           const periodLabel = new Date().toISOString().slice(0, 7);
-          console.log(`[PAYOUT-CRON] Escrow release: vault=${v.vault_id} total=₦${vaultTotal} net=₦${netKobo/100} fee=₦${platformFee}`);
 
-          const tRes = await fetch(`${PAYSTACK_BASE}/transfer`, {
+          const tRes  = await fetch(`${PAYSTACK_BASE}/transfer`, {
             method:  'POST',
             headers: { Authorization: `Bearer ${PAYSTACK_SECRET}`, 'Content-Type': 'application/json' },
             body: JSON.stringify({
               source:    'balance',
               amount:    netKobo,
               recipient: acct.paystack_recipient_code,
-              reason:    `Nested Ark rent payout (retry) — ${periodLabel}`,
+              reason:    `Nested Ark rent vault release — ${periodLabel} (${acct.account_name})`,
               reference: payRef,
               currency:  v.currency || 'NGN',
             }),
           });
           const tData = await tRes.json() as any;
 
+          // ── FIX 5: Store full Paystack response payload for debugging ─────
+          const fullPaystackResponse = JSON.stringify(tData);
           const ph = crypto.createHash('sha256')
-            .update(`retry-payout-${payRef}-${v.sponsor_id}-${netKobo}-${Date.now()}`)
+            .update(`escrow-payout-${payRef}-${v.sponsor_id}-${netKobo}-${Date.now()}`)
             .digest('hex');
 
           await pool.query(
             `INSERT INTO system_ledger (transaction_type, payload, immutable_hash)
-             VALUES ('LANDLORD_PAYOUT',$1,$2)`,
+             VALUES ('LANDLORD_PAYOUT', $1, $2)`,
             [JSON.stringify({
-              reference:       payRef,
-              amount_ngn:      netKobo / 100,
-              platform_fee:    platformFee,
-              user_id:         v.sponsor_id,
-              bank_account_id: acct.id,
-              transfer_code:   tData.data?.transfer_code,
-              transfer_status: tData.status ? 'INITIATED' : 'FAILED',
-              vault_id:        v.vault_id,
-              period_label:    periodLabel,
-              source:          'RETRY_CRON',
-              paystack_error:  tData.status ? null : tData.message,
+              reference:              payRef,
+              amount_ngn:             netAmount,
+              gross_total:            rawTotal,
+              platform_fee:           platformFee,
+              user_id:                v.sponsor_id,
+              bank_account_id:        acct.id,
+              bank_name:              acct.bank_name,
+              account_name:           acct.account_name,
+              recipient_code:         acct.paystack_recipient_code,
+              transfer_code:          tData.data?.transfer_code,
+              transfer_status:        tData.status ? 'INITIATED' : 'FAILED',
+              vault_id:               v.vault_id,
+              tenancy_id:             v.tenancy_id,
+              period_label:           periodLabel,
+              source:                 'PAYOUT_CRON',
+              payout_type:            'ESCROW_LUMP_SUM',
+              paystack_error:         tData.status ? null : tData.message,
+              paystack_full_response: fullPaystackResponse, // Full response for debugging
             }), ph]
           );
 
           if (tData.status) {
-            // Zero vault balance after successful escrow release
+            // ── Success: mark contributions released, reset vault ─────────
             await pool.query(
-              `UPDATE flex_pay_vaults
-               SET status='ACTIVE', vault_balance=0, updated_at=NOW(),
-                   payout_failed_at=NULL, payout_failure_reason=NULL
-               WHERE id=$1`,
+              `UPDATE flex_contributions
+               SET released = true, released_at = NOW()
+               WHERE vault_id = $1 AND status = 'SUCCESS' AND released IS NOT TRUE`,
               [v.vault_id]
             );
-            console.log(`[PAYOUT-CRON] ✅ Escrow released → ${acct.account_name} | ${acct.bank_name} | ₦${netKobo/100} | ref=${payRef} (vault total was ₦${vaultTotal})`);
+            await pool.query(
+              `UPDATE flex_pay_vaults
+               SET status                = 'ACTIVE',
+                   vault_balance         = 0,
+                   updated_at            = NOW(),
+                   payout_failed_at      = NULL,
+                   payout_failure_reason = NULL,
+                   payout_attempt_count  = 0
+               WHERE id = $1`,
+              [v.vault_id]
+            );
+            console.log(`[PAYOUT-CRON] ✅ vault=${v.vault_id} → ${acct.account_name} (${acct.bank_name} ${acct.account_number}) ₦${netAmount} | ref=${payRef} | gross=₦${rawTotal} fee=₦${platformFee}`);
             await logAudit({
               event_type:  'ESCROW_RELEASED',
               actor_id:    v.sponsor_id,
               actor_role:  'SYSTEM',
               unit_id:     null,
-              description: `Vault escrow released by cron: ₦${vaultTotal.toLocaleString()} → landlord ${acct.account_name} (${acct.bank_name}). Net ₦${netKobo/100}, fee ₦${platformFee}.`,
-              metadata:    { reference: payRef, vault_total: vaultTotal, net_payout: netKobo/100, platform_fee: platformFee, vault_id: v.vault_id, source: 'PAYOUT_CRON', payout_type: 'ESCROW_LUMP_SUM' },
+              description: `Vault escrow released: ₦${rawTotal} gross → ₦${netAmount} net to ${acct.account_name} (${acct.bank_name}). Platform fee: ₦${platformFee}.`,
+              metadata:    { reference: payRef, vault_total: rawTotal, net_payout: netAmount, platform_fee: platformFee, vault_id: v.vault_id, recipient_code: acct.paystack_recipient_code, source: 'PAYOUT_CRON', payout_type: 'ESCROW_LUMP_SUM' },
             });
           } else {
-            // Mark vault with failure state for landlord visibility
+            // ── Failure: record attempt with full Paystack error ──────────
             await pool.query(
               `UPDATE flex_pay_vaults
-               SET payout_failed_at = NOW(),
+               SET payout_failed_at      = NOW(),
                    payout_failure_reason = $1,
-                   payout_attempt_count = COALESCE(payout_attempt_count, 0) + 1
-               WHERE id=$2`,
+                   payout_attempt_count  = COALESCE(payout_attempt_count, 0) + 1
+               WHERE id = $2`,
               [tData.message || 'Paystack transfer rejected', v.vault_id]
             );
-            console.warn(`[PAYOUT-CRON] ⚠ Failed for vault ${v.vault_id}: ${tData.message}`);
+            const attempts = (v.payout_attempt_count || 0) + 1;
+            console.warn(`[PAYOUT-CRON] ⚠ Failed for vault ${v.vault_id} (attempt ${attempts}/${MAX_PAYOUT_ATTEMPTS}): ${tData.message}`);
+            if (attempts >= MAX_PAYOUT_ATTEMPTS) {
+              console.error(`[PAYOUT-CRON] 🛑 vault ${v.vault_id} reached max retry limit (${MAX_PAYOUT_ATTEMPTS}). Manual intervention required. Last error: ${tData.message}`);
+            }
             await logAudit({
               event_type:  'PAYOUT_FAILED',
               actor_id:    v.sponsor_id,
               actor_role:  'SYSTEM',
               unit_id:     null,
-              description: `Rent payout FAILED for landlord — Paystack error: ${tData.message || 'Unknown error'}`,
-              metadata:    { reference: payRef, vault_id: v.vault_id, error: tData.message, attempt: (v.payout_attempt_count || 0) + 1 },
+              description: `Rent payout FAILED (attempt ${attempts}/${MAX_PAYOUT_ATTEMPTS}) — ${tData.message || 'Unknown error'}`,
+              metadata:    { reference: payRef, vault_id: v.vault_id, error: tData.message, net_attempted: netAmount, recipient_code: acct.paystack_recipient_code, attempt: attempts, max_attempts: MAX_PAYOUT_ATTEMPTS, paystack_full_response: fullPaystackResponse },
             });
           }
         } catch (vaultErr: any) {
@@ -10621,7 +10686,7 @@ const startPendingPayoutCron = (pool: any) => {
     }
   };
 
-  setTimeout(retryPendingPayouts, 60 * 1000); // 60s after boot — catches anything missed on restart
+  setTimeout(retryPendingPayouts, 60 * 1000); // 60s after boot — catches missed payouts on restart
   setInterval(retryPendingPayouts, THIRTY_MINS);
   console.log('[CRON] Pending payout retry scheduler active — every 30 minutes');
 };
@@ -11806,8 +11871,8 @@ Market Ticker: Live 📡
 Revenue Engine: Active 💰
 Rental Engine: Active 🏠
 Payment Model: DUAL ENGINE — Full rent: instant 98/2 split; Vault installments: escrow hold → lump sum release
-Paystack Fee: Platform covers Paystack transaction fee (bearer: account)
-Platform Fee: 2% at checkout (full rent) or 2% at vault release (installments)
+Paystack Fee: PASSED TO CUSTOMER (bearer: customer — configured via Paystack Dashboard)
+Platform Fee: 2% at vault release (installments) | 2% at checkout (full rent)
 Escrow Engine: ACTIVE — vault contributions held in platform until 100% funded
 Data Persistence: ENABLED ✅
 
