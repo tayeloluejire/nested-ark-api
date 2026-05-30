@@ -176,7 +176,7 @@ const CATEGORIES: FAQCategory[] = [
     items: [
       {
         q: 'What can I invest in on Nested Ark OS?',
-        a: 'Investors can participate in fractional infrastructure investment across verified NAP (Nested Ark Protocol) projects — residential buildings, commercial developments, solar installations, road infrastructure, and more. Each project has a unique NAP ID and a milestone-based escrow structure. You invest at the project level and receive yield as milestones complete.',
+        a: 'Investors can participate in fractional infrastructure investment across verified NAP (Nested Ark Protocol) projects — residential buildings, commercial developments, solar installations, road infrastructure, and more. Each project has a unique NAP ID and a milestone-based escrow structure. Capital is released progressively as verified milestones complete, with projected distributions benchmarked to prevailing market reference rates plus a project-specific infrastructure premium.',
       },
       {
         q: 'How is my investment protected?',
@@ -187,8 +187,24 @@ const CATEGORIES: FAQCategory[] = [
         a: 'Tri-Layer Verification is Nested Ark\'s proprietary milestone authentication system. Every construction milestone must pass three independent checks: (1) AI image analysis of submitted photos, (2) a human auditor review, and (3) drone footage verification of the site. Only when all three agree does the escrow release trigger. This makes milestone fraud near-impossible.',
       },
       {
-        q: 'What returns can I expect?',
-        a: 'Returns vary by project type, geography, and risk profile. Residential developments in Lagos typically offer 12–24% annualised returns through a combination of rental income share and capital appreciation. Infrastructure projects (roads, energy) have longer horizons but stronger yield floors. Each project page shows projected yield, current funded percentage, and verified milestone status.',
+        q: 'How are investor returns determined?',
+        a: 'Nested Ark OS uses a market-linked infrastructure yield model rather than arbitrary fixed return promises. Projected distributions are benchmarked against prevailing macroeconomic reference rates — such as government bond yields, treasury instruments, and institutional fixed-deposit markets — with an additional infrastructure premium applied based on project complexity, geography, execution profile, and asset class.',
+      },
+      {
+        q: 'Why not offer a fixed guaranteed return?',
+        a: 'Infrastructure projects operate within real economic environments influenced by inflation, central bank rates, material pricing, and construction execution conditions. Using a dynamic benchmark-linked model allows the platform to remain economically sustainable, inflation-aware, and aligned with institutional finance standards — rather than making return promises that cannot be structurally supported.',
+      },
+      {
+        q: 'What is the infrastructure premium?',
+        a: 'Infrastructure projects typically carry higher execution complexity than passive banking products or sovereign bonds. To compensate participants for this additional asset exposure, eligible projects may include an infrastructure premium above prevailing benchmark rates. This premium is project-specific and reflected transparently on each project\'s detail page alongside verified milestone status.',
+      },
+      {
+        q: 'How is my investment protected?',
+        a: 'Capital committed through Nested Ark OS remains inside programmable escrow infrastructure and is released progressively only after milestone verification, contractor validation, and ledger confirmation processes are completed. This reduces premature fund exposure and improves transparency across the project lifecycle. No developer receives funds ahead of independently verified construction progress.',
+      },
+      {
+        q: 'Can diaspora investors participate remotely?',
+        a: 'Yes. Nested Ark OS is designed for global participation and supports cross-border infrastructure funding in NGN, USD, GBP, EUR, and AED. Diaspora participants can fund projects, monitor verified milestones remotely, track drone and photo evidence, and receive immutable ledger receipts — all without being physically present.',
       },
       {
         q: 'How do I track my portfolio?',

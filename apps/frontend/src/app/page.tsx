@@ -122,26 +122,30 @@ const RD: Record<RoleTab, {
     ],
   },
   investor: {
-    headline: 'Earn 12% on Real Infrastructure',
-    sub: 'Capital in escrow. Released only on verified milestones.',
+    headline: 'Build Wealth Through Escrow-Protected Infrastructure',
+    sub: 'Market-linked infrastructure returns. Capital held in programmable escrow until milestone verification.',
     points: [
-      'Fractional ownership from any country — NGN, USD, GBP, AED',
-      'Capital held in Paystack escrow — released on verified milestones',
-      'Real-time ROI dashboard with immutable ledger receipts',
-      'Diaspora: fund family construction back home, track remotely',
+      'Real infrastructure participation — not speculative yield products',
+      'Capital locked in programmable escrow, released only on verified milestones',
+      'Benchmark-linked returns indexed to prevailing macroeconomic reference rates',
+      'Real-time ROI dashboards with SHA-256 immutable ledger receipts',
+      'Fractional participation from anywhere — NGN, USD, GBP, EUR, AED',
+      'Diaspora-ready: fund infrastructure remotely and track every stage live',
     ],
     steps: [
-      { n:'01', t:'Browse verified projects', b:'Filter by ROI, country, asset type, or category.'               },
-      { n:'02', t:'Commit capital to escrow', b:'Funds locked. SHA-256 cryptographic receipt on the ledger.'     },
-      { n:'03', t:'Earn automatically',       b:'Milestone completions and rental distributions credit you.'     },
+      { n:'01', t:'Browse Verified Infrastructure', b:'Filter by projected yield range, country, infrastructure type, or verified milestone status.' },
+      { n:'02', t:'Commit Capital to Escrow',        b:'Funds secured in programmable escrow infrastructure and tracked with immutable cryptographic receipts.' },
+      { n:'03', t:'Earn Dynamic Infrastructure Returns', b:'Distributions benchmarked against prevailing market rates, adjusted using project-specific infrastructure premiums.' },
     ],
-    cta:'/register?role=investor', ctaLabel:'Start Investing',
-    sec:'/investments',            secLabel:'See live projects',
+    cta:'/register?role=investor', ctaLabel:'Access Infrastructure Exchange',
+    sec:'/investments',            secLabel:'View live projects',
     cards: [
-      { icon: TrendingUp,  title:'12% Annual ROI',    tags:['Milestone-Backed','Escrow-Secured','Immutable']   },
-      { icon: Globe,       title:'Multi-Currency',    tags:['NGN','USD','GBP','AED']                           },
-      { icon: ShieldCheck, title:'Tri-Layer Verify',  tags:['AI','Human Audit','Drone Evidence']               },
-      { icon: FileText,    title:'SHA-256 Receipts',  tags:['Tamper-Proof','Court-Admissible','PDF Export']    },
+      { icon: TrendingUp,  title:'Market-Linked Yields',   tags:['Benchmark-Referenced','Infrastructure Premium','Dynamic Pricing']  },
+      { icon: Lock,        title:'Escrow-Protected Capital', tags:['Programmable Escrow','Milestone-Gated','No Premature Release']   },
+      { icon: ShieldCheck, title:'Tri-Layer Verification',  tags:['AI Analysis','Human Audit','Drone Evidence']                      },
+      { icon: FileText,    title:'SHA-256 Receipts',        tags:['Tamper-Proof','Court-Admissible','Immutable Ledger']               },
+      { icon: Globe,       title:'Multi-Currency Rails',    tags:['NGN','USD','GBP','EUR','AED']                                     },
+      { icon: BarChart3,   title:'Real-Time Dashboards',    tags:['Live ROI','Milestone Tracker','Portfolio Analytics']              },
     ],
   },
   developer: {
@@ -499,10 +503,16 @@ export default function HomePage() {
         {activeRole === 'investor' && (
           <section className="px-4 animate-fadeIn">
             <div className="p-5 rounded-3xl border border-amber-500/20 bg-amber-500/5 space-y-5">
-              <p className="text-[9px] text-amber-500 uppercase font-black tracking-widest">Yield Calculator</p>
+              <div className="flex items-start justify-between gap-3">
+                <p className="text-[9px] text-amber-500 uppercase font-black tracking-widest">Infrastructure Yield Estimator</p>
+                <span className="text-[8px] text-zinc-600 border border-zinc-800 px-2 py-0.5 rounded-full font-mono">Benchmark-linked · Variable</span>
+              </div>
+              <p className="text-[10px] text-zinc-500 leading-relaxed -mt-2">
+                Projected distributions benchmarked against prevailing macroeconomic reference rates with an additional infrastructure premium applied per project.
+              </p>
               <div className="space-y-3">
                 <div className="flex justify-between items-center">
-                  <span className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest">Investment</span>
+                  <span className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest">Capital Commitment</span>
                   <span className="font-mono font-black text-amber-400 text-lg">₦{roiSlider.toLocaleString()}</span>
                 </div>
                 <input type="range" min={100_000} max={10_000_000} step={100_000} value={roiSlider}
@@ -514,21 +524,24 @@ export default function HomePage() {
               </div>
               <div className="grid grid-cols-3 gap-3">
                 {[
-                  { label:'Rate',    val:'12%',                             color:'text-amber-400' },
-                  { label:'Monthly', val:`₦${roiMonthly.toLocaleString()}`, color:'text-white'     },
-                  { label:'Annual',  val:`₦${roiYearly.toLocaleString()}`,  color:'text-teal-400'  },
+                  { label:'Est. Rate',      val:'~10–15%',                       color:'text-amber-400', note:'target range'  },
+                  { label:'Est. Monthly',   val:`₦${roiMonthly.toLocaleString()}`, color:'text-white',   note:'illustrative'  },
+                  { label:'Est. Annual',    val:`₦${roiYearly.toLocaleString()}`,  color:'text-teal-400', note:'variable'     },
                 ].map(c => (
-                  <div key={c.label} className="p-3 rounded-xl border border-zinc-800 bg-zinc-900/50 text-center">
-                    <p className="text-[8px] text-zinc-600 uppercase font-bold mb-1">{c.label}</p>
+                  <div key={c.label} className="p-3 rounded-xl border border-zinc-800 bg-zinc-900/50 text-center space-y-0.5">
+                    <p className="text-[8px] text-zinc-600 uppercase font-bold">{c.label}</p>
                     <p className={`font-black text-base font-mono ${c.color}`}>{c.val}</p>
+                    <p className="text-[7px] text-zinc-700 font-mono">{c.note}</p>
                   </div>
                 ))}
               </div>
               <Link href="/register?role=investor"
                 className="flex items-center justify-center gap-2 w-full py-4 rounded-xl bg-amber-500 text-black font-black text-xs uppercase tracking-wider hover:bg-amber-400 transition-all active:scale-95">
-                <TrendingUp size={13} /> Start Earning 12% ROI
+                <TrendingUp size={13} /> Access Infrastructure Exchange
               </Link>
-              <p className="text-[8px] text-zinc-700 text-center">Returns secured by escrow. 2% platform fee on milestone release only.</p>
+              <p className="text-[8px] text-zinc-700 text-center leading-relaxed">
+                Projections are illustrative. Returns are market-linked and variable. Capital held in programmable escrow. 2% platform fee on milestone release only.
+              </p>
             </div>
           </section>
         )}
