@@ -1218,6 +1218,34 @@ const ensureTablesExist = async () => {
       -- Ensure tenant_user_id exists on flex_pay_vaults (for independent tenant lookups)
       ALTER TABLE flex_pay_vaults ADD COLUMN IF NOT EXISTS tenant_user_id UUID REFERENCES users(id);
 
+      -- ── tenant_bank_profiles: tenant stores their bank account for AutoPay ─────
+      -- Level 1: stores account details for profile enrichment and future direct debit.
+      -- Level 2: direct_debit_enabled + mandate_reference activated when Paystack
+      --          Direct Debit is configured (future phase).
+      CREATE TABLE IF NOT EXISTS tenant_bank_profiles (
+        id                     UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        tenant_user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        bank_name              VARCHAR(100) NOT NULL,
+        bank_code              VARCHAR(20)  NOT NULL,
+        account_number         VARCHAR(20)  NOT NULL,
+        account_name           VARCHAR(255) NOT NULL,
+        currency               VARCHAR(10)  NOT NULL DEFAULT 'NGN',
+        preferred_debit_day    INTEGER      CHECK (preferred_debit_day BETWEEN 1 AND 28),
+        preferred_amount       DECIMAL(15,2),
+        is_verified            BOOLEAN      NOT NULL DEFAULT false,
+        is_default             BOOLEAN      NOT NULL DEFAULT false,
+        direct_debit_enabled   BOOLEAN      NOT NULL DEFAULT false,
+        mandate_reference      VARCHAR(100),
+        mandate_status         VARCHAR(30)  DEFAULT 'PENDING',
+        -- mandate_status: PENDING | ACTIVE | CANCELLED | FAILED
+        paystack_auth_code     VARCHAR(100),
+        created_at             TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+        updated_at             TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_tbp_tenant_acct
+        ON tenant_bank_profiles(tenant_user_id, account_number);
+      CREATE INDEX IF NOT EXISTS idx_tbp_tenant ON tenant_bank_profiles(tenant_user_id);
+
     `);
 
     await client.query('COMMIT');
@@ -11264,6 +11292,349 @@ app.patch('/api/tenant/profile', authenticate, async (req: Request, res: Respons
     });
 
     return res.json({ success: true, profile: r.rows[0] });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// MODULE: TENANT BANKING — Bank Account Storage · AutoPay Standing Order
+// Level 1: Store verified bank account for profile + future AutoPay
+// Level 2: Direct debit mandate (Paystack Direct Debit — future phase)
+// Endpoints:
+//   GET    /api/tenant/bank-accounts
+//   POST   /api/tenant/bank-accounts
+//   PATCH  /api/tenant/bank-accounts/:id
+//   DELETE /api/tenant/bank-accounts/:id
+//   POST   /api/tenant/bank-accounts/:id/set-default
+//   POST   /api/tenant/bank-accounts/:id/autopay-preference
+// ════════════════════════════════════════════════════════════════════════════
+
+// ── GET /api/tenant/bank-accounts ────────────────────────────────────────────
+// Returns all saved bank accounts for the authenticated tenant.
+app.get('/api/tenant/bank-accounts', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId = (req as any).userId;
+  try {
+    const r = await pool.query(
+      `SELECT id, bank_name, bank_code, account_number, account_name, currency,
+              preferred_debit_day, preferred_amount, is_verified, is_default,
+              direct_debit_enabled, mandate_reference, mandate_status, created_at
+       FROM tenant_bank_profiles
+       WHERE tenant_user_id = $1
+       ORDER BY is_default DESC, created_at DESC`,
+      [userId]
+    );
+    return res.json({
+      success:  true,
+      accounts: r.rows,
+      count:    r.rows.length,
+      autopay_summary: {
+        has_verified_account: r.rows.some((a: any) => a.is_verified),
+        direct_debit_active:  r.rows.some((a: any) => a.direct_debit_enabled && a.mandate_status === 'ACTIVE'),
+        next_debit_day:       r.rows.find((a: any) => a.is_default)?.preferred_debit_day ?? null,
+      },
+    });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
+// ── POST /api/tenant/bank-accounts ───────────────────────────────────────────
+// Tenant saves a bank account. Resolves NUBAN via Paystack for instant
+// account_name verification. First account is automatically set as default.
+app.post('/api/tenant/bank-accounts', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId = (req as any).userId;
+  try {
+    const {
+      bank_name, bank_code, account_number,
+      preferred_debit_day, preferred_amount,
+    } = req.body;
+
+    if (!bank_name || !bank_code || !account_number) {
+      return res.status(400).json({ error: 'bank_name, bank_code, and account_number are required' });
+    }
+    if (!/^\d{10}$/.test(account_number)) {
+      return res.status(400).json({ error: 'Account number must be exactly 10 digits' });
+    }
+    if (preferred_debit_day && (preferred_debit_day < 1 || preferred_debit_day > 28)) {
+      return res.status(400).json({ error: 'preferred_debit_day must be between 1 and 28' });
+    }
+
+    // ── Step 1: Verify NUBAN via Paystack ────────────────────────────────
+    let resolvedName  = '';
+    let isVerified    = false;
+    if (PAYSTACK_SECRET) {
+      try {
+        const psRes = await fetch(
+          `${PAYSTACK_BASE}/bank/resolve?account_number=${account_number}&bank_code=${bank_code}`,
+          { headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` } }
+        );
+        const psData = await psRes.json() as any;
+        if (psData.status && psData.data?.account_name) {
+          resolvedName = psData.data.account_name;
+          isVerified   = true;
+        }
+      } catch { /* non-fatal — store unverified */ }
+    }
+
+    // ── Step 2: Prevent duplicate account numbers ─────────────────────────
+    const existing = await pool.query(
+      `SELECT id FROM tenant_bank_profiles
+       WHERE tenant_user_id=$1 AND account_number=$2 LIMIT 1`,
+      [userId, account_number]
+    );
+    if (existing.rows.length) {
+      return res.status(409).json({
+        error:      'This account number is already saved on your profile.',
+        account_id: existing.rows[0].id,
+      });
+    }
+
+    // ── Step 3: First account = default ───────────────────────────────────
+    const countRes   = await pool.query(
+      `SELECT COUNT(*) FROM tenant_bank_profiles WHERE tenant_user_id=$1`, [userId]
+    );
+    const isDefault  = parseInt(countRes.rows[0].count) === 0;
+
+    // ── Step 4: Save ──────────────────────────────────────────────────────
+    const r = await pool.query(
+      `INSERT INTO tenant_bank_profiles
+         (tenant_user_id, bank_name, bank_code, account_number, account_name,
+          preferred_debit_day, preferred_amount, is_verified, is_default)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+       RETURNING *`,
+      [
+        userId, bank_name, bank_code, account_number,
+        resolvedName || 'Unverified',
+        preferred_debit_day || null,
+        preferred_amount    || null,
+        isVerified, isDefault,
+      ]
+    );
+    const saved = r.rows[0];
+
+    // Immutable ledger entry
+    const h = crypto.createHash('sha256')
+      .update(`tenant-bank-${saved.id}-${userId}-${Date.now()}`).digest('hex');
+    pool.query(
+      `INSERT INTO system_ledger (transaction_type, payload, immutable_hash)
+       VALUES ('TENANT_BANK_ACCOUNT_ADDED',$1,$2)`,
+      [JSON.stringify({ account_id: saved.id, tenant_user_id: userId, bank_name, account_number: account_number.slice(-4), verified: isVerified }), h]
+    ).catch(() => {});
+
+    await logAudit({
+      event_type:  'TENANT_BANK_ACCOUNT_ADDED',
+      actor_id:    userId, actor_role: 'TENANT',
+      unit_id: null, description: `Tenant added bank account: ${bank_name} (${isVerified ? 'verified' : 'unverified'})`,
+      metadata: { bank_name, account_number_last4: account_number.slice(-4), verified: isVerified },
+    });
+
+    return res.status(201).json({
+      success:      true,
+      account:      { ...saved, account_number: saved.account_number.replace(/\d(?=\d{4})/g, '*') },
+      verified:     isVerified,
+      account_name: resolvedName,
+      message:      isVerified
+        ? `Account verified: ${resolvedName}`
+        : 'Account saved. Could not auto-verify — you can still use it.',
+    });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
+// ── PATCH /api/tenant/bank-accounts/:id ──────────────────────────────────────
+// Update preferred_debit_day or preferred_amount on a saved account.
+app.patch('/api/tenant/bank-accounts/:id', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId = (req as any).userId;
+  const { id } = req.params;
+  try {
+    const { preferred_debit_day, preferred_amount } = req.body;
+    if (!preferred_debit_day && !preferred_amount) {
+      return res.status(400).json({ error: 'Provide preferred_debit_day or preferred_amount to update' });
+    }
+    if (preferred_debit_day && (preferred_debit_day < 1 || preferred_debit_day > 28)) {
+      return res.status(400).json({ error: 'preferred_debit_day must be between 1 and 28' });
+    }
+    const r = await pool.query(
+      `UPDATE tenant_bank_profiles
+       SET preferred_debit_day = COALESCE($1, preferred_debit_day),
+           preferred_amount    = COALESCE($2, preferred_amount),
+           updated_at          = NOW()
+       WHERE id=$3 AND tenant_user_id=$4
+       RETURNING *`,
+      [preferred_debit_day || null, preferred_amount || null, id, userId]
+    );
+    if (!r.rows.length) return res.status(404).json({ error: 'Account not found' });
+    return res.json({ success: true, account: r.rows[0] });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
+// ── POST /api/tenant/bank-accounts/:id/set-default ───────────────────────────
+// Sets one account as the default (clears default on all others).
+app.post('/api/tenant/bank-accounts/:id/set-default', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId = (req as any).userId;
+  const { id } = req.params;
+  try {
+    // Verify account belongs to this tenant
+    const check = await pool.query(
+      `SELECT id FROM tenant_bank_profiles WHERE id=$1 AND tenant_user_id=$2`, [id, userId]
+    );
+    if (!check.rows.length) return res.status(404).json({ error: 'Account not found' });
+
+    // Clear all defaults for this tenant then set the one
+    await pool.query(
+      `UPDATE tenant_bank_profiles SET is_default=false WHERE tenant_user_id=$1`, [userId]
+    );
+    await pool.query(
+      `UPDATE tenant_bank_profiles SET is_default=true, updated_at=NOW() WHERE id=$1`, [id]
+    );
+    return res.json({ success: true, message: 'Default account updated' });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
+// ── POST /api/tenant/bank-accounts/:id/autopay-preference ────────────────────
+// Tenant sets their AutoPay standing order preference.
+// This is Level 1: stores the preference and marks intent.
+// Level 2 (Direct Debit mandate via Paystack) is a future phase.
+app.post('/api/tenant/bank-accounts/:id/autopay-preference', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId = (req as any).userId;
+  const { id } = req.params;
+  try {
+    const { preferred_debit_day, preferred_amount, enable } = req.body;
+    if (!preferred_debit_day || !preferred_amount) {
+      return res.status(400).json({ error: 'preferred_debit_day and preferred_amount are required' });
+    }
+    if (preferred_debit_day < 1 || preferred_debit_day > 28) {
+      return res.status(400).json({ error: 'preferred_debit_day must be between 1 and 28' });
+    }
+
+    const r = await pool.query(
+      `UPDATE tenant_bank_profiles
+       SET preferred_debit_day  = $1,
+           preferred_amount     = $2,
+           direct_debit_enabled = $3,
+           mandate_status       = $4,
+           updated_at           = NOW()
+       WHERE id=$5 AND tenant_user_id=$6
+       RETURNING *`,
+      [
+        preferred_debit_day,
+        preferred_amount,
+        enable === true ? true : false,
+        enable === true ? 'PENDING' : 'CANCELLED',
+        id, userId,
+      ]
+    );
+    if (!r.rows.length) return res.status(404).json({ error: 'Account not found' });
+
+    await logAudit({
+      event_type:  'TENANT_AUTOPAY_PREFERENCE_SET',
+      actor_id:    userId, actor_role: 'TENANT', unit_id: null,
+      description: `Tenant set AutoPay preference: ₦${preferred_amount} on day ${preferred_debit_day} of each month (enabled: ${enable})`,
+      metadata:    { account_id: id, preferred_debit_day, preferred_amount, enabled: enable },
+    });
+
+    return res.json({
+      success:           true,
+      account:           r.rows[0],
+      autopay_enabled:   r.rows[0].direct_debit_enabled,
+      mandate_status:    r.rows[0].mandate_status,
+      message:           enable
+        ? `AutoPay set: ₦${preferred_amount.toLocaleString()} will be deducted on day ${preferred_debit_day} of each month once Direct Debit is activated.`
+        : 'AutoPay preference saved. Direct Debit is currently disabled.',
+      note: 'Full automatic deductions will activate in the next platform update. Your preference has been saved.',
+    });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
+// ── DELETE /api/tenant/bank-accounts/:id ─────────────────────────────────────
+// Removes a saved bank account. Cannot delete if direct debit is active.
+app.delete('/api/tenant/bank-accounts/:id', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId = (req as any).userId;
+  const { id } = req.params;
+  try {
+    const check = await pool.query(
+      `SELECT * FROM tenant_bank_profiles WHERE id=$1 AND tenant_user_id=$2`, [id, userId]
+    );
+    if (!check.rows.length) return res.status(404).json({ error: 'Account not found' });
+
+    if (check.rows[0].direct_debit_enabled && check.rows[0].mandate_status === 'ACTIVE') {
+      return res.status(409).json({
+        error: 'Cannot delete an account with an active Direct Debit mandate. Disable AutoPay first.',
+      });
+    }
+
+    await pool.query(`DELETE FROM tenant_bank_profiles WHERE id=$1 AND tenant_user_id=$2`, [id, userId]);
+
+    // If deleted account was default, promote the most recent remaining one
+    if (check.rows[0].is_default) {
+      await pool.query(
+        `UPDATE tenant_bank_profiles
+         SET is_default=true, updated_at=NOW()
+         WHERE tenant_user_id=$1
+         ORDER BY created_at DESC LIMIT 1`,
+        [userId]
+      ).catch(() => {});
+    }
+
+    await logAudit({
+      event_type: 'TENANT_BANK_ACCOUNT_REMOVED', actor_id: userId, actor_role: 'TENANT',
+      unit_id: null, description: `Tenant removed bank account: ${check.rows[0].bank_name}`,
+      metadata: { account_id: id, bank_name: check.rows[0].bank_name },
+    });
+
+    return res.json({ success: true, message: 'Bank account removed.' });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
+// ── GET /api/tenant/autopay-status ───────────────────────────────────────────
+// Returns current AutoPay status for the tenant's default account.
+// Used by the tenant dashboard to show the AutoPay widget state.
+app.get('/api/tenant/autopay-status', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId = (req as any).userId;
+  try {
+    const r = await pool.query(
+      `SELECT tbp.*,
+              fpv.target_amount, fpv.vault_balance, fpv.status AS vault_status,
+              fpv.installment_amount, fpv.frequency
+       FROM tenant_bank_profiles tbp
+       LEFT JOIN flex_pay_vaults fpv ON fpv.tenant_user_id = $1
+         AND fpv.status NOT IN ('CLOSED','MIGRATED')
+       WHERE tbp.tenant_user_id=$1 AND tbp.is_default=true
+       LIMIT 1`,
+      [userId]
+    );
+
+    if (!r.rows.length) {
+      return res.json({
+        success:            true,
+        has_bank_account:   false,
+        autopay_enabled:    false,
+        mandate_status:     null,
+        message:            'No bank account linked. Add a bank account to enable AutoPay.',
+      });
+    }
+
+    const acct = r.rows[0];
+    return res.json({
+      success:              true,
+      has_bank_account:     true,
+      bank_name:            acct.bank_name,
+      account_name:         acct.account_name,
+      account_number_last4: acct.account_number.slice(-4),
+      preferred_debit_day:  acct.preferred_debit_day,
+      preferred_amount:     parseFloat(acct.preferred_amount) || null,
+      autopay_enabled:      acct.direct_debit_enabled,
+      mandate_status:       acct.mandate_status,
+      is_verified:          acct.is_verified,
+      vault: acct.target_amount ? {
+        target_amount:      parseFloat(acct.target_amount),
+        vault_balance:      parseFloat(acct.vault_balance) || 0,
+        installment_amount: parseFloat(acct.installment_amount) || 0,
+        frequency:          acct.frequency,
+        vault_status:       acct.vault_status,
+      } : null,
+      next_steps: !acct.direct_debit_enabled
+        ? ['Set your preferred debit day', 'Set your monthly contribution amount', 'Enable AutoPay']
+        : acct.mandate_status === 'PENDING'
+          ? ['Direct Debit activation in progress — you will be notified when live']
+          : [],
+    });
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
 
