@@ -21,7 +21,27 @@ import {
   Plus, Home, Users, ArrowRight, Loader2, PlusCircle,
   Building2, RefreshCw, ChevronDown, ChevronUp,
   MapPin, Layers, Eye, FileText, Bell, AlertCircle,
+  Image as ImageIcon, BedDouble, Edit3,
 } from 'lucide-react';
+
+// ── Property thumbnail — cover image with text fallback ───────────────────────
+function PropertyThumb({ src, name, className = '' }: {
+  src?: string | null; name: string; className?: string;
+}) {
+  const initials = name.trim().split(/\s+/).map((w: string) => w[0]).join('').slice(0, 2).toUpperCase();
+  if (src) {
+    return (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img src={src} alt={name} className={`object-cover ${className}`}
+        onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+    );
+  }
+  return (
+    <div className={`bg-zinc-800 flex items-center justify-center ${className}`}>
+      <span className="text-zinc-500 font-black text-sm">{initials || <ImageIcon size={20} className="text-zinc-600" />}</span>
+    </div>
+  );
+}
 
 const safeN = (v: any): number => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
 const safeF = (v: any): string => safeN(v).toLocaleString();
@@ -34,6 +54,10 @@ interface Unit {
   status?: string;
   tenant_name?: string;
   tenancy_status?: string;
+  cover_image?: string | null;
+  photo_urls_arr?: string[] | null;
+  bedrooms?: number;
+  unit_type?: string;
 }
 
 interface Project {
@@ -43,6 +67,8 @@ interface Project {
   country?: string;
   status?: string;
   project_number?: string;
+  hero_image_url?: string | null;
+  cover_image?: string | null;
 }
 
 export default function MyPropertiesPage() {
@@ -182,6 +208,15 @@ export default function MyPropertiesPage() {
                 <div key={project.id}
                   className="bg-zinc-900 border border-zinc-800 rounded-3xl overflow-hidden hover:border-zinc-700 transition-all">
 
+                  {/* Project hero image */}
+                  {(project.hero_image_url || project.cover_image) && (
+                    <PropertyThumb
+                      src={project.hero_image_url || project.cover_image}
+                      name={project.title}
+                      className="w-full h-44 rounded-none"
+                    />
+                  )}
+
                   <div className="p-6">
                     {/* Project header */}
                     <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 mb-6">
@@ -274,30 +309,52 @@ export default function MyPropertiesPage() {
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                           {units.map(unit => (
                             <div key={unit.id}
-                              className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4 flex items-center justify-between gap-3">
-                              <div className="min-w-0">
-                                <p className="font-black uppercase text-sm truncate">{unit.unit_name}</p>
-                                <p className="text-zinc-500 text-xs font-mono">
-                                  {unit.currency || 'NGN'} {safeF(unit.rent_amount)} / mo
-                                </p>
-                                {unit.tenant_name && (
-                                  <p className="text-teal-400 text-[10px] font-mono mt-0.5 truncate">
-                                    👤 {unit.tenant_name}
-                                  </p>
-                                )}
-                              </div>
-                              <div className="flex flex-col items-end gap-2 shrink-0">
-                                <span className={`text-[9px] font-black px-2 py-1 rounded uppercase ${
-                                  unit.tenancy_status === 'ACTIVE'
-                                    ? 'bg-teal-500/10 text-teal-400'
-                                    : 'bg-amber-500/10 text-amber-400'
-                                }`}>
-                                  {unit.tenancy_status === 'ACTIVE' ? 'Occupied' : (unit.status || 'Vacant')}
-                                </span>
-                                <Link href={`/landlord/onboard/${unit.id}`}
-                                  className="text-[9px] font-black uppercase text-teal-500 border border-teal-500/30 px-2 py-1 rounded hover:bg-teal-500/10 transition-colors whitespace-nowrap">
-                                  Onboard Tenant
-                                </Link>
+                              className="bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden hover:border-zinc-700 transition-all">
+                              {/* Unit photo */}
+                              <PropertyThumb
+                                src={unit.cover_image}
+                                name={unit.unit_name}
+                                className="w-full h-28"
+                              />
+                              <div className="p-4 flex items-start justify-between gap-3">
+                                <div className="min-w-0">
+                                  <p className="font-black uppercase text-sm truncate">{unit.unit_name}</p>
+                                  <div className="flex items-center gap-2 flex-wrap mt-0.5">
+                                    <p className="text-zinc-500 text-xs font-mono">
+                                      {unit.currency || 'NGN'} {safeF(unit.rent_amount)} / mo
+                                    </p>
+                                    {unit.bedrooms != null && unit.bedrooms > 0 && (
+                                      <span className="flex items-center gap-0.5 text-[10px] text-zinc-600">
+                                        <BedDouble size={9} /> {unit.bedrooms}bd
+                                      </span>
+                                    )}
+                                    {unit.unit_type && (
+                                      <span className="text-[9px] text-zinc-700 uppercase font-bold">{unit.unit_type}</span>
+                                    )}
+                                  </div>
+                                  {unit.tenant_name && (
+                                    <p className="text-teal-400 text-[10px] font-mono mt-1 truncate">
+                                      👤 {unit.tenant_name}
+                                    </p>
+                                  )}
+                                </div>
+                                <div className="flex flex-col items-end gap-2 shrink-0">
+                                  <span className={`text-[9px] font-black px-2 py-1 rounded uppercase ${
+                                    unit.tenancy_status === 'ACTIVE'
+                                      ? 'bg-teal-500/10 text-teal-400'
+                                      : 'bg-amber-500/10 text-amber-400'
+                                  }`}>
+                                    {unit.tenancy_status === 'ACTIVE' ? 'Occupied' : (unit.status || 'Vacant')}
+                                  </span>
+                                  <Link href={`/landlord/onboard/${unit.id}`}
+                                    className="text-[9px] font-black uppercase text-teal-500 border border-teal-500/30 px-2 py-1 rounded hover:bg-teal-500/10 transition-colors whitespace-nowrap">
+                                    Onboard Tenant
+                                  </Link>
+                                  <Link href={`/landlord/inventory/editor`}
+                                    className="flex items-center gap-1 text-[9px] font-black uppercase text-zinc-500 border border-zinc-700 px-2 py-1 rounded hover:border-zinc-500 hover:text-zinc-300 transition-colors whitespace-nowrap">
+                                    <Edit3 size={9} /> Edit Unit
+                                  </Link>
+                                </div>
                               </div>
                             </div>
                           ))}

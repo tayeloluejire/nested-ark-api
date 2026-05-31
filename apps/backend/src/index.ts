@@ -6461,6 +6461,10 @@ app.get('/api/rental/tenants', authenticate, async (req: Request, res: Response)
          t.tenant_user_id,
          ru.unit_name,
          ru.status AS unit_status,
+         ru.cover_image,
+         ru.photo_urls_arr,
+         ru.bedrooms,
+         ru.unit_type,
          p.title AS project_title, p.project_number,
          fpv.next_due_date AS next_payment_date,
          fpv.vault_balance
