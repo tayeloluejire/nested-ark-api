@@ -1191,6 +1191,9 @@ const ensureTablesExist = async () => {
         landlord_bank_name      VARCHAR(100),
         landlord_account_number VARCHAR(20),
         landlord_account_name   VARCHAR(255),
+        -- Fee transparency — stored at vault creation, shown clearly to tenant
+        rent_amount             DECIMAL(15,2),           -- Actual rent (landlord receives this)
+        platform_fee_amount     DECIMAL(15,2),           -- 2% Nested Ark Rent Success Fee
         -- Populated when admin migrates to a formal tenancy
         linked_tenancy_id       UUID REFERENCES tenancies(id) ON DELETE SET NULL,
         linked_at               TIMESTAMPTZ,
@@ -1198,6 +1201,9 @@ const ensureTablesExist = async () => {
         created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+      -- Safely add fee columns to existing rows
+      ALTER TABLE standalone_vaults ADD COLUMN IF NOT EXISTS rent_amount         DECIMAL(15,2);
+      ALTER TABLE standalone_vaults ADD COLUMN IF NOT EXISTS platform_fee_amount DECIMAL(15,2);
       CREATE INDEX IF NOT EXISTS idx_sv_tenant ON standalone_vaults(tenant_user_id);
       CREATE INDEX IF NOT EXISTS idx_sv_status ON standalone_vaults(status);
 
@@ -1218,10 +1224,10 @@ const ensureTablesExist = async () => {
       -- Ensure tenant_user_id exists on flex_pay_vaults (for independent tenant lookups)
       ALTER TABLE flex_pay_vaults ADD COLUMN IF NOT EXISTS tenant_user_id UUID REFERENCES users(id);
 
-      -- ── tenant_bank_profiles: tenant stores their bank account for AutoPay ─────
-      -- Level 1: stores account details for profile enrichment and future direct debit.
-      -- Level 2: direct_debit_enabled + mandate_reference activated when Paystack
-      --          Direct Debit is configured (future phase).
+      -- ── tenant_bank_profiles: bank account storage + AutoPay standing order ──
+      -- Level 1 (live now): store verified bank account, debit day, contribution amount.
+      -- Level 2 (future): direct debit mandate via Paystack; paystack_auth_code field
+      --   populated when tenant completes first payment (save authorization for recurring charge).
       CREATE TABLE IF NOT EXISTS tenant_bank_profiles (
         id                     UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         tenant_user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -1237,7 +1243,6 @@ const ensureTablesExist = async () => {
         direct_debit_enabled   BOOLEAN      NOT NULL DEFAULT false,
         mandate_reference      VARCHAR(100),
         mandate_status         VARCHAR(30)  DEFAULT 'PENDING',
-        -- mandate_status: PENDING | ACTIVE | CANCELLED | FAILED
         paystack_auth_code     VARCHAR(100),
         created_at             TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
         updated_at             TIMESTAMPTZ  NOT NULL DEFAULT NOW()
@@ -1245,6 +1250,10 @@ const ensureTablesExist = async () => {
       CREATE UNIQUE INDEX IF NOT EXISTS idx_tbp_tenant_acct
         ON tenant_bank_profiles(tenant_user_id, account_number);
       CREATE INDEX IF NOT EXISTS idx_tbp_tenant ON tenant_bank_profiles(tenant_user_id);
+
+      -- flex_contributions: released tracking (prevents double-payout)
+      ALTER TABLE flex_contributions ADD COLUMN IF NOT EXISTS released    BOOLEAN     DEFAULT FALSE;
+      ALTER TABLE flex_contributions ADD COLUMN IF NOT EXISTS released_at TIMESTAMPTZ DEFAULT NULL;
 
     `);
 
@@ -9307,32 +9316,68 @@ app.post('/api/tenant/standalone-vault/init', authenticate, async (req: Request,
       });
     }
     const {
-      target_amount, installment_amount,
+      rent_amount,            // Actual rent the landlord will receive (required)
       frequency = 'MONTHLY',
       landlord_name, landlord_email,
       landlord_bank_name, landlord_account_number, landlord_account_name,
+      // Legacy: accept direct target_amount + installment_amount if provided
+      target_amount: raw_target, installment_amount: raw_installment,
     } = req.body;
 
-    if (!target_amount || isNaN(Number(target_amount)) || Number(target_amount) < 100) {
-      return res.status(400).json({ error: 'target_amount is required and must be at least ₦100' });
+    // ── Fee calculation: tenant pays rent + 2% Rent Success Fee ──────────────
+    // If rent_amount is supplied, compute target = rent + 2% automatically.
+    // If legacy target_amount is supplied directly, use it as-is (backward compat).
+    const PLATFORM_FEE_PCT = 0.02;
+    let computedRentAmount: number;
+    let platformFeeAmount:  number;
+    let finalTarget:        number;
+
+    if (rent_amount && !isNaN(Number(rent_amount)) && Number(rent_amount) >= 100) {
+      computedRentAmount = Math.round(Number(rent_amount) * 100) / 100;
+      platformFeeAmount  = Math.round(computedRentAmount * PLATFORM_FEE_PCT * 100) / 100;
+      finalTarget        = Math.round((computedRentAmount + platformFeeAmount) * 100) / 100;
+    } else if (raw_target && !isNaN(Number(raw_target)) && Number(raw_target) >= 100) {
+      // Legacy path
+      finalTarget        = Math.round(Number(raw_target) * 100) / 100;
+      platformFeeAmount  = Math.round(finalTarget * PLATFORM_FEE_PCT * 100) / 100;
+      computedRentAmount = Math.round((finalTarget - platformFeeAmount) * 100) / 100;
+    } else {
+      return res.status(400).json({
+        error: 'rent_amount is required and must be at least ₦100. This is the actual rent amount — the 2% Rent Success Fee will be calculated automatically.',
+      });
     }
-    if (!installment_amount || isNaN(Number(installment_amount)) || Number(installment_amount) < 50) {
-      return res.status(400).json({ error: 'installment_amount is required and must be at least ₦50' });
-    }
+
+    // ── Calculate installment based on frequency ───────────────────────────────
     const VALID_FREQS = ['DAILY','WEEKLY','BIWEEKLY','MONTHLY','QUARTERLY'];
     const freq = VALID_FREQS.includes((frequency || '').toUpperCase())
       ? (frequency as string).toUpperCase()
       : 'MONTHLY';
 
+    const PERIODS: Record<string, number> = {
+      DAILY: 365, WEEKLY: 52, BIWEEKLY: 26, MONTHLY: 12, QUARTERLY: 4,
+    };
+    // Use provided installment_amount or auto-calculate from frequency
+    const periods = PERIODS[freq] || 12;
+    const autoInstallment = Math.ceil((finalTarget / periods) * 100) / 100;
+    const finalInstallment = raw_installment && !isNaN(Number(raw_installment)) && Number(raw_installment) >= 50
+      ? Math.round(Number(raw_installment) * 100) / 100
+      : autoInstallment;
+
+    if (finalInstallment < 50) {
+      return res.status(400).json({ error: 'Calculated installment amount is below ₦50 minimum. Please increase rent_amount or choose a less frequent payment schedule.' });
+    }
+
     const r = await pool.query(
       `INSERT INTO standalone_vaults
          (tenant_user_id, target_amount, installment_amount, frequency,
+          rent_amount, platform_fee_amount,
           landlord_name, landlord_email, landlord_bank_name,
           landlord_account_number, landlord_account_name, status, currency)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'ACTIVE','NGN')
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'ACTIVE','NGN')
        RETURNING *`,
       [
-        userId, Number(target_amount), Number(installment_amount), freq,
+        userId, finalTarget, finalInstallment, freq,
+        computedRentAmount, platformFeeAmount,
         landlord_name           || null,
         landlord_email          || null,
         landlord_bank_name      || null,
@@ -9354,15 +9399,21 @@ app.post('/api/tenant/standalone-vault/init', authenticate, async (req: Request,
     console.log(`[STANDALONE-VAULT] Initialized vault=${sv.id} tenant=${userId} target=₦${target_amount} freq=${freq}`);
 
     return res.status(201).json({
-      success:            true,
-      vault_id:           sv.id,
-      target_amount:      parseFloat(sv.target_amount),
-      installment_amount: parseFloat(sv.installment_amount),
-      frequency:          sv.frequency,
-      status:             sv.status,
-      currency:           sv.currency,
-      landlord_supplied:  !!(landlord_name || landlord_email || landlord_bank_name),
-      message:            'Standalone vault initialized. You can now start saving.',
+      success:              true,
+      vault_id:             sv.id,
+      // Fee breakdown — shown clearly to tenant on confirmation screen
+      rent_amount:          parseFloat(sv.rent_amount)         || computedRentAmount,
+      platform_fee_amount:  parseFloat(sv.platform_fee_amount) || platformFeeAmount,
+      platform_fee_pct:     2,
+      target_amount:        parseFloat(sv.target_amount),
+      installment_amount:   parseFloat(sv.installment_amount),
+      frequency:            sv.frequency,
+      periods:              periods,
+      status:               sv.status,
+      currency:             sv.currency,
+      landlord_supplied:    !!(landlord_name || landlord_email || landlord_bank_name),
+      fee_explanation:      'Nested Ark Rent Success Fee (2%) covers: automated rent planning, smart vault, AutoPay, contribution tracking, payment processing, secure rent release, and payment history.',
+      message:              `Vault initialized. Save ${sv.currency} ${parseFloat(sv.installment_amount).toLocaleString()} ${freq.toLowerCase()} to reach your ₦${parseFloat(sv.rent_amount || computedRentAmount.toString()).toLocaleString()} rent target.`,
     });
   } catch (e: any) {
     return res.status(500).json({ error: e.message });
@@ -11297,8 +11348,8 @@ app.patch('/api/tenant/profile', authenticate, async (req: Request, res: Respons
 
 // ════════════════════════════════════════════════════════════════════════════
 // MODULE: TENANT BANKING — Bank Account Storage · AutoPay Standing Order
-// Level 1: Store verified bank account for profile + future AutoPay
-// Level 2: Direct debit mandate (Paystack Direct Debit — future phase)
+// Level 1 (live): verified bank account, debit preference, paystack_auth_code
+// Level 2 (future): direct debit mandate activation via Paystack Direct Debit
 // Endpoints:
 //   GET    /api/tenant/bank-accounts
 //   POST   /api/tenant/bank-accounts
@@ -11306,10 +11357,9 @@ app.patch('/api/tenant/profile', authenticate, async (req: Request, res: Respons
 //   DELETE /api/tenant/bank-accounts/:id
 //   POST   /api/tenant/bank-accounts/:id/set-default
 //   POST   /api/tenant/bank-accounts/:id/autopay-preference
+//   GET    /api/tenant/autopay-status
 // ════════════════════════════════════════════════════════════════════════════
 
-// ── GET /api/tenant/bank-accounts ────────────────────────────────────────────
-// Returns all saved bank accounts for the authenticated tenant.
 app.get('/api/tenant/bank-accounts', authenticate, async (req: Request, res: Response): Promise<any> => {
   const userId = (req as any).userId;
   try {
@@ -11335,17 +11385,10 @@ app.get('/api/tenant/bank-accounts', authenticate, async (req: Request, res: Res
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
 
-// ── POST /api/tenant/bank-accounts ───────────────────────────────────────────
-// Tenant saves a bank account. Resolves NUBAN via Paystack for instant
-// account_name verification. First account is automatically set as default.
 app.post('/api/tenant/bank-accounts', authenticate, async (req: Request, res: Response): Promise<any> => {
   const userId = (req as any).userId;
   try {
-    const {
-      bank_name, bank_code, account_number,
-      preferred_debit_day, preferred_amount,
-    } = req.body;
-
+    const { bank_name, bank_code, account_number, preferred_debit_day, preferred_amount } = req.body;
     if (!bank_name || !bank_code || !account_number) {
       return res.status(400).json({ error: 'bank_name, bank_code, and account_number are required' });
     }
@@ -11356,12 +11399,12 @@ app.post('/api/tenant/bank-accounts', authenticate, async (req: Request, res: Re
       return res.status(400).json({ error: 'preferred_debit_day must be between 1 and 28' });
     }
 
-    // ── Step 1: Verify NUBAN via Paystack ────────────────────────────────
-    let resolvedName  = '';
-    let isVerified    = false;
+    // Verify NUBAN via Paystack
+    let resolvedName = '';
+    let isVerified   = false;
     if (PAYSTACK_SECRET) {
       try {
-        const psRes = await fetch(
+        const psRes  = await fetch(
           `${PAYSTACK_BASE}/bank/resolve?account_number=${account_number}&bank_code=${bank_code}`,
           { headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` } }
         );
@@ -11370,75 +11413,54 @@ app.post('/api/tenant/bank-accounts', authenticate, async (req: Request, res: Re
           resolvedName = psData.data.account_name;
           isVerified   = true;
         }
-      } catch { /* non-fatal — store unverified */ }
+      } catch { /* non-fatal */ }
     }
 
-    // ── Step 2: Prevent duplicate account numbers ─────────────────────────
+    // Prevent duplicate
     const existing = await pool.query(
-      `SELECT id FROM tenant_bank_profiles
-       WHERE tenant_user_id=$1 AND account_number=$2 LIMIT 1`,
+      `SELECT id FROM tenant_bank_profiles WHERE tenant_user_id=$1 AND account_number=$2 LIMIT 1`,
       [userId, account_number]
     );
     if (existing.rows.length) {
-      return res.status(409).json({
-        error:      'This account number is already saved on your profile.',
-        account_id: existing.rows[0].id,
-      });
+      return res.status(409).json({ error: 'This account number is already saved.', account_id: existing.rows[0].id });
     }
 
-    // ── Step 3: First account = default ───────────────────────────────────
-    const countRes   = await pool.query(
-      `SELECT COUNT(*) FROM tenant_bank_profiles WHERE tenant_user_id=$1`, [userId]
-    );
-    const isDefault  = parseInt(countRes.rows[0].count) === 0;
+    // First account = default
+    const countRes  = await pool.query(`SELECT COUNT(*) FROM tenant_bank_profiles WHERE tenant_user_id=$1`, [userId]);
+    const isDefault = parseInt(countRes.rows[0].count) === 0;
 
-    // ── Step 4: Save ──────────────────────────────────────────────────────
     const r = await pool.query(
       `INSERT INTO tenant_bank_profiles
          (tenant_user_id, bank_name, bank_code, account_number, account_name,
           preferred_debit_day, preferred_amount, is_verified, is_default)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-       RETURNING *`,
-      [
-        userId, bank_name, bank_code, account_number,
-        resolvedName || 'Unverified',
-        preferred_debit_day || null,
-        preferred_amount    || null,
-        isVerified, isDefault,
-      ]
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+      [userId, bank_name, bank_code, account_number, resolvedName || 'Unverified',
+       preferred_debit_day || null, preferred_amount || null, isVerified, isDefault]
     );
-    const saved = r.rows[0];
 
-    // Immutable ledger entry
     const h = crypto.createHash('sha256')
-      .update(`tenant-bank-${saved.id}-${userId}-${Date.now()}`).digest('hex');
+      .update(`tenant-bank-${r.rows[0].id}-${userId}-${Date.now()}`).digest('hex');
     pool.query(
-      `INSERT INTO system_ledger (transaction_type, payload, immutable_hash)
-       VALUES ('TENANT_BANK_ACCOUNT_ADDED',$1,$2)`,
-      [JSON.stringify({ account_id: saved.id, tenant_user_id: userId, bank_name, account_number: account_number.slice(-4), verified: isVerified }), h]
+      `INSERT INTO system_ledger (transaction_type, payload, immutable_hash) VALUES ('TENANT_BANK_ACCOUNT_ADDED',$1,$2)`,
+      [JSON.stringify({ account_id: r.rows[0].id, tenant_user_id: userId, bank_name, verified: isVerified }), h]
     ).catch(() => {});
 
     await logAudit({
-      event_type:  'TENANT_BANK_ACCOUNT_ADDED',
-      actor_id:    userId, actor_role: 'TENANT',
-      unit_id: null, description: `Tenant added bank account: ${bank_name} (${isVerified ? 'verified' : 'unverified'})`,
+      event_type: 'TENANT_BANK_ACCOUNT_ADDED', actor_id: userId, actor_role: 'TENANT', unit_id: null,
+      description: `Tenant added bank account: ${bank_name} (${isVerified ? 'verified' : 'unverified'})`,
       metadata: { bank_name, account_number_last4: account_number.slice(-4), verified: isVerified },
     });
 
     return res.status(201).json({
       success:      true,
-      account:      { ...saved, account_number: saved.account_number.replace(/\d(?=\d{4})/g, '*') },
+      account:      { ...r.rows[0], account_number: r.rows[0].account_number.replace(/\d(?=\d{4})/g, '*') },
       verified:     isVerified,
       account_name: resolvedName,
-      message:      isVerified
-        ? `Account verified: ${resolvedName}`
-        : 'Account saved. Could not auto-verify — you can still use it.',
+      message:      isVerified ? `Account verified: ${resolvedName}` : 'Account saved. Auto-verification unavailable — you can still use this account.',
     });
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
 
-// ── PATCH /api/tenant/bank-accounts/:id ──────────────────────────────────────
-// Update preferred_debit_day or preferred_amount on a saved account.
 app.patch('/api/tenant/bank-accounts/:id', authenticate, async (req: Request, res: Response): Promise<any> => {
   const userId = (req as any).userId;
   const { id } = req.params;
@@ -11455,8 +11477,7 @@ app.patch('/api/tenant/bank-accounts/:id', authenticate, async (req: Request, re
        SET preferred_debit_day = COALESCE($1, preferred_debit_day),
            preferred_amount    = COALESCE($2, preferred_amount),
            updated_at          = NOW()
-       WHERE id=$3 AND tenant_user_id=$4
-       RETURNING *`,
+       WHERE id=$3 AND tenant_user_id=$4 RETURNING *`,
       [preferred_debit_day || null, preferred_amount || null, id, userId]
     );
     if (!r.rows.length) return res.status(404).json({ error: 'Account not found' });
@@ -11464,33 +11485,18 @@ app.patch('/api/tenant/bank-accounts/:id', authenticate, async (req: Request, re
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
 
-// ── POST /api/tenant/bank-accounts/:id/set-default ───────────────────────────
-// Sets one account as the default (clears default on all others).
 app.post('/api/tenant/bank-accounts/:id/set-default', authenticate, async (req: Request, res: Response): Promise<any> => {
   const userId = (req as any).userId;
   const { id } = req.params;
   try {
-    // Verify account belongs to this tenant
-    const check = await pool.query(
-      `SELECT id FROM tenant_bank_profiles WHERE id=$1 AND tenant_user_id=$2`, [id, userId]
-    );
+    const check = await pool.query(`SELECT id FROM tenant_bank_profiles WHERE id=$1 AND tenant_user_id=$2`, [id, userId]);
     if (!check.rows.length) return res.status(404).json({ error: 'Account not found' });
-
-    // Clear all defaults for this tenant then set the one
-    await pool.query(
-      `UPDATE tenant_bank_profiles SET is_default=false WHERE tenant_user_id=$1`, [userId]
-    );
-    await pool.query(
-      `UPDATE tenant_bank_profiles SET is_default=true, updated_at=NOW() WHERE id=$1`, [id]
-    );
+    await pool.query(`UPDATE tenant_bank_profiles SET is_default=false WHERE tenant_user_id=$1`, [userId]);
+    await pool.query(`UPDATE tenant_bank_profiles SET is_default=true, updated_at=NOW() WHERE id=$1`, [id]);
     return res.json({ success: true, message: 'Default account updated' });
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
 
-// ── POST /api/tenant/bank-accounts/:id/autopay-preference ────────────────────
-// Tenant sets their AutoPay standing order preference.
-// This is Level 1: stores the preference and marks intent.
-// Level 2 (Direct Debit mandate via Paystack) is a future phase.
 app.post('/api/tenant/bank-accounts/:id/autopay-preference', authenticate, async (req: Request, res: Response): Promise<any> => {
   const userId = (req as any).userId;
   const { id } = req.params;
@@ -11502,114 +11508,78 @@ app.post('/api/tenant/bank-accounts/:id/autopay-preference', authenticate, async
     if (preferred_debit_day < 1 || preferred_debit_day > 28) {
       return res.status(400).json({ error: 'preferred_debit_day must be between 1 and 28' });
     }
-
     const r = await pool.query(
       `UPDATE tenant_bank_profiles
-       SET preferred_debit_day  = $1,
-           preferred_amount     = $2,
-           direct_debit_enabled = $3,
-           mandate_status       = $4,
-           updated_at           = NOW()
-       WHERE id=$5 AND tenant_user_id=$6
-       RETURNING *`,
-      [
-        preferred_debit_day,
-        preferred_amount,
-        enable === true ? true : false,
-        enable === true ? 'PENDING' : 'CANCELLED',
-        id, userId,
-      ]
+       SET preferred_debit_day  = $1, preferred_amount = $2,
+           direct_debit_enabled = $3, mandate_status   = $4, updated_at = NOW()
+       WHERE id=$5 AND tenant_user_id=$6 RETURNING *`,
+      [preferred_debit_day, preferred_amount,
+       enable === true, enable === true ? 'PENDING' : 'CANCELLED', id, userId]
     );
     if (!r.rows.length) return res.status(404).json({ error: 'Account not found' });
-
     await logAudit({
-      event_type:  'TENANT_AUTOPAY_PREFERENCE_SET',
-      actor_id:    userId, actor_role: 'TENANT', unit_id: null,
-      description: `Tenant set AutoPay preference: ₦${preferred_amount} on day ${preferred_debit_day} of each month (enabled: ${enable})`,
-      metadata:    { account_id: id, preferred_debit_day, preferred_amount, enabled: enable },
+      event_type: 'TENANT_AUTOPAY_PREFERENCE_SET', actor_id: userId, actor_role: 'TENANT', unit_id: null,
+      description: `AutoPay preference: ₦${preferred_amount} on day ${preferred_debit_day} monthly (enabled: ${enable})`,
+      metadata: { account_id: id, preferred_debit_day, preferred_amount, enabled: enable },
     });
-
     return res.json({
-      success:           true,
-      account:           r.rows[0],
-      autopay_enabled:   r.rows[0].direct_debit_enabled,
-      mandate_status:    r.rows[0].mandate_status,
-      message:           enable
-        ? `AutoPay set: ₦${preferred_amount.toLocaleString()} will be deducted on day ${preferred_debit_day} of each month once Direct Debit is activated.`
+      success:         true,
+      account:         r.rows[0],
+      autopay_enabled: r.rows[0].direct_debit_enabled,
+      mandate_status:  r.rows[0].mandate_status,
+      message:         enable
+        ? `AutoPay set: ₦${Number(preferred_amount).toLocaleString()} will be deducted on day ${preferred_debit_day} monthly once Direct Debit is activated.`
         : 'AutoPay preference saved. Direct Debit is currently disabled.',
-      note: 'Full automatic deductions will activate in the next platform update. Your preference has been saved.',
+      note: 'Full automatic deductions activate in the next platform update. Your preference has been saved and will go live automatically.',
     });
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
 
-// ── DELETE /api/tenant/bank-accounts/:id ─────────────────────────────────────
-// Removes a saved bank account. Cannot delete if direct debit is active.
 app.delete('/api/tenant/bank-accounts/:id', authenticate, async (req: Request, res: Response): Promise<any> => {
   const userId = (req as any).userId;
   const { id } = req.params;
   try {
-    const check = await pool.query(
-      `SELECT * FROM tenant_bank_profiles WHERE id=$1 AND tenant_user_id=$2`, [id, userId]
-    );
+    const check = await pool.query(`SELECT * FROM tenant_bank_profiles WHERE id=$1 AND tenant_user_id=$2`, [id, userId]);
     if (!check.rows.length) return res.status(404).json({ error: 'Account not found' });
-
     if (check.rows[0].direct_debit_enabled && check.rows[0].mandate_status === 'ACTIVE') {
-      return res.status(409).json({
-        error: 'Cannot delete an account with an active Direct Debit mandate. Disable AutoPay first.',
-      });
+      return res.status(409).json({ error: 'Cannot delete an account with an active Direct Debit mandate. Disable AutoPay first.' });
     }
-
     await pool.query(`DELETE FROM tenant_bank_profiles WHERE id=$1 AND tenant_user_id=$2`, [id, userId]);
-
-    // If deleted account was default, promote the most recent remaining one
     if (check.rows[0].is_default) {
       await pool.query(
-        `UPDATE tenant_bank_profiles
-         SET is_default=true, updated_at=NOW()
-         WHERE tenant_user_id=$1
-         ORDER BY created_at DESC LIMIT 1`,
-        [userId]
+        `UPDATE tenant_bank_profiles SET is_default=true, updated_at=NOW()
+         WHERE tenant_user_id=$1 ORDER BY created_at DESC LIMIT 1`, [userId]
       ).catch(() => {});
     }
-
     await logAudit({
-      event_type: 'TENANT_BANK_ACCOUNT_REMOVED', actor_id: userId, actor_role: 'TENANT',
-      unit_id: null, description: `Tenant removed bank account: ${check.rows[0].bank_name}`,
+      event_type: 'TENANT_BANK_ACCOUNT_REMOVED', actor_id: userId, actor_role: 'TENANT', unit_id: null,
+      description: `Tenant removed bank account: ${check.rows[0].bank_name}`,
       metadata: { account_id: id, bank_name: check.rows[0].bank_name },
     });
-
     return res.json({ success: true, message: 'Bank account removed.' });
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
 
-// ── GET /api/tenant/autopay-status ───────────────────────────────────────────
-// Returns current AutoPay status for the tenant's default account.
-// Used by the tenant dashboard to show the AutoPay widget state.
 app.get('/api/tenant/autopay-status', authenticate, async (req: Request, res: Response): Promise<any> => {
   const userId = (req as any).userId;
   try {
     const r = await pool.query(
       `SELECT tbp.*,
               fpv.target_amount, fpv.vault_balance, fpv.status AS vault_status,
-              fpv.installment_amount, fpv.frequency
+              fpv.installment_amount, fpv.frequency, fpv.rent_amount, fpv.platform_fee_amount
        FROM tenant_bank_profiles tbp
-       LEFT JOIN flex_pay_vaults fpv ON fpv.tenant_user_id = $1
+       LEFT JOIN standalone_vaults fpv ON fpv.tenant_user_id = $1
          AND fpv.status NOT IN ('CLOSED','MIGRATED')
        WHERE tbp.tenant_user_id=$1 AND tbp.is_default=true
        LIMIT 1`,
       [userId]
     );
-
     if (!r.rows.length) {
       return res.json({
-        success:            true,
-        has_bank_account:   false,
-        autopay_enabled:    false,
-        mandate_status:     null,
-        message:            'No bank account linked. Add a bank account to enable AutoPay.',
+        success: true, has_bank_account: false, autopay_enabled: false, mandate_status: null,
+        message: 'No bank account linked. Add a bank account to enable AutoPay.',
       });
     }
-
     const acct = r.rows[0];
     return res.json({
       success:              true,
@@ -11623,11 +11593,13 @@ app.get('/api/tenant/autopay-status', authenticate, async (req: Request, res: Re
       mandate_status:       acct.mandate_status,
       is_verified:          acct.is_verified,
       vault: acct.target_amount ? {
-        target_amount:      parseFloat(acct.target_amount),
-        vault_balance:      parseFloat(acct.vault_balance) || 0,
-        installment_amount: parseFloat(acct.installment_amount) || 0,
-        frequency:          acct.frequency,
-        vault_status:       acct.vault_status,
+        target_amount:       parseFloat(acct.target_amount),
+        rent_amount:         parseFloat(acct.rent_amount)         || null,
+        platform_fee_amount: parseFloat(acct.platform_fee_amount) || null,
+        vault_balance:       parseFloat(acct.vault_balance)       || 0,
+        installment_amount:  parseFloat(acct.installment_amount)  || 0,
+        frequency:           acct.frequency,
+        vault_status:        acct.vault_status,
       } : null,
       next_steps: !acct.direct_debit_enabled
         ? ['Set your preferred debit day', 'Set your monthly contribution amount', 'Enable AutoPay']
