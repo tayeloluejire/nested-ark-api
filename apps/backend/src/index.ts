@@ -9393,10 +9393,10 @@ app.post('/api/tenant/standalone-vault/init', authenticate, async (req: Request,
     pool.query(
       `INSERT INTO system_ledger (transaction_type, payload, immutable_hash)
        VALUES ('STANDALONE_VAULT_INIT',$1,$2)`,
-      [JSON.stringify({ vault_id: sv.id, tenant_user_id: userId, target_amount, frequency: freq }), h]
+      [JSON.stringify({ vault_id: sv.id, tenant_user_id: userId, target_amount: finalTarget, frequency: freq }), h]
     ).catch(() => {});
 
-    console.log(`[STANDALONE-VAULT] Initialized vault=${sv.id} tenant=${userId} target=₦${target_amount} freq=${freq}`);
+    console.log(`[STANDALONE-VAULT] Initialized vault=${sv.id} tenant=${userId} target=₦${finalTarget} freq=${freq}`);
 
     return res.status(201).json({
       success:              true,
