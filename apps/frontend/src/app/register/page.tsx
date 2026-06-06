@@ -117,6 +117,44 @@ const ROLES = [
   },
 ] as const;
 
+// ── Roles live now vs coming soon ────────────────────────────────────────────
+const LIVE_ROLE_IDS = ['LANDLORD', 'TENANT'] as const;
+type LiveRoleId = typeof LIVE_ROLE_IDS[number];
+
+// Rich descriptions for coming-soon modal
+const COMING_SOON_DETAILS: Record<string, { icon: string; title: string; teaser: string; phase: string }> = {
+  INFRASTRUCTURE: {
+    icon: '🏗️', title: 'Infrastructure Developer',
+    teaser: 'Submit projects to the NAP Global Ledger, track milestones, and access escrow-backed construction funding.',
+    phase: 'Phase 2 — Q3 2026',
+  },
+  DIASPORA: {
+    icon: '🌍', title: 'Diaspora Developer',
+    teaser: 'Invest in Nigerian infrastructure from anywhere in the world. Multi-currency, transparent ledgers.',
+    phase: 'Phase 2 — Q3 2026',
+  },
+  INVESTOR: {
+    icon: '📈', title: 'Investor',
+    teaser: 'Build a diversified infrastructure portfolio. Verified projects, automated yield distribution, SHA-256 records.',
+    phase: 'Phase 2 — Q3 2026',
+  },
+  CONTRACTOR: {
+    icon: '🔧', title: 'Contractor',
+    teaser: 'Bid for milestone-based project work. Escrow-protected payments released on verified completion.',
+    phase: 'Phase 3 — Q4 2026',
+  },
+  SUPPLIER: {
+    icon: '📦', title: 'Supply Partner',
+    teaser: 'Supply materials and logistics to verified infrastructure projects across Africa.',
+    phase: 'Phase 3 — Q4 2026',
+  },
+  BANK: {
+    icon: '🏦', title: 'Bank & Financier',
+    teaser: 'Provide project finance at scale. Integrated ledger, transparent disbursement, and compliance tooling.',
+    phase: 'Phase 3 — Q4 2026',
+  },
+};
+
 const FREQ_OPTIONS = [
   { value: 'WEEKLY',    label: 'Weekly',    periods: 52, desc: 'Best for daily/weekly income'  },
   { value: 'MONTHLY',   label: 'Monthly',   periods: 12, desc: 'Ideal for salaried workers'    },
@@ -151,6 +189,23 @@ function RegisterContent() {
 
   // ── UI state ──────────────────────────────────────────────────────────────
   const [selectedRole,             setSelectedRole]             = useState<typeof ROLES[number] | null>(null);
+  const [comingSoonRole,           setComingSoonRole]           = useState<string | null>(null);
+  const [waitlistSubmitted,        setWaitlistSubmitted]        = useState<string | null>(null);
+
+  const handleNotifyMe = async (roleId: string) => {
+    // Best-effort: log interest without blocking UX
+    try {
+      const token = typeof window !== 'undefined'
+        ? localStorage.getItem('token') || sessionStorage.getItem('token') : null;
+      await fetch('/api/feature-waitlist', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify({ feature_name: roleId, source: 'register_page' }),
+      });
+    } catch { /* non-fatal — modal still closes */ }
+    setWaitlistSubmitted(roleId);
+    setTimeout(() => { setComingSoonRole(null); setWaitlistSubmitted(null); }, 2000);
+  };
   const [loadingInvite,            setLoadingInvite]            = useState(false);
   const [submitting,               setSubmitting]               = useState(false);
   const [error,                    setError]                    = useState('');
@@ -411,6 +466,56 @@ function RegisterContent() {
   return (
     <div className="min-h-screen bg-[#050505] text-white flex flex-col">
 
+      {/* ── Coming Soon Modal ─────────────────────────────────────────────── */}
+      {comingSoonRole && (() => {
+        const cs = COMING_SOON_DETAILS[comingSoonRole];
+        if (!cs) return null;
+        return (
+          <div
+            className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+            onClick={() => setComingSoonRole(null)}
+          >
+            <div
+              className="bg-zinc-900 border border-zinc-800 rounded-2xl p-7 w-full max-w-sm space-y-5"
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <div className="w-11 h-11 rounded-xl bg-zinc-800 flex items-center justify-center text-2xl flex-shrink-0">{cs.icon}</div>
+                  <div>
+                    <p className="font-black text-sm">{cs.title}</p>
+                    <p className="text-[9px] text-amber-400 uppercase font-bold tracking-widest mt-0.5">{cs.phase}</p>
+                  </div>
+                </div>
+                <button onClick={() => setComingSoonRole(null)} className="text-zinc-600 hover:text-white text-xl w-7 h-7 flex items-center justify-center rounded-lg hover:bg-zinc-800 transition-all flex-shrink-0">×</button>
+              </div>
+              <p className="text-zinc-400 text-sm leading-relaxed">{cs.teaser}</p>
+              <div className="p-3 rounded-xl border border-zinc-800 bg-zinc-900/60 text-center">
+                <p className="text-[9px] text-zinc-500 uppercase font-black tracking-widest mb-1">Launch Timeline</p>
+                <p className="text-zinc-300 text-sm font-bold">{cs.phase}</p>
+              </div>
+              {waitlistSubmitted === comingSoonRole ? (
+                <div className="py-4 text-center">
+                  <p className="text-teal-400 font-black text-sm">✅ You&apos;re on the list!</p>
+                  <p className="text-zinc-500 text-[10px] mt-1">We&apos;ll notify you when this launches.</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <button onClick={() => handleNotifyMe(comingSoonRole)}
+                    className="w-full py-3 rounded-xl bg-teal-500 text-black font-black text-[10px] uppercase tracking-widest hover:bg-teal-400 transition-all">
+                    🔔 Notify Me When Live
+                  </button>
+                  <button onClick={() => setComingSoonRole(null)}
+                    className="w-full py-2.5 rounded-xl border border-zinc-700 text-zinc-400 font-black text-[10px] uppercase tracking-widest hover:border-zinc-600 transition-all">
+                    Back to Registration
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
+
       {/* ── Top bar ─────────────────────────────────────────────────────── */}
       <div className="border-b border-zinc-900 bg-black/80 px-6 py-3 flex items-center gap-3">
         <BrandLogo size={28} href="/" />
@@ -460,8 +565,10 @@ function RegisterContent() {
             <p className="text-[10px] text-zinc-500 uppercase font-black tracking-widest">
               Select Account Type
             </p>
-            <div className="space-y-2 max-h-[320px] overflow-y-auto pr-1">
-              {ROLES.map(role => (
+            <div className="space-y-2 max-h-[380px] overflow-y-auto pr-1">
+
+              {/* ── Live roles: Landlord + Tenant ──────────────────────── */}
+              {ROLES.filter(r => LIVE_ROLE_IDS.includes(r.id as LiveRoleId)).map(role => (
                 <button
                   key={role.id}
                   type="button"
@@ -480,12 +587,37 @@ function RegisterContent() {
                       </span>
                     )}
                   </div>
-                  <p className="text-[9px] text-teal-500 uppercase font-bold tracking-widest mt-0.5">
-                    {role.sub}
-                  </p>
+                  <p className="text-[9px] text-teal-500 uppercase font-bold tracking-widest mt-0.5">{role.sub}</p>
                   <p className="text-zinc-500 text-[10px] mt-1 leading-relaxed">{role.desc}</p>
                 </button>
               ))}
+
+              {/* ── Coming Soon roles: locked with modal trigger ────────── */}
+              <div className="pt-2 pb-1">
+                <p className="text-[8px] text-zinc-700 uppercase font-black tracking-widest">Coming Soon</p>
+              </div>
+              {ROLES.filter(r => !LIVE_ROLE_IDS.includes(r.id as LiveRoleId)).map(role => {
+                const cs = COMING_SOON_DETAILS[role.id];
+                return (
+                  <button
+                    key={role.id}
+                    type="button"
+                    onClick={() => setComingSoonRole(role.id)}
+                    className="w-full p-4 rounded-xl border border-zinc-800/50 bg-zinc-900/10 text-left opacity-60 hover:opacity-80 transition-all relative overflow-hidden"
+                  >
+                    <div className="flex items-center justify-between">
+                      <p className="font-black text-sm text-zinc-400">{role.label}</p>
+                      <span className="text-[8px] px-2 py-0.5 bg-zinc-800 text-zinc-500 rounded font-mono uppercase tracking-widest border border-zinc-700">
+                        Soon
+                      </span>
+                    </div>
+                    <p className="text-[9px] text-zinc-600 uppercase font-bold tracking-widest mt-0.5">{role.sub}</p>
+                    {cs && <p className="text-[8px] text-zinc-600 mt-0.5">{cs.phase}</p>}
+                    {/* Diagonal lock overlay */}
+                    <div className="absolute top-2 right-2 text-zinc-700 text-xs">🔒</div>
+                  </button>
+                );
+              })}
             </div>
           </div>
         )}

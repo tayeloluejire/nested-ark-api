@@ -1261,6 +1261,17 @@ const ensureTablesExist = async () => {
         ON tenant_bank_profiles(tenant_user_id, account_number);
       CREATE INDEX IF NOT EXISTS idx_tbp_tenant ON tenant_bank_profiles(tenant_user_id);
 
+      -- ── feature_waitlist: captures interest in coming-soon features ──────
+      CREATE TABLE IF NOT EXISTS feature_waitlist (
+        id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id      UUID REFERENCES users(id) ON DELETE SET NULL,
+        feature_name VARCHAR(100) NOT NULL,
+        email        VARCHAR(255),
+        source       VARCHAR(100) DEFAULT 'register_page',
+        created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_fw_feature ON feature_waitlist(feature_name);
+
     `);
 
     await client.query('COMMIT');
@@ -11608,6 +11619,48 @@ app.get('/api/tenant/autopay-status', authenticate, async (req: Request, res: Re
         vault_status:        acct.vault_status,
       } : null,
     });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
+// ── POST /api/feature-waitlist — log interest in coming-soon features ───────
+// Public endpoint (no auth required — pre-registration users can also notify).
+app.post('/api/feature-waitlist', async (req: Request, res: Response): Promise<any> => {
+  try {
+    const { feature_name, source } = req.body;
+    if (!feature_name) return res.status(400).json({ error: 'feature_name is required' });
+
+    // Optional: extract user_id + email if JWT present
+    let userId: string | null  = null;
+    let email:  string | null  = null;
+    try {
+      const authHeader = req.headers.authorization || '';
+      const token = authHeader.replace('Bearer ', '');
+      if (token) {
+        const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString()) as any;
+        userId = payload.id || payload.user_id || null;
+        if (userId) {
+          const u = await pool.query(`SELECT email FROM users WHERE id=$1`, [userId]);
+          email = u.rows[0]?.email || null;
+        }
+      }
+    } catch { /* non-fatal — anonymous waitlist entry */ }
+
+    // Prevent duplicate entries (same user + same feature)
+    const existing = await pool.query(
+      `SELECT id FROM feature_waitlist WHERE feature_name=$1 AND (user_id=$2 OR (user_id IS NULL AND email=$3)) LIMIT 1`,
+      [feature_name, userId, email]
+    );
+    if (existing.rows.length) {
+      return res.json({ success: true, already_registered: true, message: 'Already on the waitlist for this feature.' });
+    }
+
+    await pool.query(
+      `INSERT INTO feature_waitlist (user_id, feature_name, email, source) VALUES ($1,$2,$3,$4)`,
+      [userId, feature_name, email, source || 'register_page']
+    );
+
+    console.log(`[WAITLIST] ${feature_name} — user=${userId||'anon'} email=${email||'unknown'}`);
+    return res.json({ success: true, message: `You're on the waitlist for ${feature_name}. We'll notify you when it launches.` });
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
 
