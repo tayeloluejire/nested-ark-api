@@ -1158,7 +1158,10 @@ const ensureTablesExist = async () => {
         event_type    VARCHAR(100),
         processed_at  TIMESTAMPTZ DEFAULT NOW()
       );
+      -- created_at alias — allows ORDER BY created_at on processed_webhooks
+      ALTER TABLE processed_webhooks ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();
       CREATE INDEX IF NOT EXISTS idx_pw_event_ref ON processed_webhooks(event_ref);
+      CREATE INDEX IF NOT EXISTS idx_pw_created_at ON processed_webhooks(created_at DESC);
 
       -- ── Soft delete columns ───────────────────────────────────────────────
       -- Nothing is ever hard-deleted. archived_at = soft delete timestamp.
@@ -1191,9 +1194,9 @@ const ensureTablesExist = async () => {
         landlord_bank_name      VARCHAR(100),
         landlord_account_number VARCHAR(20),
         landlord_account_name   VARCHAR(255),
-        -- Fee transparency — stored at vault creation, shown clearly to tenant
-        rent_amount             DECIMAL(15,2),           -- Actual rent (landlord receives this)
-        platform_fee_amount     DECIMAL(15,2),           -- 2% Nested Ark Rent Success Fee
+        -- Fee transparency — stored at vault creation, visible to tenant always
+        rent_amount             DECIMAL(15,2),        -- Actual rent landlord receives
+        platform_fee_amount     DECIMAL(15,2),        -- 2% Nested Ark Rent Success Fee
         -- Populated when admin migrates to a formal tenancy
         linked_tenancy_id       UUID REFERENCES tenancies(id) ON DELETE SET NULL,
         linked_at               TIMESTAMPTZ,
@@ -1201,11 +1204,11 @@ const ensureTablesExist = async () => {
         created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
-      -- Safely add fee columns to existing rows
-      ALTER TABLE standalone_vaults ADD COLUMN IF NOT EXISTS rent_amount         DECIMAL(15,2);
-      ALTER TABLE standalone_vaults ADD COLUMN IF NOT EXISTS platform_fee_amount DECIMAL(15,2);
       CREATE INDEX IF NOT EXISTS idx_sv_tenant ON standalone_vaults(tenant_user_id);
       CREATE INDEX IF NOT EXISTS idx_sv_status ON standalone_vaults(status);
+      -- Safely add fee columns to existing standalone_vaults rows
+      ALTER TABLE standalone_vaults ADD COLUMN IF NOT EXISTS rent_amount         DECIMAL(15,2);
+      ALTER TABLE standalone_vaults ADD COLUMN IF NOT EXISTS platform_fee_amount DECIMAL(15,2);
 
       -- Standalone contributions — mirrors flex_contributions but FK-free on tenancy
       CREATE TABLE IF NOT EXISTS standalone_contributions (
@@ -1224,10 +1227,17 @@ const ensureTablesExist = async () => {
       -- Ensure tenant_user_id exists on flex_pay_vaults (for independent tenant lookups)
       ALTER TABLE flex_pay_vaults ADD COLUMN IF NOT EXISTS tenant_user_id UUID REFERENCES users(id);
 
+      -- flex_contributions: released tracking prevents double-payout on CRON release
+      ALTER TABLE flex_contributions ADD COLUMN IF NOT EXISTS released    BOOLEAN     DEFAULT FALSE;
+      ALTER TABLE flex_contributions ADD COLUMN IF NOT EXISTS released_at TIMESTAMPTZ DEFAULT NULL;
+
+      -- processed_webhooks: created_at alias for ORDER BY compatibility
+      ALTER TABLE processed_webhooks ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();
+      CREATE INDEX IF NOT EXISTS idx_pw_created_at ON processed_webhooks(created_at DESC);
+
       -- ── tenant_bank_profiles: bank account storage + AutoPay standing order ──
-      -- Level 1 (live now): store verified bank account, debit day, contribution amount.
-      -- Level 2 (future): direct debit mandate via Paystack; paystack_auth_code field
-      --   populated when tenant completes first payment (save authorization for recurring charge).
+      -- Level 1 (live): verified bank account, debit day, contribution amount.
+      -- Level 2 (future): direct debit mandate; paystack_auth_code from first payment.
       CREATE TABLE IF NOT EXISTS tenant_bank_profiles (
         id                     UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         tenant_user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -1250,10 +1260,6 @@ const ensureTablesExist = async () => {
       CREATE UNIQUE INDEX IF NOT EXISTS idx_tbp_tenant_acct
         ON tenant_bank_profiles(tenant_user_id, account_number);
       CREATE INDEX IF NOT EXISTS idx_tbp_tenant ON tenant_bank_profiles(tenant_user_id);
-
-      -- flex_contributions: released tracking (prevents double-payout)
-      ALTER TABLE flex_contributions ADD COLUMN IF NOT EXISTS released    BOOLEAN     DEFAULT FALSE;
-      ALTER TABLE flex_contributions ADD COLUMN IF NOT EXISTS released_at TIMESTAMPTZ DEFAULT NULL;
 
     `);
 
@@ -4380,34 +4386,55 @@ app.post("/api/payments/webhook",
       const tHash = crypto.createHash('sha256')
         .update(`transfer-${td.reference}-${tStatus}-${Date.now()}`).digest('hex');
 
-      // Update system_ledger entry for this transfer
+      // ── Update the original LANDLORD_PAYOUT ledger entry ──────────────────
+      // Flips transfer_status from INITIATED → SUCCESS/FAILED/REVERSED
+      // and populates event_type for queryable audit trail
       await pool.query(
         `UPDATE system_ledger
-         SET payload = payload || $1::jsonb
+         SET payload     = payload || $1::jsonb,
+             event_type  = $2,
+             description = COALESCE(description, '') || $3
          WHERE transaction_type IN ('LANDLORD_PAYOUT','CASHOUT_TRANSFER','AUTO_PAYOUT')
-           AND payload->>'reference' = $2`,
-        [JSON.stringify({ transfer_status: tStatus, settled_at: new Date().toISOString() }), td.reference]
+           AND payload->>'reference' = $4`,
+        [
+          JSON.stringify({
+            transfer_status: tStatus,
+            settled_at:      new Date().toISOString(),
+            transfer_code:   td.transfer_code,
+          }),
+          tStatus === 'SUCCESS' ? 'PAYOUT_SUCCESS' : tStatus === 'FAILED' ? 'PAYOUT_FAILED' : 'PAYOUT_REVERSED',
+          tStatus === 'SUCCESS' ? ' Transfer confirmed by Paystack.' : ` Transfer ${tStatus.toLowerCase()} by Paystack.`,
+          td.reference,
+        ]
       ).catch(() => {});
 
-      // Log the transfer outcome
+      // ── Insert immutable TRANSFER_OUTCOME record for full audit chain ──────
       await pool.query(
-        `INSERT INTO system_ledger (transaction_type, payload, immutable_hash)
-         VALUES ('TRANSFER_OUTCOME', $1, $2)`,
-        [JSON.stringify({
-          event:          event.event,
-          transfer_code:  td.transfer_code,
-          reference:      td.reference,
-          amount_kobo:    td.amount,
-          amount_ngn:     td.amount / 100,
-          recipient_code: td.recipient?.recipient_code,
-          account_name:   td.recipient?.details?.account_name,
-          bank_name:      td.recipient?.details?.bank_name,
-          status:         tStatus,
-          reason:         td.reason,
-        }), tHash]
+        `INSERT INTO system_ledger
+           (transaction_type, event_type, entity_type, description, payload, immutable_hash)
+         VALUES ('TRANSFER_OUTCOME', $1, 'FLEX_PAY_VAULT', $2, $3, $4)`,
+        [
+          tStatus === 'SUCCESS' ? 'PAYOUT_SUCCESS' : tStatus === 'FAILED' ? 'PAYOUT_FAILED' : 'PAYOUT_REVERSED',
+          `Paystack transfer ${tStatus.toLowerCase()}: ₦${td.amount/100} to ${td.recipient?.details?.account_name || 'landlord'} (${td.recipient?.details?.bank_name || ''})`,
+          JSON.stringify({
+            event:          event.event,
+            transfer_code:  td.transfer_code,
+            reference:      td.reference,
+            amount_kobo:    td.amount,
+            amount_ngn:     td.amount / 100,
+            recipient_code: td.recipient?.recipient_code,
+            account_name:   td.recipient?.details?.account_name,
+            bank_name:      td.recipient?.details?.bank_name,
+            account_number: td.recipient?.details?.account_number,
+            status:         tStatus,
+            reason:         td.reason,
+            settled_at:     td.transferred_at || new Date().toISOString(),
+          }),
+          tHash,
+        ]
       ).catch(() => {});
 
-      console.log(`[WEBHOOK] Transfer ${tStatus}: ref=${td.reference} amount=₦${td.amount/100}`);
+      console.log(`[WEBHOOK] Transfer ${tStatus}: ref=${td.reference} amount=₦${td.amount/100} to ${td.recipient?.details?.account_name||'landlord'}`);
       return res.sendStatus(200);
     }
 
@@ -9316,55 +9343,55 @@ app.post('/api/tenant/standalone-vault/init', authenticate, async (req: Request,
       });
     }
     const {
-      rent_amount,            // Actual rent the landlord will receive (required)
+      rent_amount,            // Primary: actual rent landlord receives (backend auto-adds 2% fee)
       frequency = 'MONTHLY',
       landlord_name, landlord_email,
       landlord_bank_name, landlord_account_number, landlord_account_name,
-      // Legacy: accept direct target_amount + installment_amount if provided
+      // Legacy compat: accept target_amount + installment_amount directly
       target_amount: raw_target, installment_amount: raw_installment,
     } = req.body;
 
     // ── Fee calculation: tenant pays rent + 2% Rent Success Fee ──────────────
-    // If rent_amount is supplied, compute target = rent + 2% automatically.
-    // If legacy target_amount is supplied directly, use it as-is (backward compat).
-    const PLATFORM_FEE_PCT = 0.02;
-    let computedRentAmount: number;
-    let platformFeeAmount:  number;
-    let finalTarget:        number;
-
-    if (rent_amount && !isNaN(Number(rent_amount)) && Number(rent_amount) >= 100) {
-      computedRentAmount = Math.round(Number(rent_amount) * 100) / 100;
-      platformFeeAmount  = Math.round(computedRentAmount * PLATFORM_FEE_PCT * 100) / 100;
-      finalTarget        = Math.round((computedRentAmount + platformFeeAmount) * 100) / 100;
-    } else if (raw_target && !isNaN(Number(raw_target)) && Number(raw_target) >= 100) {
-      // Legacy path
-      finalTarget        = Math.round(Number(raw_target) * 100) / 100;
-      platformFeeAmount  = Math.round(finalTarget * PLATFORM_FEE_PCT * 100) / 100;
-      computedRentAmount = Math.round((finalTarget - platformFeeAmount) * 100) / 100;
-    } else {
-      return res.status(400).json({
-        error: 'rent_amount is required and must be at least ₦100. This is the actual rent amount — the 2% Rent Success Fee will be calculated automatically.',
-      });
-    }
-
-    // ── Calculate installment based on frequency ───────────────────────────────
+    const VAULT_FEE_PCT = 0.02;
+    const PERIODS_MAP: Record<string, number> = {
+      DAILY: 365, WEEKLY: 52, BIWEEKLY: 26, MONTHLY: 12, QUARTERLY: 4,
+    };
     const VALID_FREQS = ['DAILY','WEEKLY','BIWEEKLY','MONTHLY','QUARTERLY'];
     const freq = VALID_FREQS.includes((frequency || '').toUpperCase())
       ? (frequency as string).toUpperCase()
       : 'MONTHLY';
 
-    const PERIODS: Record<string, number> = {
-      DAILY: 365, WEEKLY: 52, BIWEEKLY: 26, MONTHLY: 12, QUARTERLY: 4,
-    };
-    // Use provided installment_amount or auto-calculate from frequency
-    const periods = PERIODS[freq] || 12;
+    let computedRentAmount: number;
+    let platformFeeAmount:  number;
+    let finalTarget:        number;
+
+    if (rent_amount && !isNaN(Number(rent_amount)) && Number(rent_amount) >= 100) {
+      // Primary path: tenant provides rent_amount, we add the fee
+      computedRentAmount = Math.round(Number(rent_amount) * 100) / 100;
+      platformFeeAmount  = Math.round(computedRentAmount * VAULT_FEE_PCT * 100) / 100;
+      finalTarget        = Math.round((computedRentAmount + platformFeeAmount) * 100) / 100;
+    } else if (raw_target && !isNaN(Number(raw_target)) && Number(raw_target) >= 100) {
+      // Legacy path: accept direct target_amount for backward compat
+      finalTarget        = Math.round(Number(raw_target) * 100) / 100;
+      platformFeeAmount  = Math.round(finalTarget * VAULT_FEE_PCT * 100) / 100;
+      computedRentAmount = Math.round((finalTarget - platformFeeAmount) * 100) / 100;
+    } else {
+      return res.status(400).json({
+        error: 'rent_amount is required and must be at least ₦100. This is your actual rent — the 2% Rent Success Fee is calculated automatically.',
+      });
+    }
+
+    // Auto-calculate installment from frequency unless provided
+    const periods = PERIODS_MAP[freq] || 12;
     const autoInstallment = Math.ceil((finalTarget / periods) * 100) / 100;
-    const finalInstallment = raw_installment && !isNaN(Number(raw_installment)) && Number(raw_installment) >= 50
+    const finalInstallment = (raw_installment && !isNaN(Number(raw_installment)) && Number(raw_installment) >= 50)
       ? Math.round(Number(raw_installment) * 100) / 100
       : autoInstallment;
 
     if (finalInstallment < 50) {
-      return res.status(400).json({ error: 'Calculated installment amount is below ₦50 minimum. Please increase rent_amount or choose a less frequent payment schedule.' });
+      return res.status(400).json({
+        error: `Calculated installment (₦${finalInstallment}) is below Paystack's ₦50 minimum. Please increase rent_amount or choose a less frequent schedule.`,
+      });
     }
 
     const r = await pool.query(
@@ -9393,27 +9420,26 @@ app.post('/api/tenant/standalone-vault/init', authenticate, async (req: Request,
     pool.query(
       `INSERT INTO system_ledger (transaction_type, payload, immutable_hash)
        VALUES ('STANDALONE_VAULT_INIT',$1,$2)`,
-      [JSON.stringify({ vault_id: sv.id, tenant_user_id: userId, target_amount: finalTarget, frequency: freq }), h]
+      [JSON.stringify({ vault_id: sv.id, tenant_user_id: userId, target_amount: finalTarget, rent_amount: computedRentAmount, platform_fee: platformFeeAmount, frequency: freq }), h]
     ).catch(() => {});
 
-    console.log(`[STANDALONE-VAULT] Initialized vault=${sv.id} tenant=${userId} target=₦${finalTarget} freq=${freq}`);
+    console.log(`[STANDALONE-VAULT] Initialized vault=${sv.id} tenant=${userId} rent=₦${computedRentAmount} fee=₦${platformFeeAmount} target=₦${finalTarget} freq=${freq}`);
 
     return res.status(201).json({
       success:              true,
       vault_id:             sv.id,
-      // Fee breakdown — shown clearly to tenant on confirmation screen
-      rent_amount:          parseFloat(sv.rent_amount)         || computedRentAmount,
-      platform_fee_amount:  parseFloat(sv.platform_fee_amount) || platformFeeAmount,
+      rent_amount:          computedRentAmount,
+      platform_fee_amount:  platformFeeAmount,
       platform_fee_pct:     2,
-      target_amount:        parseFloat(sv.target_amount),
-      installment_amount:   parseFloat(sv.installment_amount),
+      target_amount:        finalTarget,
+      installment_amount:   finalInstallment,
       frequency:            sv.frequency,
       periods:              periods,
       status:               sv.status,
       currency:             sv.currency,
       landlord_supplied:    !!(landlord_name || landlord_email || landlord_bank_name),
       fee_explanation:      'Nested Ark Rent Success Fee (2%) covers: automated rent planning, smart vault, AutoPay, contribution tracking, payment processing, secure rent release, and payment history.',
-      message:              `Vault initialized. Save ${sv.currency} ${parseFloat(sv.installment_amount).toLocaleString()} ${freq.toLowerCase()} to reach your ₦${parseFloat(sv.rent_amount || computedRentAmount.toString()).toLocaleString()} rent target.`,
+      message:              `Vault initialized. Save ₦${finalInstallment.toLocaleString()} ${freq.toLowerCase()} to reach your ₦${computedRentAmount.toLocaleString()} rent target.`,
     });
   } catch (e: any) {
     return res.status(500).json({ error: e.message });
@@ -10684,28 +10710,37 @@ const startPendingPayoutCron = (pool: any) => {
             .digest('hex');
 
           await pool.query(
-            `INSERT INTO system_ledger (transaction_type, payload, immutable_hash)
-             VALUES ('LANDLORD_PAYOUT', $1, $2)`,
-            [JSON.stringify({
-              reference:              payRef,
-              amount_ngn:             netAmount,
-              gross_total:            rawTotal,
-              platform_fee:           platformFee,
-              user_id:                v.sponsor_id,
-              bank_account_id:        acct.id,
-              bank_name:              acct.bank_name,
-              account_name:           acct.account_name,
-              recipient_code:         acct.paystack_recipient_code,
-              transfer_code:          tData.data?.transfer_code,
-              transfer_status:        tData.status ? 'INITIATED' : 'FAILED',
-              vault_id:               v.vault_id,
-              tenancy_id:             v.tenancy_id,
-              period_label:           periodLabel,
-              source:                 'PAYOUT_CRON',
-              payout_type:            'ESCROW_LUMP_SUM',
-              paystack_error:         tData.status ? null : tData.message,
-              paystack_full_response: fullPaystackResponse, // Full response for debugging
-            }), ph]
+            `INSERT INTO system_ledger
+               (transaction_type, event_type, entity_type, entity_id, actor_id, description, payload, immutable_hash)
+             VALUES ('LANDLORD_PAYOUT', $1, $2, $3, $4, $5, $6, $7)`,
+            [
+              tData.status ? 'PAYOUT_INITIATED' : 'PAYOUT_FAILED',
+              'FLEX_PAY_VAULT',
+              v.vault_id,                // entity_id = the vault being released
+              v.sponsor_id,              // actor_id  = the landlord receiving funds
+              `Escrow vault released: ₦${rawTotal} gross → ₦${netAmount} net to ${acct.account_name} (${acct.bank_name}). Platform fee: ₦${platformFee}.`,
+              JSON.stringify({
+                reference:              payRef,
+                amount_ngn:             netAmount,
+                gross_total:            rawTotal,
+                platform_fee:           platformFee,
+                user_id:                v.sponsor_id,
+                bank_account_id:        acct.id,
+                bank_name:              acct.bank_name,
+                account_name:           acct.account_name,
+                recipient_code:         acct.paystack_recipient_code,
+                transfer_code:          tData.data?.transfer_code,
+                transfer_status:        tData.status ? 'INITIATED' : 'FAILED',
+                vault_id:               v.vault_id,
+                tenancy_id:             v.tenancy_id,
+                period_label:           periodLabel,
+                source:                 'PAYOUT_CRON',
+                payout_type:            'ESCROW_LUMP_SUM',
+                paystack_error:         tData.status ? null : tData.message,
+                paystack_full_response: fullPaystackResponse,
+              }),
+              ph,
+            ]
           );
 
           if (tData.status) {
@@ -11346,18 +11381,11 @@ app.patch('/api/tenant/profile', authenticate, async (req: Request, res: Respons
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
 
+
 // ════════════════════════════════════════════════════════════════════════════
 // MODULE: TENANT BANKING — Bank Account Storage · AutoPay Standing Order
 // Level 1 (live): verified bank account, debit preference, paystack_auth_code
-// Level 2 (future): direct debit mandate activation via Paystack Direct Debit
-// Endpoints:
-//   GET    /api/tenant/bank-accounts
-//   POST   /api/tenant/bank-accounts
-//   PATCH  /api/tenant/bank-accounts/:id
-//   DELETE /api/tenant/bank-accounts/:id
-//   POST   /api/tenant/bank-accounts/:id/set-default
-//   POST   /api/tenant/bank-accounts/:id/autopay-preference
-//   GET    /api/tenant/autopay-status
+// Level 2 (future): direct debit mandate via Paystack Direct Debit API
 // ════════════════════════════════════════════════════════════════════════════
 
 app.get('/api/tenant/bank-accounts', authenticate, async (req: Request, res: Response): Promise<any> => {
@@ -11389,41 +11417,30 @@ app.post('/api/tenant/bank-accounts', authenticate, async (req: Request, res: Re
   const userId = (req as any).userId;
   try {
     const { bank_name, bank_code, account_number, preferred_debit_day, preferred_amount } = req.body;
-    if (!bank_name || !bank_code || !account_number) {
+    if (!bank_name || !bank_code || !account_number)
       return res.status(400).json({ error: 'bank_name, bank_code, and account_number are required' });
-    }
-    if (!/^\d{10}$/.test(account_number)) {
+    if (!/^\d{10}$/.test(account_number))
       return res.status(400).json({ error: 'Account number must be exactly 10 digits' });
-    }
-    if (preferred_debit_day && (preferred_debit_day < 1 || preferred_debit_day > 28)) {
+    if (preferred_debit_day && (preferred_debit_day < 1 || preferred_debit_day > 28))
       return res.status(400).json({ error: 'preferred_debit_day must be between 1 and 28' });
-    }
 
-    // Verify NUBAN via Paystack
-    let resolvedName = '';
-    let isVerified   = false;
+    // NUBAN verification via Paystack
+    let resolvedName = ''; let isVerified = false;
     if (PAYSTACK_SECRET) {
       try {
-        const psRes  = await fetch(
-          `${PAYSTACK_BASE}/bank/resolve?account_number=${account_number}&bank_code=${bank_code}`,
-          { headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` } }
-        );
+        const psRes  = await fetch(`${PAYSTACK_BASE}/bank/resolve?account_number=${account_number}&bank_code=${bank_code}`,
+          { headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` } });
         const psData = await psRes.json() as any;
-        if (psData.status && psData.data?.account_name) {
-          resolvedName = psData.data.account_name;
-          isVerified   = true;
-        }
+        if (psData.status && psData.data?.account_name) { resolvedName = psData.data.account_name; isVerified = true; }
       } catch { /* non-fatal */ }
     }
 
     // Prevent duplicate
     const existing = await pool.query(
-      `SELECT id FROM tenant_bank_profiles WHERE tenant_user_id=$1 AND account_number=$2 LIMIT 1`,
-      [userId, account_number]
+      `SELECT id FROM tenant_bank_profiles WHERE tenant_user_id=$1 AND account_number=$2 LIMIT 1`, [userId, account_number]
     );
-    if (existing.rows.length) {
+    if (existing.rows.length)
       return res.status(409).json({ error: 'This account number is already saved.', account_id: existing.rows[0].id });
-    }
 
     // First account = default
     const countRes  = await pool.query(`SELECT COUNT(*) FROM tenant_bank_profiles WHERE tenant_user_id=$1`, [userId]);
@@ -11438,8 +11455,7 @@ app.post('/api/tenant/bank-accounts', authenticate, async (req: Request, res: Re
        preferred_debit_day || null, preferred_amount || null, isVerified, isDefault]
     );
 
-    const h = crypto.createHash('sha256')
-      .update(`tenant-bank-${r.rows[0].id}-${userId}-${Date.now()}`).digest('hex');
+    const h = crypto.createHash('sha256').update(`tenant-bank-${r.rows[0].id}-${userId}-${Date.now()}`).digest('hex');
     pool.query(
       `INSERT INTO system_ledger (transaction_type, payload, immutable_hash) VALUES ('TENANT_BANK_ACCOUNT_ADDED',$1,$2)`,
       [JSON.stringify({ account_id: r.rows[0].id, tenant_user_id: userId, bank_name, verified: isVerified }), h]
@@ -11462,16 +11478,13 @@ app.post('/api/tenant/bank-accounts', authenticate, async (req: Request, res: Re
 });
 
 app.patch('/api/tenant/bank-accounts/:id', authenticate, async (req: Request, res: Response): Promise<any> => {
-  const userId = (req as any).userId;
-  const { id } = req.params;
+  const userId = (req as any).userId; const { id } = req.params;
   try {
     const { preferred_debit_day, preferred_amount } = req.body;
-    if (!preferred_debit_day && !preferred_amount) {
+    if (!preferred_debit_day && !preferred_amount)
       return res.status(400).json({ error: 'Provide preferred_debit_day or preferred_amount to update' });
-    }
-    if (preferred_debit_day && (preferred_debit_day < 1 || preferred_debit_day > 28)) {
+    if (preferred_debit_day && (preferred_debit_day < 1 || preferred_debit_day > 28))
       return res.status(400).json({ error: 'preferred_debit_day must be between 1 and 28' });
-    }
     const r = await pool.query(
       `UPDATE tenant_bank_profiles
        SET preferred_debit_day = COALESCE($1, preferred_debit_day),
@@ -11486,8 +11499,7 @@ app.patch('/api/tenant/bank-accounts/:id', authenticate, async (req: Request, re
 });
 
 app.post('/api/tenant/bank-accounts/:id/set-default', authenticate, async (req: Request, res: Response): Promise<any> => {
-  const userId = (req as any).userId;
-  const { id } = req.params;
+  const userId = (req as any).userId; const { id } = req.params;
   try {
     const check = await pool.query(`SELECT id FROM tenant_bank_profiles WHERE id=$1 AND tenant_user_id=$2`, [id, userId]);
     if (!check.rows.length) return res.status(404).json({ error: 'Account not found' });
@@ -11498,23 +11510,19 @@ app.post('/api/tenant/bank-accounts/:id/set-default', authenticate, async (req: 
 });
 
 app.post('/api/tenant/bank-accounts/:id/autopay-preference', authenticate, async (req: Request, res: Response): Promise<any> => {
-  const userId = (req as any).userId;
-  const { id } = req.params;
+  const userId = (req as any).userId; const { id } = req.params;
   try {
     const { preferred_debit_day, preferred_amount, enable } = req.body;
-    if (!preferred_debit_day || !preferred_amount) {
+    if (!preferred_debit_day || !preferred_amount)
       return res.status(400).json({ error: 'preferred_debit_day and preferred_amount are required' });
-    }
-    if (preferred_debit_day < 1 || preferred_debit_day > 28) {
+    if (preferred_debit_day < 1 || preferred_debit_day > 28)
       return res.status(400).json({ error: 'preferred_debit_day must be between 1 and 28' });
-    }
     const r = await pool.query(
       `UPDATE tenant_bank_profiles
        SET preferred_debit_day  = $1, preferred_amount = $2,
            direct_debit_enabled = $3, mandate_status   = $4, updated_at = NOW()
        WHERE id=$5 AND tenant_user_id=$6 RETURNING *`,
-      [preferred_debit_day, preferred_amount,
-       enable === true, enable === true ? 'PENDING' : 'CANCELLED', id, userId]
+      [preferred_debit_day, preferred_amount, enable === true, enable === true ? 'PENDING' : 'CANCELLED', id, userId]
     );
     if (!r.rows.length) return res.status(404).json({ error: 'Account not found' });
     await logAudit({
@@ -11528,27 +11536,25 @@ app.post('/api/tenant/bank-accounts/:id/autopay-preference', authenticate, async
       autopay_enabled: r.rows[0].direct_debit_enabled,
       mandate_status:  r.rows[0].mandate_status,
       message:         enable
-        ? `AutoPay set: ₦${Number(preferred_amount).toLocaleString()} will be deducted on day ${preferred_debit_day} monthly once Direct Debit is activated.`
-        : 'AutoPay preference saved. Direct Debit is currently disabled.',
-      note: 'Full automatic deductions activate in the next platform update. Your preference has been saved and will go live automatically.',
+        ? `AutoPay set: ₦${Number(preferred_amount).toLocaleString()} on day ${preferred_debit_day} monthly.`
+        : 'AutoPay preference saved. Direct Debit currently disabled.',
+      note: 'Full automatic deductions activate in the next platform update.',
     });
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
 
 app.delete('/api/tenant/bank-accounts/:id', authenticate, async (req: Request, res: Response): Promise<any> => {
-  const userId = (req as any).userId;
-  const { id } = req.params;
+  const userId = (req as any).userId; const { id } = req.params;
   try {
     const check = await pool.query(`SELECT * FROM tenant_bank_profiles WHERE id=$1 AND tenant_user_id=$2`, [id, userId]);
     if (!check.rows.length) return res.status(404).json({ error: 'Account not found' });
-    if (check.rows[0].direct_debit_enabled && check.rows[0].mandate_status === 'ACTIVE') {
+    if (check.rows[0].direct_debit_enabled && check.rows[0].mandate_status === 'ACTIVE')
       return res.status(409).json({ error: 'Cannot delete an account with an active Direct Debit mandate. Disable AutoPay first.' });
-    }
     await pool.query(`DELETE FROM tenant_bank_profiles WHERE id=$1 AND tenant_user_id=$2`, [id, userId]);
     if (check.rows[0].is_default) {
-      await pool.query(
-        `UPDATE tenant_bank_profiles SET is_default=true, updated_at=NOW()
-         WHERE tenant_user_id=$1 ORDER BY created_at DESC LIMIT 1`, [userId]
+      pool.query(
+        `UPDATE tenant_bank_profiles SET is_default=true, updated_at=NOW() WHERE tenant_user_id=$1 ORDER BY created_at DESC LIMIT 1`,
+        [userId]
       ).catch(() => {});
     }
     await logAudit({
@@ -11565,11 +11571,11 @@ app.get('/api/tenant/autopay-status', authenticate, async (req: Request, res: Re
   try {
     const r = await pool.query(
       `SELECT tbp.*,
-              fpv.target_amount, fpv.vault_balance, fpv.status AS vault_status,
-              fpv.installment_amount, fpv.frequency, fpv.rent_amount, fpv.platform_fee_amount
+              sv.target_amount, sv.vault_balance, sv.status AS vault_status,
+              sv.installment_amount, sv.frequency, sv.rent_amount, sv.platform_fee_amount
        FROM tenant_bank_profiles tbp
-       LEFT JOIN standalone_vaults fpv ON fpv.tenant_user_id = $1
-         AND fpv.status NOT IN ('CLOSED','MIGRATED')
+       LEFT JOIN standalone_vaults sv ON sv.tenant_user_id = $1
+         AND sv.status NOT IN ('CLOSED','MIGRATED')
        WHERE tbp.tenant_user_id=$1 AND tbp.is_default=true
        LIMIT 1`,
       [userId]
@@ -11601,11 +11607,6 @@ app.get('/api/tenant/autopay-status', authenticate, async (req: Request, res: Re
         frequency:           acct.frequency,
         vault_status:        acct.vault_status,
       } : null,
-      next_steps: !acct.direct_debit_enabled
-        ? ['Set your preferred debit day', 'Set your monthly contribution amount', 'Enable AutoPay']
-        : acct.mandate_status === 'PENDING'
-          ? ['Direct Debit activation in progress — you will be notified when live']
-          : [],
     });
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
