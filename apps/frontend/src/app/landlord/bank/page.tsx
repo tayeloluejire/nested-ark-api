@@ -1,610 +1,592 @@
 'use client';
 export const dynamic = 'force-dynamic';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useEffect, useState, useCallback } from 'react';
+import { useRouter, usePathname } from 'next/navigation';
 import Link from 'next/link';
 import Navbar from '@/components/Navbar';
 import Footer from '@/components/Footer';
-import api from '@/lib/api';
 import {
-  Landmark, Plus, Trash2, ShieldCheck, AlertCircle,
-  CheckCircle2, Loader2, RefreshCw, X, ArrowLeft,
-  BadgeCheck, Banknote, Zap, Star, Eye, EyeOff, Wrench,
-  Clock, Info,
+  CreditCard, ShieldCheck, RefreshCw, CheckCircle2,
+  Trash2, Star, ChevronRight, Zap, Info, Building2,
 } from 'lucide-react';
 
-const safeN = (v: any): number => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
-const safeF = (v: any): string => safeN(v).toLocaleString();
-const maskAcct = (n: string) => n ? `****${n.slice(-4)}` : '****';
+const API_BASE = '/api';
+function getToken(): string | null {
+  if (typeof window === 'undefined') return null;
+  return localStorage.getItem('token') || sessionStorage.getItem('token');
+}
+const fmt = (n: number) =>
+  new Intl.NumberFormat('en-NG', { style: 'currency', currency: 'NGN', minimumFractionDigits: 2 }).format(n);
 
-interface BankAccount {
+// ── Complete Nigerian Bank List ────────────────────────────────────────────────
+const NIGERIAN_BANKS = [
+  // Fintech & Mobile Money — most used by tenants
+  { name: 'OPay',                            code: '999992', category: 'Fintech' },
+  { name: 'PalmPay',                         code: '999991', category: 'Fintech' },
+  { name: 'Moniepoint MFB',                  code: '50515',  category: 'Fintech' },
+  { name: 'Kuda Bank',                       code: '50211',  category: 'Fintech' },
+  { name: 'Carbon (OneFi)',                  code: '565',    category: 'Fintech' },
+  { name: 'FairMoney MFB',                   code: '51318',  category: 'Fintech' },
+  { name: 'VFD MFB',                         code: '566',    category: 'Fintech' },
+  { name: 'Rubies MFB',                      code: '125',    category: 'Fintech' },
+  { name: 'Sparkle MFB',                     code: '51310',  category: 'Fintech' },
+  { name: 'Paga',                            code: '100002', category: 'Fintech' },
+  { name: '9PSB (9 Payment Service Bank)',   code: '120001', category: 'Fintech' },
+  // Traditional Banks
+  { name: 'Access Bank',                     code: '044',    category: 'Bank' },
+  { name: 'Citibank Nigeria',                code: '023',    category: 'Bank' },
+  { name: 'Ecobank Nigeria',                 code: '050',    category: 'Bank' },
+  { name: 'Fidelity Bank',                   code: '070',    category: 'Bank' },
+  { name: 'First Bank of Nigeria',           code: '011',    category: 'Bank' },
+  { name: 'First City Monument Bank (FCMB)', code: '214',    category: 'Bank' },
+  { name: 'Globus Bank',                     code: '00103',  category: 'Bank' },
+  { name: 'Guaranty Trust Bank (GTBank)',    code: '058',    category: 'Bank' },
+  { name: 'Heritage Bank',                   code: '030',    category: 'Bank' },
+  { name: 'Keystone Bank',                   code: '082',    category: 'Bank' },
+  { name: 'Parallex Bank',                   code: '104',    category: 'Bank' },
+  { name: 'Polaris Bank',                    code: '076',    category: 'Bank' },
+  { name: 'Providus Bank',                   code: '101',    category: 'Bank' },
+  { name: 'Stanbic IBTC Bank',              code: '221',    category: 'Bank' },
+  { name: 'Standard Chartered Bank',         code: '068',    category: 'Bank' },
+  { name: 'Sterling Bank',                   code: '232',    category: 'Bank' },
+  { name: 'SunTrust Bank',                   code: '100',    category: 'Bank' },
+  { name: 'Titan Trust Bank',                code: '102',    category: 'Bank' },
+  { name: 'Union Bank of Nigeria',           code: '032',    category: 'Bank' },
+  { name: 'United Bank for Africa (UBA)',    code: '033',    category: 'Bank' },
+  { name: 'Unity Bank',                      code: '215',    category: 'Bank' },
+  { name: 'Wema Bank',                       code: '035',    category: 'Bank' },
+  { name: 'Zenith Bank',                     code: '057',    category: 'Bank' },
+] as const;
+
+type Bank = typeof NIGERIAN_BANKS[number];
+
+interface LandlordBankAccount {
   id: string;
+  user_id: string;
+  project_id: string | null;
   account_name: string;
   account_number: string;
-  bank_name: string;
   bank_code: string;
+  bank_name: string;
   currency: string;
   is_default: boolean;
+  is_verified: boolean;
+  paystack_recipient_code: string | null;
+  paystack_subaccount_code: string | null;
   payout_ready: boolean;
-  paystack_recipient_code?: string;
+  split_pay_ready: boolean;
   created_at: string;
 }
-interface BankOption { name: string; code: string; }
 
-export default function LandlordBankPage() {
-  const [accounts,       setAccounts]       = useState<BankAccount[]>([]);
-  const [banks,          setBanks]          = useState<BankOption[]>([]);
-  const [loading,        setLoading]        = useState(true);
-  const [error,          setError]          = useState('');
-  const [showAdd,        setShowAdd]        = useState(false);
-  const [showNums,       setShowNums]       = useState<Record<string, boolean>>({});
+// ── Landlord Nav ──────────────────────────────────────────────────────────────
+function LandlordNav() {
+  const pathname = usePathname();
+  const links = [
+    { href: '/landlord/dashboard',  label: 'Dashboard'   },
+    { href: '/landlord/units',      label: 'My Units'    },
+    { href: '/landlord/tenants',    label: 'Tenants'     },
+    { href: '/landlord/receipts',   label: 'Receipts'    },
+    { href: '/landlord/notices',    label: 'Notices'     },
+    { href: '/landlord/inventory',  label: 'Inventory'   },
+    { href: '/landlord/banking',    label: 'Banking'     },
+  ];
+  return (
+    <nav className="border-b border-zinc-800 bg-[#050505]/90 backdrop-blur-sm sticky top-0 z-10">
+      <div className="max-w-5xl mx-auto px-4 flex gap-0.5 overflow-x-auto py-1" style={{ scrollbarWidth: 'none' }}>
+        {links.map(l => {
+          const active = pathname === l.href;
+          return (
+            <Link key={l.href} href={l.href}
+              className={`px-4 py-2.5 text-[10px] font-black uppercase tracking-widest whitespace-nowrap rounded-lg transition-all flex-shrink-0 ${
+                active ? 'text-amber-400 bg-amber-500/10 border border-amber-500/20'
+                       : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/60'}`}>
+              {l.label}
+            </Link>
+          );
+        })}
+      </div>
+    </nav>
+  );
+}
 
-  // Paystack balance
-  const [balanceNgn,     setBalanceNgn]     = useState<number | null>(null);
-  const [balanceLoading, setBalanceLoading] = useState(false);
-  const [balanceNote,    setBalanceNote]    = useState('');
+// ── Bank Selector with search + auto-fill code ────────────────────────────────
+function BankSelector({ value, onChange }: { value: { code: string; name: string }; onChange: (b: { code: string; name: string }) => void }) {
+  const [query, setQuery] = useState('');
+  const [open, setOpen]   = useState(false);
 
-  // Repair state — per-account inline bank_code prompt
-  const [repairId,       setRepairId]       = useState('');
-  const [repairCode,     setRepairCode]     = useState('');
-  const [repairBusy,     setRepairBusy]     = useState(false);
-  const [repairMsg,      setRepairMsg]      = useState('');
-  const [repairErr,      setRepairErr]      = useState('');
+  const filtered = query.length >= 1
+    ? NIGERIAN_BANKS.filter(b => b.name.toLowerCase().includes(query.toLowerCase()) || b.code.includes(query))
+    : NIGERIAN_BANKS;
+  const fintechs = filtered.filter(b => b.category === 'Fintech');
+  const banks    = filtered.filter(b => b.category === 'Bank');
 
-  // Add form
-  const [form, setForm] = useState({
-    account_number: '', bank_code: '', bank_name: '',
-    account_name: '', currency: 'NGN', set_as_default: true,
-  });
-  const [resolving, setResolving] = useState(false);
-  const [resolved,  setResolved]  = useState(false);
-  const [adding,    setAdding]    = useState(false);
-  const [addError,  setAddError]  = useState('');
-  const [addOk,     setAddOk]     = useState('');
-
-  // Payout
-  const [payoutAcct, setPayoutAcct] = useState('');
-  const [payoutAmt,  setPayoutAmt]  = useState('');
-  const [payoutBusy, setPayoutBusy] = useState(false);
-  const [payoutMsg,  setPayoutMsg]  = useState('');
-  const [payoutErr,  setPayoutErr]  = useState('');
-  const [t1Note,     setT1Note]     = useState('');
-
-  const loadAccounts = useCallback(async () => {
-    setLoading(true); setError('');
-    try {
-      const res = await api.get('/api/landlord/bank-accounts');
-      setAccounts(res.data.accounts ?? []);
-    } catch (ex: any) {
-      setError(ex?.response?.data?.error ?? 'Could not load bank accounts.');
-    } finally { setLoading(false); }
-  }, []);
-
-  const loadBanks = useCallback(async () => {
-    try {
-      const res = await api.get('/api/paystack/banks');
-      setBanks((res.data.banks ?? []).map((b: any) => ({ name: b.name, code: b.code })));
-    } catch { /* non-fatal */ }
-  }, []);
-
-  const loadBalance = useCallback(async () => {
-    setBalanceLoading(true);
-    try {
-      const res = await api.get('/api/landlord/paystack-balance');
-      setBalanceNgn(res.data.available_ngn ?? 0);
-      setBalanceNote(res.data.note ?? '');
-    } catch { setBalanceNgn(null); }
-    finally { setBalanceLoading(false); }
-  }, []);
-
-  useEffect(() => { 
-    loadAccounts(); 
-    loadBanks(); 
-    loadBalance(); 
-  }, [loadAccounts, loadBanks, loadBalance]);
-
-  const resolveAccountName = async (acctNum: string, bCode: string) => {
-    if (acctNum.length !== 10 || !bCode) return;
-    setResolving(true); setResolved(false);
-    setForm(f => ({ ...f, account_name: '' }));
-    try {
-      const res = await api.post('/api/paystack/resolve-account', { account_number: acctNum, bank_code: bCode });
-      setForm(f => ({ ...f, account_name: res.data.account_name ?? '' }));
-      setResolved(true);
-    } catch (ex: any) {
-      setAddError(ex?.response?.data?.error ?? 'Could not verify account.');
-    } finally { setResolving(false); }
-  };
-
-  const handleAddAccount = async () => {
-    if (!form.account_name) { setAddError('Resolve account name first.'); return; }
-    if (!form.bank_code)    { setAddError('Select a bank.'); return; }
-    setAdding(true); setAddError(''); setAddOk('');
-    try {
-      await api.post('/api/landlord/bank-accounts', {
-        account_name: form.account_name, account_number: form.account_number,
-        bank_code: form.bank_code, bank_name: form.bank_name,
-        currency: form.currency, set_as_default: form.set_as_default,
-      });
-      setAddOk('Account saved & Paystack recipient created!');
-      setForm({ account_number: '', bank_code: '', bank_name: '', account_name: '', currency: 'NGN', set_as_default: true });
-      setResolved(false);
-      setTimeout(() => { setShowAdd(false); setAddOk(''); loadAccounts(); }, 1500);
-    } catch (ex: any) {
-      setAddError(ex?.response?.data?.error ?? 'Failed to save account.');
-    } finally { setAdding(false); }
-  };
-
-  const handleDelete = async (id: string) => {
-    if (!confirm('Remove this bank account?')) return;
-    try {
-      await api.delete(`/api/landlord/bank-accounts/${id}`);
-      setAccounts(a => a.filter(x => x.id !== id));
-    } catch (ex: any) { setError(ex?.response?.data?.error ?? 'Delete failed.'); }
-  };
-
-  const handleRepair = async (id: string, bankCodeOverride?: string) => {
-    setRepairBusy(true); setRepairErr(''); setRepairMsg('');
-    try {
-      const payload = bankCodeOverride ? { bank_code: bankCodeOverride } : {};
-      const res = await api.post(`/api/landlord/bank-accounts/${id}/create-recipient`, payload);
-      setRepairMsg(res.data.message ?? 'Account is now payout-ready!');
-      setRepairId(''); setRepairCode('');
-      setTimeout(() => { setRepairMsg(''); loadAccounts(); loadBalance(); }, 2000);
-    } catch (ex: any) {
-      const d = ex?.response?.data;
-      if (d?.needs_bank_code) {
-        setRepairId(id);
-        setRepairErr('Select your bank below to complete the repair:');
-      } else {
-        setRepairErr(d?.error ?? 'Repair failed.');
-      }
-    } finally { setRepairBusy(false); }
-  };
-
-  const handlePayout = async () => {
-    if (!payoutAcct || !payoutAmt) { setPayoutErr('Select account and enter amount.'); return; }
-    setPayoutBusy(true); setPayoutErr(''); setPayoutMsg(''); setT1Note('');
-    try {
-      const res = await api.post('/api/landlord/payout', {
-        bank_account_id: payoutAcct, amount_ngn: parseFloat(payoutAmt),
-      });
-      setPayoutMsg(res.data.message ?? `Transfer initiated successfully!`);
-      setPayoutAmt('');
-      loadBalance();
-    } catch (ex: any) {
-      const d = ex?.response?.data;
-      setPayoutErr(d?.error ?? 'Payout failed.');
-      if (d?.t1_note) setT1Note(d.t1_note);
-      if (d?.insufficient_balance) loadBalance();
-    } finally { setPayoutBusy(false); }
-  };
-
-  const payoutReadyAccts  = accounts.filter(a => a.payout_ready);
-  const grossAmt          = parseFloat(payoutAmt) || 0;
-  const feeAmt            = Math.round(grossAmt * 0.02);
-  const netAmt            = Math.round(grossAmt * 0.98);
-  const balanceKnown      = balanceNgn !== null;
-  const hasSufficientBal  = balanceKnown ? balanceNgn >= netAmt : true;
-  const canInitiatePayout = !!payoutAcct && grossAmt > 0 && !payoutBusy && hasSufficientBal;
+  const pick = (bank: Bank) => { onChange({ code: bank.code, name: bank.name }); setQuery(''); setOpen(false); };
 
   return (
-    <div className="min-h-screen bg-[#050505] text-white">
-      <Navbar />
-      <main className="max-w-4xl mx-auto px-6 py-12 space-y-10">
-
-        <Link href="/landlord/dashboard"
-          className="inline-flex items-center gap-2 text-zinc-500 hover:text-white text-xs font-bold uppercase tracking-widest transition-colors">
-          <ArrowLeft size={12} /> Landlord Dashboard
-        </Link>
-
-        <div className="border-l-2 border-teal-500 pl-5">
-          <p className="text-[9px] text-teal-500 font-mono font-black tracking-widest uppercase mb-1">Payout Engine</p>
-          <h1 className="text-3xl font-black uppercase tracking-tighter">Bank Accounts</h1>
-          <p className="text-zinc-500 text-xs mt-1">Manage payout destinations. Rent collected flows here automatically.</p>
-        </div>
-
-        {/* Paystack Balance Card */}
-        <div className={`p-5 rounded-2xl border flex items-center justify-between gap-4 ${
-          balanceNgn === null ? 'border-zinc-800 bg-zinc-900/20'
-          : balanceNgn > 0   ? 'border-teal-500/20 bg-teal-500/5'
-                              : 'border-amber-500/20 bg-amber-500/5'
-        }`}>
-          <div className="space-y-1">
-            <p className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest">Paystack Available Balance</p>
-            {balanceLoading ? (
-              <Loader2 className="animate-spin text-zinc-500" size={16} />
-            ) : balanceNgn === null ? (
-              <p className="text-zinc-500 text-sm font-bold">—</p>
-            ) : (
-              <p className={`text-2xl font-black font-mono tabular-nums ${balanceNgn > 0 ? 'text-teal-400' : 'text-amber-400'}`}>
-                ₦{safeF(balanceNgn)}
-              </p>
-            )}
-            {balanceNote && (
-              <div className="flex items-start gap-1.5 mt-1">
-                <Clock size={9} className="text-amber-400 flex-shrink-0 mt-0.5" />
-                <p className="text-[9px] text-amber-400/80 leading-relaxed">{balanceNote}</p>
+    <div className="relative">
+      <input
+        className="w-full bg-black border border-zinc-800 rounded-xl px-4 py-3 text-sm text-white focus:border-amber-500 outline-none transition-colors"
+        placeholder="Search bank or fintech (e.g. GTBank, Zenith…)"
+        value={open ? query : value.name}
+        onFocus={() => { setOpen(true); setQuery(''); }}
+        onChange={e => { setQuery(e.target.value); setOpen(true); }}
+        onBlur={() => setTimeout(() => setOpen(false), 180)}
+      />
+      {value.code && !open && (
+        <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[9px] font-mono text-amber-400 bg-amber-500/10 px-2 py-1 rounded border border-amber-500/20">
+          {value.code}
+        </span>
+      )}
+      {open && (
+        <div className="absolute z-50 top-full left-0 right-0 mt-1 bg-zinc-900 border border-zinc-700 rounded-xl shadow-2xl overflow-hidden max-h-72 overflow-y-auto">
+          {fintechs.length > 0 && (
+            <>
+              <div className="px-3 py-2 bg-zinc-800/60 border-b border-zinc-700">
+                <p className="text-[8px] text-amber-400 uppercase font-black tracking-widest">Fintech & Mobile Money</p>
               </div>
-            )}
-          </div>
-          <button
-            onClick={loadBalance}
-            className="flex items-center gap-1.5 px-3 py-2 border border-zinc-800 text-zinc-500 rounded-xl text-[9px] font-bold uppercase tracking-widest hover:text-white transition-all flex-shrink-0">
-            <RefreshCw size={10} /> Refresh
-          </button>
-        </div>
-
-        {/* Status banner */}
-        {!loading && accounts.length > 0 && (
-          <div className={`p-4 rounded-2xl border flex items-start gap-3 ${
-            payoutReadyAccts.length > 0
-              ? 'border-teal-500/20 bg-teal-500/5'
-              : 'border-amber-500/20 bg-amber-500/5'
-          }`}>
-            {payoutReadyAccts.length > 0
-              ? <><ShieldCheck size={14} className="text-teal-400 flex-shrink-0 mt-0.5" />
-                  <p className="text-teal-400 text-xs font-bold">
-                    {payoutReadyAccts.length} payout-ready account{payoutReadyAccts.length > 1 ? 's' : ''}.
-                    Rent auto-transfers within 24h of collection.
-                  </p></>
-              : <><AlertCircle size={14} className="text-amber-400 flex-shrink-0 mt-0.5" />
-                  <div>
-                    <p className="text-amber-400 text-xs font-bold mb-1">No accounts are payout-ready.</p>
-                    <p className="text-amber-400/70 text-[10px]">
-                      Click <strong>Repair →</strong> on your account and select your bank, or delete and re-add.
-                    </p>
-                  </div></>
-          }
-        </div>
-        )}
-
-        {error && (
-          <div className="p-4 rounded-xl border border-red-500/20 bg-red-500/5 text-red-400 text-sm font-bold flex items-center gap-2">
-            <AlertCircle size={14} /> {error}
-            <button onClick={loadAccounts} className="ml-auto text-teal-500 text-xs font-black">Retry →</button>
-          </div>
-        )}
-
-        {repairMsg && (
-          <div className="p-4 rounded-xl border border-teal-500/20 bg-teal-500/10 text-teal-400 text-xs font-bold flex items-center gap-2">
-            <CheckCircle2 size={13} /> {repairMsg}
-          </div>
-        )}
-
-        {/* Account list */}
-        <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <p className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest">Saved Accounts</p>
-            <div className="flex items-center gap-2">
-              <button onClick={loadAccounts}
-                className="flex items-center gap-1.5 px-3 py-2 border border-zinc-800 text-zinc-500 rounded-xl text-[9px] font-bold uppercase tracking-widest hover:text-white transition-all">
-                <RefreshCw size={10} /> Refresh
-              </button>
-              <button onClick={() => { setShowAdd(true); setAddError(''); setAddOk(''); setResolved(false); }}
-                className="flex items-center gap-2 bg-teal-500 text-black px-4 py-2 rounded-xl font-black text-[9px] uppercase tracking-widest hover:bg-white transition-all">
-                <Plus size={12} /> Add Account
-              </button>
-            </div>
-          </div>
-
-          {loading ? (
-            <div className="flex items-center justify-center py-20">
-              <Loader2 className="animate-spin text-teal-500" size={28} />
-            </div>
-          ) : accounts.length === 0 ? (
-            <div className="py-20 text-center border border-dashed border-zinc-800 rounded-2xl space-y-5">
-              <Landmark className="text-zinc-700 mx-auto" size={48} />
-              <div>
-                <p className="text-zinc-400 font-bold">No bank accounts yet</p>
-                <p className="text-zinc-600 text-sm mt-1">Add your account to receive automatic rent payouts.</p>
-              </div>
-              <button onClick={() => { setShowAdd(true); setAddError(''); setAddOk(''); }}
-                className="inline-flex items-center gap-2 px-6 py-3 bg-teal-500 text-black font-bold text-xs uppercase tracking-widest rounded-xl hover:bg-white transition-all">
-                <Plus size={11} /> Add Bank Account
-              </button>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {accounts.map(acct => (
-                <div key={acct.id}
-                  className={`p-5 rounded-2xl border space-y-4 transition-all ${
-                    acct.is_default ? 'border-teal-500/40 bg-teal-500/5' : 'border-zinc-800 bg-zinc-900/20'
-                  }`}>
-                  <div className="flex items-start justify-between">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <Landmark size={16} className={acct.payout_ready ? 'text-teal-500' : 'text-zinc-600'} />
-                      {acct.is_default && (
-                        <span className="text-[7px] bg-teal-500 text-black font-black uppercase px-1.5 py-0.5 rounded tracking-widest flex items-center gap-0.5">
-                          <Star size={7} fill="currentColor" /> Default
-                        </span>
-                      )}
-                      {acct.payout_ready
-                        ? <span className="text-[7px] border border-teal-500/30 text-teal-400 px-1.5 py-0.5 rounded font-bold uppercase flex items-center gap-0.5">
-                            <Zap size={7} /> Ready
-                          </span>
-                        : <span className="text-[7px] border border-amber-500/30 text-amber-400 px-1.5 py-0.5 rounded font-bold uppercase">
-                            No Recipient
-                          </span>
-                      }
-                    </div>
-                    <button onClick={() => handleDelete(acct.id)} className="text-zinc-700 hover:text-red-400 transition-colors">
-                      <Trash2 size={13} />
-                    </button>
-                  </div>
-
-                  <div>
-                    <p className="font-bold text-sm">{acct.account_name}</p>
-                    <p className="text-zinc-400 text-xs font-mono mt-0.5">
-                      {showNums[acct.id] ? acct.account_number : maskAcct(acct.account_number)}
-                    </p>
-                    <p className="text-zinc-500 text-[10px] mt-0.5">{acct.bank_name}</p>
-                  </div>
-
-                  <div className="flex items-center justify-between">
-                    <button onClick={() => setShowNums(n => ({ ...n, [acct.id]: !n[acct.id] }))}
-                      className="text-zinc-600 hover:text-zinc-400 transition-colors">
-                      {showNums[acct.id] ? <EyeOff size={11} /> : <Eye size={11} />}
-                    </button>
-                    {acct.payout_ready
-                      ? <div className="flex items-center gap-1 text-[8px] text-teal-400 font-bold">
-                          <BadgeCheck size={9} /> Paystack Linked
-                        </div>
-                      : <button
-                          onClick={() => handleRepair(acct.id)}
-                          disabled={repairBusy}
-                          className="text-[8px] text-amber-400 font-bold uppercase tracking-widest hover:text-amber-300 transition-colors flex items-center gap-1">
-                          {repairBusy && repairId === '' ? <Loader2 size={9} className="animate-spin" /> : <Wrench size={9} />}
-                          Repair →
-                        </button>
-                    }
-                  </div>
-
-                  {/* Inline bank_code repair panel */}
-                  {repairId === acct.id && (
-                    <div className="pt-3 border-t border-zinc-800 space-y-3">
-                      <p className="text-[9px] text-amber-400 font-bold">{repairErr || 'Select your bank to complete repair:'}</p>
-                      <select
-                        value={repairCode}
-                        onChange={e => setRepairCode(e.target.value)}
-                        className="w-full bg-black border border-zinc-800 p-2.5 rounded-xl text-white text-xs outline-none focus:border-teal-500 transition-colors">
-                        <option value="">— Select bank —</option>
-                        {banks.map(b => <option key={b.code} value={b.code}>{b.name}</option>)}
-                      </select>
-                      <div className="flex gap-2">
-                        <button onClick={() => { setRepairId(''); setRepairCode(''); setRepairErr(''); }}
-                          className="flex-1 py-2 border border-zinc-700 text-zinc-500 text-[9px] font-bold uppercase rounded-xl hover:text-white transition-all">
-                          Cancel
-                        </button>
-                        <button
-                          onClick={() => handleRepair(acct.id, repairCode)}
-                          disabled={!repairCode || repairBusy}
-                          className="flex-1 py-2 bg-teal-500 text-black text-[9px] font-black uppercase rounded-xl hover:bg-white transition-all disabled:opacity-50 flex items-center justify-center gap-1">
-                          {repairBusy ? <Loader2 size={10} className="animate-spin" /> : <ShieldCheck size={10} />}
-                          {repairBusy ? 'Patching…' : 'Patch & Repair'}
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
+              {fintechs.map(b => (
+                <button key={b.code} onMouseDown={() => pick(b)}
+                  className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-zinc-800 transition-colors text-left">
+                  <span className="text-sm text-white font-medium">{b.name}</span>
+                  <span className="text-[9px] font-mono text-zinc-500 ml-2">{b.code}</span>
+                </button>
               ))}
-            </div>
+            </>
+          )}
+          {banks.length > 0 && (
+            <>
+              <div className="px-3 py-2 bg-zinc-800/60 border-b border-zinc-700 border-t border-zinc-700">
+                <p className="text-[8px] text-zinc-400 uppercase font-black tracking-widest">Commercial Banks</p>
+              </div>
+              {banks.map(b => (
+                <button key={b.code} onMouseDown={() => pick(b)}
+                  className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-zinc-800 transition-colors text-left">
+                  <span className="text-sm text-white font-medium">{b.name}</span>
+                  <span className="text-[9px] font-mono text-zinc-500 ml-2">{b.code}</span>
+                </button>
+              ))}
+            </>
+          )}
+          {fintechs.length === 0 && banks.length === 0 && (
+            <div className="px-4 py-5 text-center text-zinc-600 text-sm">No bank found for &quot;{query}&quot;</div>
           )}
         </div>
+      )}
+    </div>
+  );
+}
 
-        {/* Manual payout panel */}
-        {payoutReadyAccts.length > 0 && (
-          <div className="p-6 rounded-2xl border border-zinc-800 bg-zinc-900/20 space-y-5">
-            <div>
-              <p className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest mb-1">Manual Payout</p>
-              <p className="text-xs text-zinc-600">On-demand transfer from collected rent balance. 2% platform fee applies.</p>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <select value={payoutAcct} onChange={e => setPayoutAcct(e.target.value)}
-                className="w-full bg-black border border-zinc-800 p-3 rounded-xl text-white text-sm outline-none focus:border-teal-500 transition-colors">
-                <option value="">— Select account —</option>
-                {payoutReadyAccts.map(a => (
-                  <option key={a.id} value={a.id}>
-                    {a.bank_name} · {maskAcct(a.account_number)} ({a.account_name})
-                  </option>
-                ))}
-              </select>
-              <div className="relative">
-                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500 text-sm font-mono">₦</span>
-                <input type="number" placeholder="Amount (NGN)" value={payoutAmt}
-                  onChange={e => { setPayoutAmt(e.target.value); setPayoutErr(''); setT1Note(''); }}
-                  className="w-full bg-black border border-zinc-800 p-3 pl-7 rounded-xl text-white text-sm font-mono outline-none focus:border-teal-500 transition-colors" />
-              </div>
-            </div>
-
-            {/* Balance warning when entered amount exceeds available */}
-            {balanceKnown && grossAmt > 0 && !hasSufficientBal && (
-              <div className="p-3 rounded-xl bg-amber-500/5 border border-amber-500/20 flex items-start gap-2">
-                <Clock size={11} className="text-amber-400 flex-shrink-0 mt-0.5" />
-                <div>
-                  <p className="text-amber-400 text-xs font-bold">
-                    Available: ₦{safeF(balanceNgn!)} · Required: ₦{safeF(netAmt)}
-                  </p>
-                  <p className="text-amber-400/70 text-[10px] mt-0.5 leading-relaxed">
-                    Paystack settles collections the next business day (T+1).
-                    Funds collected today will be available tomorrow.
-                  </p>
-                </div>
-              </div>
-            )}
-
-            {grossAmt > 0 && (
-              <div className="p-3 rounded-xl bg-zinc-900 border border-zinc-800 text-[10px] font-mono text-zinc-400 flex flex-wrap items-center gap-4">
-                <span>Gross: <span className="text-white">₦{safeF(grossAmt)}</span></span>
-                <span>Fee (2%): <span className="text-amber-400">-₦{safeF(feeAmt)}</span></span>
-                <span>You receive: <span className={`font-black ${hasSufficientBal ? 'text-teal-400' : 'text-amber-400'}`}>₦{safeF(netAmt)}</span></span>
-                {balanceKnown && (
-                  <span className="ml-auto text-zinc-600">
-                    Available: <span className={balanceNgn! >= netAmt ? 'text-teal-400' : 'text-amber-400'}>₦{safeF(balanceNgn!)}</span>
-                  </span>
-                )}
-              </div>
-            )}
-
-            {payoutErr && (
-              <div className="p-3 rounded-xl bg-red-500/5 border border-red-500/20 space-y-1">
-                <div className="flex items-center gap-2 text-red-400 text-xs font-bold">
-                  <AlertCircle size={11} /> {payoutErr}
-                </div>
-                {t1Note && (
-                  <div className="flex items-start gap-1.5 pl-5">
-                    <Clock size={9} className="text-amber-400 flex-shrink-0 mt-0.5" />
-                    <p className="text-amber-400/80 text-[9px] leading-relaxed">{t1Note}</p>
-                  </div>
-                )}
-              </div>
-            )}
-            {payoutMsg && (
-              <div className="p-3 rounded-xl bg-teal-500/10 border border-teal-500/20 text-teal-400 text-xs font-bold flex items-center gap-2">
-                <CheckCircle2 size={11} /> {payoutMsg}
-              </div>
-            )}
-
-            <button onClick={handlePayout} disabled={!canInitiatePayout}
-              className={`flex items-center gap-2 px-6 py-3 font-black text-[9px] uppercase tracking-widest rounded-xl transition-all disabled:opacity-50 ${
-                !hasSufficientBal && grossAmt > 0
-                  ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30 cursor-not-allowed'
-                  : 'bg-teal-500 text-black hover:bg-white'
-              }`}>
-              {payoutBusy
-                ? <><Loader2 className="animate-spin" size={12} /> Initiating Transfer…</>
-                : !hasSufficientBal && grossAmt > 0
-                ? <><Clock size={12} /> Insufficient Balance — Retry Tomorrow</>
-                : <><Banknote size={12} /> Initiate Transfer</>
-              }
-            </button>
+// ── Account Card ──────────────────────────────────────────────────────────────
+function AccountCard({
+  account, onSetDefault, onRepair, onDelete,
+}: {
+  account: LandlordBankAccount;
+  onSetDefault: (id: string) => void;
+  onRepair: (id: string) => void;
+  onDelete: (id: string) => void;
+}) {
+  return (
+    <div className={`p-5 rounded-2xl border transition-all ${account.is_default ? 'border-amber-500/30 bg-amber-500/5' : 'border-zinc-800 bg-zinc-900/20'}`}>
+      <div className="flex items-start justify-between gap-3 mb-4">
+        <div className="flex items-center gap-3">
+          <div className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 ${account.is_default ? 'bg-amber-500/20' : 'bg-zinc-800'}`}>
+            <CreditCard size={16} className={account.is_default ? 'text-amber-400' : 'text-zinc-500'}/>
           </div>
-        )}
-
-        {/* How payouts work */}
-        <div className="p-5 rounded-2xl border border-zinc-800 bg-zinc-900/10 space-y-4">
-          <p className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest">How payouts work</p>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {[
-              { step: '01', title: 'Tenant pays',     body: 'Rent collected via Paystack and held in your Paystack balance (T+1 settlement).' },
-              { step: '02', title: 'T+1 clearing',   body: 'Paystack settles to your available balance the next business day after collection.' },
-              { step: '03', title: '98% to you',     body: '2% platform fee deducted. Net transferred instantly once balance is available.' },
-            ].map(s => (
-              <div key={s.step} className="space-y-2">
-                <p className="text-teal-500 font-mono font-black text-[9px] uppercase tracking-widest">{s.step}</p>
-                <p className="text-white text-xs font-bold">{s.title}</p>
-                <p className="text-zinc-500 text-[10px] leading-relaxed">{s.body}</p>
-              </div>
-            ))}
-          </div>
-          <div className="pt-3 border-t border-zinc-800 flex items-start gap-2">
-            <Info size={10} className="text-zinc-600 flex-shrink-0 mt-0.5" />
-            <p className="text-[9px] text-zinc-600 leading-relaxed">
-              The auto-transfer cron runs every 30 minutes. It will automatically retry payouts once your Paystack balance clears.
-              You don't need to trigger manual payouts — it's fully automated.
-            </p>
+          <div>
+            <p className="font-black text-sm">{account.bank_name}</p>
+            <p className="text-zinc-500 text-[10px] font-mono mt-0.5">···· ···· {account.account_number.slice(-4)}</p>
           </div>
         </div>
+        <div className="flex gap-2 flex-shrink-0 flex-wrap justify-end">
+          {account.is_default    && <span className="px-2 py-1 rounded-lg border border-amber-500/30 text-amber-400 text-[8px] font-black uppercase tracking-widest bg-amber-500/10">Default</span>}
+          {account.is_verified   && <span className="px-2 py-1 rounded-lg border border-green-500/30 text-green-400 text-[8px] font-black uppercase tracking-widest bg-green-500/10 flex items-center gap-1"><CheckCircle2 size={8}/> Verified</span>}
+        </div>
+      </div>
 
-      </main>
+      <p className="text-zinc-300 text-xs font-semibold mb-3">{account.account_name}</p>
 
-      {/* ── Add Account Modal ──────────────────────────────────────────────── */}
-      {showAdd && (
-        <div className="fixed inset-0 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-          <div className="bg-zinc-900 border border-zinc-800 p-8 rounded-3xl max-w-md w-full space-y-5 shadow-2xl">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-[9px] text-teal-500 font-mono font-black uppercase tracking-widest mb-0.5">Payout Engine</p>
-                <h3 className="text-xl font-black uppercase">Add Bank Account</h3>
-              </div>
-              <button onClick={() => setShowAdd(false)} className="text-zinc-600 hover:text-white transition-colors">
-                <X size={18} />
-              </button>
-            </div>
+      {/* Payout readiness badges */}
+      <div className="flex flex-wrap gap-2 mb-4">
+        <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-[9px] font-black uppercase tracking-widest ${
+          account.payout_ready ? 'border-green-500/30 bg-green-500/10 text-green-400' : 'border-zinc-700 bg-zinc-900 text-zinc-600'}`}>
+          <Zap size={9}/>
+          {account.payout_ready ? 'Payout Ready' : 'No Recipient Code'}
+        </div>
+        <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-[9px] font-black uppercase tracking-widest ${
+          account.split_pay_ready ? 'border-teal-500/30 bg-teal-500/10 text-teal-400' : 'border-zinc-700 bg-zinc-900 text-zinc-600'}`}>
+          <Building2 size={9}/>
+          {account.split_pay_ready ? 'Auto-Split Active' : 'No Subaccount'}
+        </div>
+      </div>
 
-            <div className="space-y-3">
-              <select value={form.bank_code}
-                className="w-full bg-black border border-zinc-800 p-3 rounded-xl text-white text-sm outline-none focus:border-teal-500 transition-colors"
-                onChange={e => {
-                  const opt = banks.find(b => b.code === e.target.value);
-                  setForm(f => ({ ...f, bank_code: e.target.value, bank_name: opt?.name ?? '', account_name: '' }));
-                  setResolved(false);
-                  if (form.account_number.length === 10 && e.target.value) {
-                    resolveAccountName(form.account_number, e.target.value);
-                  }
-                }}>
-                <option value="">— Select bank —</option>
-                {banks.map(b => <option key={b.code} value={b.code}>{b.name}</option>)}
-              </select>
-
-              <div className="relative">
-                <input placeholder="Account Number (10 digits)" maxLength={10} value={form.account_number}
-                  className="w-full bg-black border border-zinc-800 p-3 rounded-xl text-white text-sm font-mono outline-none focus:border-teal-500 transition-colors pr-10"
-                  onChange={e => {
-                    const v = e.target.value.replace(/\D/g, '');
-                    setForm(f => ({ ...f, account_number: v, account_name: '' }));
-                    setResolved(false);
-                    if (v.length === 10 && form.bank_code) resolveAccountName(v, form.bank_code);
-                  }} />
-                {resolving && <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 animate-spin text-teal-500" size={13} />}
-                {resolved && !resolving && <CheckCircle2 className="absolute right-3 top-1/2 -translate-y-1/2 text-teal-400" size={13} />}
-              </div>
-
-              <div className={`p-3 rounded-xl border transition-all ${resolved ? 'border-teal-500/30 bg-teal-500/5' : 'border-zinc-800 bg-zinc-900'}`}>
-                <p className="text-[8px] text-zinc-500 uppercase font-bold tracking-widest mb-0.5">Account Name (auto-resolved)</p>
-                <p className={`text-sm font-bold ${resolved ? 'text-teal-400' : 'text-zinc-600'}`}>
-                  {resolving ? 'Verifying with Paystack…' : form.account_name || 'Enter account number + bank above'}
-                </p>
-              </div>
-
-              <select value={form.currency}
-                className="w-full bg-black border border-zinc-800 p-3 rounded-xl text-white text-sm outline-none focus:border-teal-500 transition-colors"
-                onChange={e => setForm(f => ({ ...f, currency: e.target.value }))}>
-                {['NGN', 'USD', 'GBP', 'AED'].map(c => <option key={c}>{c}</option>)}
-              </select>
-
-              <label className="flex items-center gap-3 cursor-pointer select-none">
-                <input 
-                  type="checkbox" 
-                  checked={form.set_as_default} 
-                  onChange={() => setForm(f => ({ ...f, set_as_default: !f.set_as_default }))} 
-                  className="sr-only" 
-                />
-                <div className={`w-9 h-5 rounded-full transition-colors flex items-center px-0.5 ${form.set_as_default ? 'bg-teal-500' : 'bg-zinc-700'}`}>
-                  <div className={`w-4 h-4 rounded-full bg-white shadow transition-transform ${form.set_as_default ? 'translate-x-4' : 'translate-x-0'}`} />
-                </div>
-                <span className="text-xs text-zinc-400 font-bold">Set as default payout account</span>
-              </label>
-            </div>
-
-            {addError && (
-              <div className="p-3 rounded-xl bg-red-500/5 border border-red-500/20 text-red-400 text-xs font-bold flex items-center gap-2">
-                <AlertCircle size={11} /> {addError}
-              </div>
-            )}
-            {addOk && (
-              <div className="p-3 rounded-xl bg-teal-500/10 border border-teal-500/20 text-teal-400 text-xs font-bold flex items-center gap-2">
-                <CheckCircle2 size={11} /> {addOk}
-              </div>
-            )}
-
-            <div className="flex gap-3">
-              <button onClick={() => setShowAdd(false)}
-                className="flex-1 py-3 border border-zinc-700 text-zinc-400 text-[9px] font-black uppercase tracking-widest rounded-xl hover:text-white transition-all">
-                Cancel
-              </button>
-              <button onClick={handleAddAccount} disabled={adding || !resolved}
-                className="flex-1 py-3 bg-teal-500 text-black font-black uppercase tracking-widest rounded-xl hover:bg-white transition-all disabled:opacity-50 flex items-center justify-center gap-2 text-[9px]">
-                {adding ? <Loader2 className="animate-spin" size={12} /> : <ShieldCheck size={12} />}
-                {adding ? 'Saving…' : 'Save Account'}
-              </button>
-            </div>
+      {/* Repair prompt for legacy accounts missing codes */}
+      {(!account.payout_ready || !account.split_pay_ready) && (
+        <div className="mb-4 p-3 rounded-xl border border-amber-500/20 bg-amber-500/5 flex items-start gap-2">
+          <Info size={11} className="text-amber-400 shrink-0 mt-0.5"/>
+          <div className="flex-1">
+            <p className="text-[9px] text-amber-400 leading-relaxed">
+              {!account.payout_ready && !account.split_pay_ready
+                ? 'Recipient code and subaccount missing — rent payouts will be deferred.'
+                : !account.payout_ready
+                ? 'Recipient code missing — manual payouts unavailable.'
+                : 'Subaccount missing — auto-split at payment time is inactive.'}
+              {' '}Repair to activate.
+            </p>
           </div>
+          <button
+            onClick={() => onRepair(account.id)}
+            className="flex-shrink-0 text-[9px] font-black uppercase tracking-widest text-amber-400 hover:underline">
+            Repair
+          </button>
         </div>
       )}
 
-      <Footer />
+      <div className="flex gap-2">
+        {!account.is_default && (
+          <button onClick={() => onSetDefault(account.id)}
+            className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl border border-zinc-700 text-zinc-400 text-[9px] font-black uppercase tracking-widest hover:border-amber-500/30 hover:text-amber-400 transition-all">
+            <Star size={10}/> Set Default
+          </button>
+        )}
+        <button onClick={() => onDelete(account.id)}
+          className="py-2 px-3 rounded-xl border border-zinc-800 text-zinc-600 hover:border-red-500/30 hover:text-red-400 transition-all">
+          <Trash2 size={12}/>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Add Account Form ──────────────────────────────────────────────────────────
+function AddAccountForm({ onAdded }: { onAdded: (msg: string) => void }) {
+  const [bank, setBank]               = useState({ code: '', name: '' });
+  const [accountNum, setAccountNum]   = useState('');
+  const [accountName, setAccountName] = useState('');
+  const [setAsDefault, setSetAsDefault] = useState(true);
+  const [loading, setLoading]         = useState(false);
+  const [error, setError]             = useState('');
+  const [success, setSuccess]         = useState('');
+
+  const inp = "w-full bg-black border border-zinc-800 rounded-xl px-4 py-3 text-sm text-white focus:border-amber-500 outline-none transition-colors";
+  const lbl = "block text-[9px] text-zinc-400 uppercase font-bold tracking-widest mb-1.5";
+
+  const handleAdd = async () => {
+    setError(''); setSuccess('');
+    if (!bank.code)                        return setError('Please select a bank');
+    if (!accountName.trim())               return setError('Account name is required');
+    if (!/^\d{10}$/.test(accountNum))      return setError('Account number must be exactly 10 digits');
+    setLoading(true);
+    try {
+      const token = getToken();
+      const res = await fetch(`${API_BASE}/landlord/bank-accounts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          bank_name:      bank.name,
+          bank_code:      bank.code,
+          account_number: accountNum,
+          account_name:   accountName.trim(),
+          set_as_default: setAsDefault,
+          currency:       'NGN',
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Failed to save account');
+      const acct = data.account;
+      const hasRecipient  = !!acct.paystack_recipient_code;
+      const hasSubaccount = !!acct.paystack_subaccount_code;
+      const statusMsg = hasRecipient && hasSubaccount
+        ? '✅ Payout recipient and auto-split subaccount created'
+        : hasRecipient
+        ? '✅ Payout recipient created (subaccount pending)'
+        : '⚠️ Account saved — payout codes pending. Use Repair on the card.';
+      setSuccess(statusMsg);
+      setBank({ code: '', name: '' }); setAccountNum(''); setAccountName('');
+      setTimeout(() => { setSuccess(''); onAdded(`Bank account saved — ${bank.name}`); }, 1800);
+    } catch (e: any) { setError(e.message); }
+    finally { setLoading(false); }
+  };
+
+  return (
+    <div className="p-6 rounded-2xl border border-zinc-800 bg-zinc-900/20 space-y-4">
+      <div className="flex items-center gap-3">
+        <div className="w-9 h-9 rounded-xl bg-amber-500/15 flex items-center justify-center flex-shrink-0">
+          <CreditCard size={15} className="text-amber-400"/>
+        </div>
+        <div>
+          <h3 className="font-black text-sm uppercase tracking-tight">Add Payout Account</h3>
+          <p className="text-[10px] text-zinc-500 mt-0.5">Rent payments route here · Paystack recipient & subaccount auto-created</p>
+        </div>
+      </div>
+
+      {/* Bank selector */}
+      <div>
+        <label className={lbl}>Bank or Fintech *</label>
+        <BankSelector value={bank} onChange={setBank}/>
+        {bank.code && <p className="text-[9px] text-amber-400 mt-1.5 font-mono">Bank code auto-filled: {bank.code}</p>}
+      </div>
+
+      {/* Account name — landlord must provide this (used for Paystack recipient) */}
+      <div>
+        <label className={lbl}>Account Name (as registered with bank) *</label>
+        <input
+          className={inp}
+          type="text"
+          placeholder="e.g. Adewale Taiwo"
+          value={accountName}
+          onChange={e => setAccountName(e.target.value)}
+        />
+        <p className="text-[9px] text-zinc-600 mt-1.5">Must match the name on the bank account exactly — used to create your Paystack payout recipient.</p>
+      </div>
+
+      {/* Account number */}
+      <div>
+        <label className={lbl}>Account Number *</label>
+        <input
+          className={inp}
+          type="text"
+          inputMode="numeric"
+          maxLength={10}
+          placeholder="10-digit account number"
+          value={accountNum}
+          onChange={e => setAccountNum(e.target.value.replace(/\D/g, ''))}
+        />
+      </div>
+
+      {/* Set as default toggle */}
+      <div className="flex items-center justify-between p-4 rounded-xl border border-zinc-800 bg-zinc-900/40">
+        <div>
+          <p className="text-xs font-bold">Set as Default Payout Account</p>
+          <p className="text-[9px] text-zinc-500 mt-0.5">Rent transfers route to the default account automatically</p>
+        </div>
+        <button
+          onClick={() => setSetAsDefault(!setAsDefault)}
+          className={`w-12 h-6 rounded-full transition-all relative flex-shrink-0 ${setAsDefault ? 'bg-amber-500' : 'bg-zinc-700'}`}>
+          <span className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-all ${setAsDefault ? 'left-7' : 'left-1'}`}/>
+        </button>
+      </div>
+
+      {error   && <div className="p-3 rounded-xl border border-red-500/30 bg-red-500/10 text-red-400 text-[11px]">{error}</div>}
+      {success && <div className="p-3 rounded-xl border border-green-500/30 bg-green-500/10 text-green-400 text-[11px]">{success}</div>}
+
+      <button
+        onClick={handleAdd}
+        disabled={loading}
+        className={`w-full py-3.5 rounded-xl font-black text-[10px] uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${
+          loading ? 'bg-zinc-800 text-zinc-600 cursor-not-allowed' : 'bg-amber-500 text-black hover:bg-amber-400'}`}>
+        {loading ? <><RefreshCw size={13} className="animate-spin"/> Saving…</> : '+ Add Payout Account'}
+      </button>
+    </div>
+  );
+}
+
+// ── Main Page ─────────────────────────────────────────────────────────────────
+export default function LandlordBankingPage() {
+  const router   = useRouter();
+  const [accounts, setAccounts] = useState<LandlordBankAccount[]>([]);
+  const [loading,  setLoading]  = useState(true);
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const [repairing,setRepairing]= useState<string | null>(null);
+  const [toast,    setToast]    = useState('');
+
+  const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast(''), 3500); };
+
+  const load = useCallback(async () => {
+    const token = getToken();
+    if (!token) { router.push('/login'); return; }
+    try {
+      const res  = await fetch(`${API_BASE}/landlord/bank-accounts`, { headers: { Authorization: `Bearer ${token}` } });
+      const data = await res.json();
+      if (data.success) setAccounts(data.accounts || []);
+    } catch (e) { console.error(e); }
+    finally { setLoading(false); }
+  }, [router]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const handleSetDefault = async (id: string) => {
+    const token = getToken();
+    // Optimistically update UI
+    setAccounts(prev => prev.map(a => ({ ...a, is_default: a.id === id })));
+    // No dedicated set-default endpoint — re-save with set_as_default flag via PATCH workaround:
+    // The backend POST upserts on conflict so we just re-post with same data + set_as_default: true
+    const acct = accounts.find(a => a.id === id);
+    if (!acct) return;
+    try {
+      await fetch(`${API_BASE}/landlord/bank-accounts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          bank_name: acct.bank_name, bank_code: acct.bank_code,
+          account_number: acct.account_number, account_name: acct.account_name,
+          set_as_default: true, currency: acct.currency,
+        }),
+      });
+      showToast('Default payout account updated ✅');
+      load();
+    } catch { showToast('Failed to update default account'); load(); }
+  };
+
+  const handleRepair = async (id: string) => {
+    setRepairing(id);
+    const token = getToken();
+    try {
+      const res  = await fetch(`${API_BASE}/landlord/bank-accounts/${id}/create-recipient`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Repair failed');
+      showToast(data.message || 'Account repaired ✅');
+      load();
+    } catch (e: any) { showToast(`Repair failed: ${e.message}`); }
+    finally { setRepairing(null); }
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!confirm('Remove this payout account?')) return;
+    setDeleting(id);
+    const token = getToken();
+    try {
+      const res  = await fetch(`${API_BASE}/landlord/bank-accounts/${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error);
+      showToast('Bank account removed'); load();
+    } catch (e: any) { showToast(`Error: ${e.message}`); }
+    finally { setDeleting(null); }
+  };
+
+  const payoutReady  = accounts.filter(a => a.payout_ready).length;
+  const splitReady   = accounts.filter(a => a.split_pay_ready).length;
+  const needsRepair  = accounts.filter(a => !a.payout_ready || !a.split_pay_ready).length;
+
+  return (
+    <div className="min-h-screen bg-[#050505] text-white flex flex-col">
+      <Navbar/>
+      <LandlordNav/>
+      {toast && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 px-5 py-3 rounded-xl bg-amber-500 text-black text-[11px] font-black uppercase tracking-widest shadow-2xl">
+          {toast}
+        </div>
+      )}
+
+      <main className="flex-1 max-w-3xl mx-auto px-4 md:px-6 py-8 w-full space-y-8">
+
+        {/* Header */}
+        <div className="border-l-2 border-amber-500 pl-4">
+          <p className="text-[9px] text-amber-500 font-mono font-black tracking-widest uppercase mb-1">Landlord Portal</p>
+          <h1 className="text-2xl font-black uppercase tracking-tighter">Banking & Payouts</h1>
+          <p className="text-zinc-500 text-xs mt-1">Payout accounts · Paystack recipients · Auto-split configuration</p>
+        </div>
+
+        {loading && (
+          <div className="flex items-center justify-center py-20">
+            <RefreshCw className="animate-spin text-amber-500 mr-3" size={20}/>
+            <span className="text-zinc-500 font-mono text-sm">Loading…</span>
+          </div>
+        )}
+
+        {!loading && (
+          <>
+            {/* Portfolio payout status summary */}
+            {accounts.length > 0 && (
+              <div className="p-5 rounded-2xl border border-zinc-800 bg-zinc-900/20">
+                <div className="flex items-center gap-3 mb-3">
+                  <Zap size={16} className={payoutReady === accounts.length ? 'text-green-400' : 'text-amber-400'}/>
+                  <p className="text-[9px] uppercase font-black tracking-widest">
+                    {payoutReady === accounts.length ? 'All Accounts Payout-Ready' : `${needsRepair} Account${needsRepair > 1 ? 's' : ''} Need Repair`}
+                  </p>
+                </div>
+                <div className="grid grid-cols-3 gap-3">
+                  {[
+                    { label: 'Accounts',      value: String(accounts.length),  color: 'text-white'      },
+                    { label: 'Payout Ready',  value: String(payoutReady),       color: 'text-green-400'  },
+                    { label: 'Auto-Split On', value: String(splitReady),        color: 'text-teal-400'   },
+                  ].map(s => (
+                    <div key={s.label} className="p-3 rounded-xl bg-zinc-900 border border-zinc-800">
+                      <p className="text-[8px] text-zinc-600 uppercase font-bold tracking-widest mb-0.5">{s.label}</p>
+                      <p className={`text-sm font-black font-mono ${s.color}`}>{s.value}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Account cards */}
+            {accounts.length > 0 && (
+              <div className="space-y-4">
+                <p className="text-[9px] text-zinc-500 uppercase font-black tracking-widest">Saved Accounts ({accounts.length})</p>
+                {accounts.map(acct => (
+                  <div key={acct.id} style={{ opacity: deleting === acct.id || repairing === acct.id ? 0.4 : 1, transition: 'opacity 0.2s' }}>
+                    {repairing === acct.id && (
+                      <div className="flex items-center gap-2 mb-2 px-1">
+                        <RefreshCw size={11} className="animate-spin text-amber-400"/>
+                        <span className="text-[9px] text-amber-400 font-mono">Repairing — creating Paystack codes…</span>
+                      </div>
+                    )}
+                    <AccountCard
+                      account={acct}
+                      onSetDefault={handleSetDefault}
+                      onRepair={handleRepair}
+                      onDelete={handleDelete}
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Add account form */}
+            <AddAccountForm onAdded={msg => { load(); showToast(msg); }}/>
+
+            {/* How payout routing works */}
+            <div className="p-5 rounded-2xl border border-zinc-800 bg-zinc-900/10 space-y-4">
+              <div className="flex items-center gap-2">
+                <Building2 size={16} className="text-amber-400"/>
+                <p className="text-[9px] text-amber-400 uppercase font-black tracking-widest">How Rent Payouts Work</p>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                {[
+                  { step: '01', title: 'Add Your Account', desc: 'Select your bank from the list — code auto-fills. Enter account name and number. Paystack recipient and subaccount are created instantly.' },
+                  { step: '02', title: 'Auto-Split at Source', desc: 'When a tenant pays rent, Paystack routes 98% directly to your account and 2% to the platform — no manual payout needed.' },
+                  { step: '03', title: 'Fallback Transfer', desc: 'If subaccount split is unavailable, a manual Paystack transfer fires via your recipient code within 24hrs of payment confirmation.' },
+                ].map(s => (
+                  <div key={s.step} className="flex gap-3">
+                    <span className="text-[9px] font-black text-amber-500 font-mono flex-shrink-0 mt-0.5">{s.step}</span>
+                    <div>
+                      <p className="text-xs font-black uppercase tracking-tight mb-1">{s.title}</p>
+                      <p className="text-[10px] text-zinc-500 leading-relaxed">{s.desc}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="p-3 rounded-xl border border-amber-500/20 bg-amber-500/5 flex items-start gap-2">
+                <Info size={11} className="text-amber-400 shrink-0 mt-0.5"/>
+                <p className="text-[9px] text-amber-400 leading-relaxed">
+                  The default account receives all rent transfers. Accounts without Paystack codes show a Repair button — click it to backfill codes without re-entering details.
+                </p>
+              </div>
+            </div>
+
+            {/* Security note */}
+            <div className="p-4 rounded-2xl border border-zinc-800 bg-zinc-900/10 flex items-start gap-3">
+              <ShieldCheck size={16} className="text-amber-500 flex-shrink-0 mt-0.5"/>
+              <div>
+                <p className="text-xs font-black uppercase tracking-tight mb-1">Bank-Grade Security</p>
+                <p className="text-[10px] text-zinc-500 leading-relaxed">
+                  Paystack recipient codes are created server-side — no raw account credentials stored beyond initial setup. All Nigerian banks supported. Rent transfers are SHA-256 hashed, ledger-recorded, and court-admissible under Nested Ark OS audit chain.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-center gap-6">
+              <Link href="/landlord/dashboard" className="text-[11px] text-amber-500 font-bold hover:underline flex items-center gap-1">← Dashboard</Link>
+              <Link href="/landlord/receipts" className="text-[11px] text-zinc-500 hover:text-zinc-300 font-bold flex items-center gap-1 transition-colors">Receipts<ChevronRight size={11}/></Link>
+            </div>
+          </>
+        )}
+      </main>
+      <Footer/>
     </div>
   );
 }
