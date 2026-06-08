@@ -1158,10 +1158,7 @@ const ensureTablesExist = async () => {
         event_type    VARCHAR(100),
         processed_at  TIMESTAMPTZ DEFAULT NOW()
       );
-      -- created_at alias — allows ORDER BY created_at on processed_webhooks
-      ALTER TABLE processed_webhooks ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();
       CREATE INDEX IF NOT EXISTS idx_pw_event_ref ON processed_webhooks(event_ref);
-      CREATE INDEX IF NOT EXISTS idx_pw_created_at ON processed_webhooks(created_at DESC);
 
       -- ── Soft delete columns ───────────────────────────────────────────────
       -- Nothing is ever hard-deleted. archived_at = soft delete timestamp.
@@ -1194,9 +1191,6 @@ const ensureTablesExist = async () => {
         landlord_bank_name      VARCHAR(100),
         landlord_account_number VARCHAR(20),
         landlord_account_name   VARCHAR(255),
-        -- Fee transparency — stored at vault creation, visible to tenant always
-        rent_amount             DECIMAL(15,2),        -- Actual rent landlord receives
-        platform_fee_amount     DECIMAL(15,2),        -- 2% Nested Ark Rent Success Fee
         -- Populated when admin migrates to a formal tenancy
         linked_tenancy_id       UUID REFERENCES tenancies(id) ON DELETE SET NULL,
         linked_at               TIMESTAMPTZ,
@@ -1206,9 +1200,6 @@ const ensureTablesExist = async () => {
       );
       CREATE INDEX IF NOT EXISTS idx_sv_tenant ON standalone_vaults(tenant_user_id);
       CREATE INDEX IF NOT EXISTS idx_sv_status ON standalone_vaults(status);
-      -- Safely add fee columns to existing standalone_vaults rows
-      ALTER TABLE standalone_vaults ADD COLUMN IF NOT EXISTS rent_amount         DECIMAL(15,2);
-      ALTER TABLE standalone_vaults ADD COLUMN IF NOT EXISTS platform_fee_amount DECIMAL(15,2);
 
       -- Standalone contributions — mirrors flex_contributions but FK-free on tenancy
       CREATE TABLE IF NOT EXISTS standalone_contributions (
@@ -1226,51 +1217,6 @@ const ensureTablesExist = async () => {
 
       -- Ensure tenant_user_id exists on flex_pay_vaults (for independent tenant lookups)
       ALTER TABLE flex_pay_vaults ADD COLUMN IF NOT EXISTS tenant_user_id UUID REFERENCES users(id);
-
-      -- flex_contributions: released tracking prevents double-payout on CRON release
-      ALTER TABLE flex_contributions ADD COLUMN IF NOT EXISTS released    BOOLEAN     DEFAULT FALSE;
-      ALTER TABLE flex_contributions ADD COLUMN IF NOT EXISTS released_at TIMESTAMPTZ DEFAULT NULL;
-
-      -- processed_webhooks: created_at alias for ORDER BY compatibility
-      ALTER TABLE processed_webhooks ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();
-      CREATE INDEX IF NOT EXISTS idx_pw_created_at ON processed_webhooks(created_at DESC);
-
-      -- ── tenant_bank_profiles: bank account storage + AutoPay standing order ──
-      -- Level 1 (live): verified bank account, debit day, contribution amount.
-      -- Level 2 (future): direct debit mandate; paystack_auth_code from first payment.
-      CREATE TABLE IF NOT EXISTS tenant_bank_profiles (
-        id                     UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        tenant_user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        bank_name              VARCHAR(100) NOT NULL,
-        bank_code              VARCHAR(20)  NOT NULL,
-        account_number         VARCHAR(20)  NOT NULL,
-        account_name           VARCHAR(255) NOT NULL,
-        currency               VARCHAR(10)  NOT NULL DEFAULT 'NGN',
-        preferred_debit_day    INTEGER      CHECK (preferred_debit_day BETWEEN 1 AND 28),
-        preferred_amount       DECIMAL(15,2),
-        is_verified            BOOLEAN      NOT NULL DEFAULT false,
-        is_default             BOOLEAN      NOT NULL DEFAULT false,
-        direct_debit_enabled   BOOLEAN      NOT NULL DEFAULT false,
-        mandate_reference      VARCHAR(100),
-        mandate_status         VARCHAR(30)  DEFAULT 'PENDING',
-        paystack_auth_code     VARCHAR(100),
-        created_at             TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-        updated_at             TIMESTAMPTZ  NOT NULL DEFAULT NOW()
-      );
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_tbp_tenant_acct
-        ON tenant_bank_profiles(tenant_user_id, account_number);
-      CREATE INDEX IF NOT EXISTS idx_tbp_tenant ON tenant_bank_profiles(tenant_user_id);
-
-      -- ── feature_waitlist: captures interest in coming-soon features ──────
-      CREATE TABLE IF NOT EXISTS feature_waitlist (
-        id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        user_id      UUID REFERENCES users(id) ON DELETE SET NULL,
-        feature_name VARCHAR(100) NOT NULL,
-        email        VARCHAR(255),
-        source       VARCHAR(100) DEFAULT 'register_page',
-        created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      );
-      CREATE INDEX IF NOT EXISTS idx_fw_feature ON feature_waitlist(feature_name);
 
     `);
 
@@ -1390,8 +1336,120 @@ app.post("/api/auth/register", async (req: Request, res: Response): Promise<any>
       // Log but do not block registration response
       console.error("⚠️ Verification email failed (non-fatal):", mailErr.message);
     }
-    
-    return res.status(201).json({ 
+
+    // ── Welcome email — role-aware, non-blocking ──────────────────────────────
+    try {
+      const firstName   = full_name?.split(' ')[0] || 'there';
+      const isTenant    = (role || '').toUpperCase() === 'TENANT';
+      const isLandlord  = ['DEVELOPER','LANDLORD'].includes((role || '').toUpperCase());
+      const frontendUrl = process.env.NEXT_PUBLIC_FRONTEND_URL || process.env.FRONTEND_URL || 'https://nested-ark-api.vercel.app';
+
+      const nodemailer2 = require('nodemailer');
+      const welcomeTransporter = nodemailer2.createTransport({
+        host: process.env.EMAIL_HOST || 'smtp.gmail.com',
+        port: parseInt(process.env.EMAIL_PORT || '587'),
+        secure: process.env.EMAIL_PORT === '465',
+        auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
+      });
+
+      const emailBase = `background:#050505;color:white;padding:48px 32px;font-family:'Segoe UI',Arial,sans-serif;max-width:520px;margin:0 auto;border:1px solid #18181b;border-radius:16px;`;
+      const btnStyle  = `display:inline-block;background:#14b8a6;color:#000;padding:14px 36px;text-decoration:none;font-weight:900;border-radius:8px;text-transform:uppercase;font-size:11px;letter-spacing:2px;margin-top:8px;`;
+      const dimText   = `color:#52525b;font-size:10px;text-transform:uppercase;letter-spacing:1.5px;`;
+      const bodyText  = `color:#a1a1aa;font-size:13px;line-height:1.8;margin:0 0 12px;`;
+      const h1Style   = `color:white;font-size:22px;font-weight:900;letter-spacing:-0.5px;text-transform:uppercase;margin:0 0 6px;`;
+      const tagStyle  = `color:#14b8a6;font-size:9px;font-weight:900;letter-spacing:4px;text-transform:uppercase;margin:0 0 8px;`;
+      const divider   = `border-top:1px solid #27272a;padding-top:24px;margin-top:24px;`;
+      const bulletRow = (icon: string, text: string) =>
+        `<tr><td style="padding:5px 0;font-size:13px;color:#a1a1aa;"><span style="color:#14b8a6;margin-right:10px;">${icon}</span>${text}</td></tr>`;
+
+      const tenantHtml = `
+        <div style="${emailBase}">
+          <p style="${tagStyle}">Nested Ark OS</p>
+          <h1 style="${h1Style}">Welcome to Nested Ark</h1>
+          <p style="${h1Style};color:#14b8a6;font-size:14px;">Your Rent Journey Starts Here</p>
+          <p style="${bodyText};margin-top:24px;">Hello <strong style="color:white;">${firstName}</strong>,</p>
+          <p style="${bodyText}">Welcome to Nested Ark. We're excited to have you join a growing community of people taking control of their rent journey.</p>
+          <p style="${bodyText}">With Nested Ark, you can:</p>
+          <table style="border-collapse:collapse;width:100%;margin:4px 0 20px;">
+            ${bulletRow('•','Create a Rent Vault for your next rent payment')}
+            ${bulletRow('•','Contribute gradually instead of scrambling at renewal')}
+            ${bulletRow('•','Track every contribution transparently')}
+            ${bulletRow('•','Receive reminders and progress updates')}
+            ${bulletRow('•','Prepare confidently for rent obligations')}
+          </table>
+          <p style="${bodyText};font-weight:700;color:white;">Your next steps:</p>
+          <table style="border-collapse:collapse;width:100%;margin:4px 0 24px;">
+            ${bulletRow('01','Log in to your account')}
+            ${bulletRow('02','Create your Rent Vault')}
+            ${bulletRow('03','Set your rent target')}
+            ${bulletRow('04','Start contributing toward your goal')}
+          </table>
+          <div style="text-align:center;margin:32px 0;">
+            <a href="${frontendUrl}/tenant/vault" style="${btnStyle}">Create My Rent Vault</a>
+          </div>
+          <p style="background:#0d1f1f;border:1px solid #134e4a;border-radius:8px;padding:16px;font-size:12px;color:#5eead4;font-style:italic;text-align:center;">
+            Small consistent contributions today can eliminate rent pressure tomorrow.
+          </p>
+          <div style="${divider}">
+            <p style="${dimText};text-align:center;">Thank you for choosing Nested Ark</p>
+            <p style="${dimText};text-align:center;">The Nested Ark Team · Infrastructure OS &amp; Property Solutions</p>
+            <p style="${dimText};text-align:center;margin-top:8px;">Impressions &amp; Impacts Ltd · nestedark@gmail.com</p>
+          </div>
+        </div>`;
+
+      const landlordHtml = `
+        <div style="${emailBase}">
+          <p style="${tagStyle}">Nested Ark OS</p>
+          <h1 style="${h1Style}">Welcome to Nested Ark</h1>
+          <p style="${h1Style};color:#14b8a6;font-size:14px;">Landlord Network</p>
+          <p style="${bodyText};margin-top:24px;">Hello <strong style="color:white;">${firstName}</strong>,</p>
+          <p style="${bodyText}">Welcome to Nested Ark. Thank you for joining our growing network of landlords embracing smarter rent management.</p>
+          <p style="${bodyText}">With Nested Ark, you can:</p>
+          <table style="border-collapse:collapse;width:100%;margin:4px 0 20px;">
+            ${bulletRow('•','List and manage rental units')}
+            ${bulletRow('•','Track tenant activity in real time')}
+            ${bulletRow('•','Receive secure, automated rent payments')}
+            ${bulletRow('•','Access transparent payment records')}
+            ${bulletRow('•','Benefit from automated payout workflows')}
+          </table>
+          <p style="${bodyText};font-weight:700;color:white;">Your next steps:</p>
+          <table style="border-collapse:collapse;width:100%;margin:4px 0 24px;">
+            ${bulletRow('01','Complete your profile')}
+            ${bulletRow('02','Add your bank account')}
+            ${bulletRow('03','List your property')}
+            ${bulletRow('04','Invite your tenants')}
+          </table>
+          <div style="text-align:center;margin:32px 0;">
+            <a href="${frontendUrl}/projects/my" style="${btnStyle}">Go to My Properties</a>
+          </div>
+          <p style="background:#0d1f1f;border:1px solid #134e4a;border-radius:8px;padding:16px;font-size:12px;color:#5eead4;font-style:italic;text-align:center;">
+            Our goal: make rent collection more predictable, transparent, and stress-free.
+          </p>
+          <div style="${divider}">
+            <p style="${dimText};text-align:center;">We look forward to supporting your property management journey.</p>
+            <p style="${dimText};text-align:center;">The Nested Ark Team · Infrastructure OS &amp; Property Solutions</p>
+            <p style="${dimText};text-align:center;margin-top:8px;">Impressions &amp; Impacts Ltd · nestedark@gmail.com</p>
+          </div>
+        </div>`;
+
+      const subject = isTenant
+        ? 'Welcome to Nested Ark — Your Rent Journey Starts Here'
+        : isLandlord
+          ? 'Welcome to Nested Ark Landlord Network'
+          : 'Welcome to Nested Ark OS';
+
+      const htmlBody = isTenant ? tenantHtml : isLandlord ? landlordHtml : tenantHtml;
+
+      await welcomeTransporter.sendMail({
+        from: `"Nested Ark OS" <${process.env.EMAIL_USER}>`,
+        to:   email,
+        subject,
+        html: htmlBody,
+      });
+      console.log(`🎉 Welcome email sent to ${email} (role: ${role || 'default'})`);
+    } catch (welcomeErr: any) {
+      console.error('⚠️ Welcome email failed (non-fatal):', welcomeErr.message);
+    }
       success: true, 
       user: result.rows[0], 
       tokens: { access_token: token, expires_in: JWT_EXPIRY },
@@ -4090,6 +4148,75 @@ app.post("/api/payments/webhook",
 
               console.log(`[WEBHOOK] Vault credited → tenancy=${meta.tenancy_id} +₦${amountNgn} balance=₦${newBalance}`);
 
+              // ── Vault milestone notifications (25 / 50 / 75 / 100%) ─────────
+              setImmediate(async () => {
+                try {
+                  const fundedPct = Math.min(Math.round((newBalance / target) * 100), 100);
+                  const prevPct   = Math.min(Math.round(((newBalance - amountNgn) / target) * 100), 100);
+                  const milestones = [25, 50, 75, 100];
+                  const hitMilestone = milestones.find(m => prevPct < m && fundedPct >= m);
+                  if (!hitMilestone) return;
+
+                  // Fetch tenant email from tenancy
+                  const tRes = await pool.query(
+                    `SELECT t.tenant_name, t.tenant_email, ru.unit_name, p.title AS project_title
+                     FROM tenancies t
+                     LEFT JOIN rental_units ru ON ru.id = t.unit_id
+                     LEFT JOIN projects p ON p.id = ru.project_id
+                     WHERE t.id = $1 LIMIT 1`,
+                    [meta.tenancy_id]
+                  );
+                  if (!tRes.rows.length || !tRes.rows[0].tenant_email) return;
+                  const { tenant_name, tenant_email, unit_name, project_title } = tRes.rows[0];
+                  const firstName = (tenant_name || 'Tenant').split(' ')[0];
+                  const frontendUrl = process.env.NEXT_PUBLIC_FRONTEND_URL || process.env.FRONTEND_URL || 'https://nested-ark-api.vercel.app';
+                  const milestoneEmoji = hitMilestone === 100 ? '✅' : hitMilestone === 75 ? '🔥' : hitMilestone === 50 ? '🚀' : '🎉';
+                  const milestoneMsg = hitMilestone === 100
+                    ? 'Your vault is fully funded! Disbursement to your landlord will proceed automatically.'
+                    : `You're ${hitMilestone}% of the way to your rent goal. Keep going!`;
+
+                  const mailer = getMailer();
+                  if (!mailer) return;
+                  await mailer.sendMail({
+                    from: `"Nested Ark OS" <${process.env.EMAIL_USER}>`,
+                    to:   tenant_email,
+                    subject: `${milestoneEmoji} Your Rent Vault is ${hitMilestone}% Funded — Nested Ark OS`,
+                    html: `
+                      <div style="background:#050505;color:white;padding:40px 28px;font-family:'Segoe UI',Arial,sans-serif;max-width:480px;margin:0 auto;border:1px solid #18181b;border-radius:16px;">
+                        <p style="color:#14b8a6;font-size:9px;font-weight:900;letter-spacing:4px;text-transform:uppercase;margin:0 0 12px;">Nested Ark OS · Vault Update</p>
+                        <h1 style="color:white;font-size:24px;font-weight:900;margin:0 0 4px;text-transform:uppercase;">
+                          ${milestoneEmoji} ${hitMilestone}% Funded
+                        </h1>
+                        <p style="color:#52525b;font-size:11px;margin:0 0 28px;">
+                          ${unit_name || ''}${project_title ? ` · ${project_title}` : ''}
+                        </p>
+                        <p style="color:#a1a1aa;font-size:14px;line-height:1.7;margin:0 0 8px;">
+                          Hello <strong style="color:white;">${firstName}</strong>,
+                        </p>
+                        <p style="color:#a1a1aa;font-size:14px;line-height:1.7;margin:0 0 28px;">${milestoneMsg}</p>
+                        <div style="background:#0d1f1f;border:1px solid #134e4a;border-radius:12px;padding:20px;text-align:center;margin-bottom:28px;">
+                          <p style="color:#52525b;font-size:10px;text-transform:uppercase;letter-spacing:1.5px;margin:0 0 6px;">Vault Progress</p>
+                          <p style="color:#14b8a6;font-size:40px;font-weight:900;margin:0;font-family:monospace;">${fundedPct}%</p>
+                          <p style="color:#3f3f46;font-size:11px;margin:6px 0 0;font-family:monospace;">
+                            ₦${Math.round(newBalance).toLocaleString()} of ₦${Math.round(target).toLocaleString()}
+                          </p>
+                        </div>
+                        <div style="text-align:center;margin-bottom:24px;">
+                          <a href="${frontendUrl}/tenant/vault" style="display:inline-block;background:#14b8a6;color:#000;padding:12px 32px;text-decoration:none;font-weight:900;border-radius:8px;text-transform:uppercase;font-size:11px;letter-spacing:2px;">
+                            View My Vault
+                          </a>
+                        </div>
+                        <p style="color:#3f3f46;font-size:9px;text-align:center;text-transform:uppercase;letter-spacing:1.5px;">
+                          Nested Ark OS · SHA-256 Secured · Impressions &amp; Impacts Ltd
+                        </p>
+                      </div>`,
+                  });
+                  console.log(`[MILESTONE] ${hitMilestone}% notification sent → ${tenant_email}`);
+                } catch (milestoneErr: any) {
+                  console.error('[MILESTONE] Email failed (non-fatal):', milestoneErr.message);
+                }
+              });
+
               // ── Step 3: Auto-payout to landlord when vault fully funds ─────
               if (newBalance >= target && PAYSTACK_SECRET) {
                 setImmediate(async () => {
@@ -4382,6 +4509,65 @@ app.post("/api/payments/webhook",
         if (newStatus === 'FUNDED_READY') {
           console.log(`[STANDALONE-VAULT] 🎯 Vault ${svId} FULLY FUNDED — awaiting landlord onboarding for escrow release`);
         }
+
+        // ── Standalone vault milestone notifications (25 / 50 / 75 / 100%) ──
+        setImmediate(async () => {
+          try {
+            const fundedPct = Math.min(Math.round((newBalance / target) * 100), 100);
+            const prevPct   = Math.min(Math.round(((newBalance - amountNgn) / target) * 100), 100);
+            const milestones = [25, 50, 75, 100];
+            const hitMilestone = milestones.find(m => prevPct < m && fundedPct >= m);
+            if (!hitMilestone) return;
+
+            const uRes = await pool.query(
+              `SELECT full_name, email FROM users WHERE id = $1 LIMIT 1`,
+              [sv.tenant_user_id]
+            );
+            if (!uRes.rows.length || !uRes.rows[0].email) return;
+            const { full_name, email: tenantEmail } = uRes.rows[0];
+            const firstName  = (full_name || 'Tenant').split(' ')[0];
+            const frontendUrl = process.env.NEXT_PUBLIC_FRONTEND_URL || process.env.FRONTEND_URL || 'https://nested-ark-api.vercel.app';
+            const milestoneEmoji = hitMilestone === 100 ? '✅' : hitMilestone === 75 ? '🔥' : hitMilestone === 50 ? '🚀' : '🎉';
+            const milestoneMsg = hitMilestone === 100
+              ? 'Your independent savings vault is fully funded! Disbursement will proceed when your landlord is onboarded.'
+              : `You're ${hitMilestone}% of the way to your savings goal. Keep going!`;
+
+            const mailer = getMailer();
+            if (!mailer) return;
+            await mailer.sendMail({
+              from: `"Nested Ark OS" <${process.env.EMAIL_USER}>`,
+              to:   tenantEmail,
+              subject: `${milestoneEmoji} Your Savings Vault is ${hitMilestone}% Funded — Nested Ark OS`,
+              html: `
+                <div style="background:#050505;color:white;padding:40px 28px;font-family:'Segoe UI',Arial,sans-serif;max-width:480px;margin:0 auto;border:1px solid #18181b;border-radius:16px;">
+                  <p style="color:#14b8a6;font-size:9px;font-weight:900;letter-spacing:4px;text-transform:uppercase;margin:0 0 12px;">Nested Ark OS · Vault Update</p>
+                  <h1 style="color:white;font-size:24px;font-weight:900;margin:0 0 28px;text-transform:uppercase;">
+                    ${milestoneEmoji} ${hitMilestone}% Funded
+                  </h1>
+                  <p style="color:#a1a1aa;font-size:14px;line-height:1.7;margin:0 0 8px;">Hello <strong style="color:white;">${firstName}</strong>,</p>
+                  <p style="color:#a1a1aa;font-size:14px;line-height:1.7;margin:0 0 28px;">${milestoneMsg}</p>
+                  <div style="background:#0d1f1f;border:1px solid #134e4a;border-radius:12px;padding:20px;text-align:center;margin-bottom:28px;">
+                    <p style="color:#52525b;font-size:10px;text-transform:uppercase;letter-spacing:1.5px;margin:0 0 6px;">Vault Progress</p>
+                    <p style="color:#14b8a6;font-size:40px;font-weight:900;margin:0;font-family:monospace;">${fundedPct}%</p>
+                    <p style="color:#3f3f46;font-size:11px;margin:6px 0 0;font-family:monospace;">
+                      ₦${Math.round(newBalance).toLocaleString()} of ₦${Math.round(target).toLocaleString()}
+                    </p>
+                  </div>
+                  <div style="text-align:center;margin-bottom:24px;">
+                    <a href="${frontendUrl}/tenant/vault" style="display:inline-block;background:#14b8a6;color:#000;padding:12px 32px;text-decoration:none;font-weight:900;border-radius:8px;text-transform:uppercase;font-size:11px;letter-spacing:2px;">
+                      View My Vault
+                    </a>
+                  </div>
+                  <p style="color:#3f3f46;font-size:9px;text-align:center;text-transform:uppercase;letter-spacing:1.5px;">
+                    Nested Ark OS · SHA-256 Secured · Impressions &amp; Impacts Ltd
+                  </p>
+                </div>`,
+            });
+            console.log(`[STANDALONE-MILESTONE] ${hitMilestone}% notification sent → ${tenantEmail}`);
+          } catch (e: any) {
+            console.error('[STANDALONE-MILESTONE] Email failed (non-fatal):', e.message);
+          }
+        });
       } catch (svErr: any) {
         console.error('[WEBHOOK] STANDALONE_INSTALLMENT error:', svErr.message);
       }
@@ -4397,55 +4583,34 @@ app.post("/api/payments/webhook",
       const tHash = crypto.createHash('sha256')
         .update(`transfer-${td.reference}-${tStatus}-${Date.now()}`).digest('hex');
 
-      // ── Update the original LANDLORD_PAYOUT ledger entry ──────────────────
-      // Flips transfer_status from INITIATED → SUCCESS/FAILED/REVERSED
-      // and populates event_type for queryable audit trail
+      // Update system_ledger entry for this transfer
       await pool.query(
         `UPDATE system_ledger
-         SET payload     = payload || $1::jsonb,
-             event_type  = $2,
-             description = COALESCE(description, '') || $3
+         SET payload = payload || $1::jsonb
          WHERE transaction_type IN ('LANDLORD_PAYOUT','CASHOUT_TRANSFER','AUTO_PAYOUT')
-           AND payload->>'reference' = $4`,
-        [
-          JSON.stringify({
-            transfer_status: tStatus,
-            settled_at:      new Date().toISOString(),
-            transfer_code:   td.transfer_code,
-          }),
-          tStatus === 'SUCCESS' ? 'PAYOUT_SUCCESS' : tStatus === 'FAILED' ? 'PAYOUT_FAILED' : 'PAYOUT_REVERSED',
-          tStatus === 'SUCCESS' ? ' Transfer confirmed by Paystack.' : ` Transfer ${tStatus.toLowerCase()} by Paystack.`,
-          td.reference,
-        ]
+           AND payload->>'reference' = $2`,
+        [JSON.stringify({ transfer_status: tStatus, settled_at: new Date().toISOString() }), td.reference]
       ).catch(() => {});
 
-      // ── Insert immutable TRANSFER_OUTCOME record for full audit chain ──────
+      // Log the transfer outcome
       await pool.query(
-        `INSERT INTO system_ledger
-           (transaction_type, event_type, entity_type, description, payload, immutable_hash)
-         VALUES ('TRANSFER_OUTCOME', $1, 'FLEX_PAY_VAULT', $2, $3, $4)`,
-        [
-          tStatus === 'SUCCESS' ? 'PAYOUT_SUCCESS' : tStatus === 'FAILED' ? 'PAYOUT_FAILED' : 'PAYOUT_REVERSED',
-          `Paystack transfer ${tStatus.toLowerCase()}: ₦${td.amount/100} to ${td.recipient?.details?.account_name || 'landlord'} (${td.recipient?.details?.bank_name || ''})`,
-          JSON.stringify({
-            event:          event.event,
-            transfer_code:  td.transfer_code,
-            reference:      td.reference,
-            amount_kobo:    td.amount,
-            amount_ngn:     td.amount / 100,
-            recipient_code: td.recipient?.recipient_code,
-            account_name:   td.recipient?.details?.account_name,
-            bank_name:      td.recipient?.details?.bank_name,
-            account_number: td.recipient?.details?.account_number,
-            status:         tStatus,
-            reason:         td.reason,
-            settled_at:     td.transferred_at || new Date().toISOString(),
-          }),
-          tHash,
-        ]
+        `INSERT INTO system_ledger (transaction_type, payload, immutable_hash)
+         VALUES ('TRANSFER_OUTCOME', $1, $2)`,
+        [JSON.stringify({
+          event:          event.event,
+          transfer_code:  td.transfer_code,
+          reference:      td.reference,
+          amount_kobo:    td.amount,
+          amount_ngn:     td.amount / 100,
+          recipient_code: td.recipient?.recipient_code,
+          account_name:   td.recipient?.details?.account_name,
+          bank_name:      td.recipient?.details?.bank_name,
+          status:         tStatus,
+          reason:         td.reason,
+        }), tHash]
       ).catch(() => {});
 
-      console.log(`[WEBHOOK] Transfer ${tStatus}: ref=${td.reference} amount=₦${td.amount/100} to ${td.recipient?.details?.account_name||'landlord'}`);
+      console.log(`[WEBHOOK] Transfer ${tStatus}: ref=${td.reference} amount=₦${td.amount/100}`);
       return res.sendStatus(200);
     }
 
@@ -6536,10 +6701,6 @@ app.get('/api/rental/tenants', authenticate, async (req: Request, res: Response)
          t.tenant_user_id,
          ru.unit_name,
          ru.status AS unit_status,
-         ru.cover_image,
-         ru.photo_urls_arr,
-         ru.bedrooms,
-         ru.unit_type,
          p.title AS project_title, p.project_number,
          fpv.next_due_date AS next_payment_date,
          fpv.vault_balance
@@ -9354,68 +9515,32 @@ app.post('/api/tenant/standalone-vault/init', authenticate, async (req: Request,
       });
     }
     const {
-      rent_amount,            // Primary: actual rent landlord receives (backend auto-adds 2% fee)
+      target_amount, installment_amount,
       frequency = 'MONTHLY',
       landlord_name, landlord_email,
       landlord_bank_name, landlord_account_number, landlord_account_name,
-      // Legacy compat: accept target_amount + installment_amount directly
-      target_amount: raw_target, installment_amount: raw_installment,
     } = req.body;
 
-    // ── Fee calculation: tenant pays rent + 2% Rent Success Fee ──────────────
-    const VAULT_FEE_PCT = 0.02;
-    const PERIODS_MAP: Record<string, number> = {
-      DAILY: 365, WEEKLY: 52, BIWEEKLY: 26, MONTHLY: 12, QUARTERLY: 4,
-    };
+    if (!target_amount || isNaN(Number(target_amount)) || Number(target_amount) < 100) {
+      return res.status(400).json({ error: 'target_amount is required and must be at least ₦100' });
+    }
+    if (!installment_amount || isNaN(Number(installment_amount)) || Number(installment_amount) < 50) {
+      return res.status(400).json({ error: 'installment_amount is required and must be at least ₦50' });
+    }
     const VALID_FREQS = ['DAILY','WEEKLY','BIWEEKLY','MONTHLY','QUARTERLY'];
     const freq = VALID_FREQS.includes((frequency || '').toUpperCase())
       ? (frequency as string).toUpperCase()
       : 'MONTHLY';
 
-    let computedRentAmount: number;
-    let platformFeeAmount:  number;
-    let finalTarget:        number;
-
-    if (rent_amount && !isNaN(Number(rent_amount)) && Number(rent_amount) >= 100) {
-      // Primary path: tenant provides rent_amount, we add the fee
-      computedRentAmount = Math.round(Number(rent_amount) * 100) / 100;
-      platformFeeAmount  = Math.round(computedRentAmount * VAULT_FEE_PCT * 100) / 100;
-      finalTarget        = Math.round((computedRentAmount + platformFeeAmount) * 100) / 100;
-    } else if (raw_target && !isNaN(Number(raw_target)) && Number(raw_target) >= 100) {
-      // Legacy path: accept direct target_amount for backward compat
-      finalTarget        = Math.round(Number(raw_target) * 100) / 100;
-      platformFeeAmount  = Math.round(finalTarget * VAULT_FEE_PCT * 100) / 100;
-      computedRentAmount = Math.round((finalTarget - platformFeeAmount) * 100) / 100;
-    } else {
-      return res.status(400).json({
-        error: 'rent_amount is required and must be at least ₦100. This is your actual rent — the 2% Rent Success Fee is calculated automatically.',
-      });
-    }
-
-    // Auto-calculate installment from frequency unless provided
-    const periods = PERIODS_MAP[freq] || 12;
-    const autoInstallment = Math.ceil((finalTarget / periods) * 100) / 100;
-    const finalInstallment = (raw_installment && !isNaN(Number(raw_installment)) && Number(raw_installment) >= 50)
-      ? Math.round(Number(raw_installment) * 100) / 100
-      : autoInstallment;
-
-    if (finalInstallment < 50) {
-      return res.status(400).json({
-        error: `Calculated installment (₦${finalInstallment}) is below Paystack's ₦50 minimum. Please increase rent_amount or choose a less frequent schedule.`,
-      });
-    }
-
     const r = await pool.query(
       `INSERT INTO standalone_vaults
          (tenant_user_id, target_amount, installment_amount, frequency,
-          rent_amount, platform_fee_amount,
           landlord_name, landlord_email, landlord_bank_name,
           landlord_account_number, landlord_account_name, status, currency)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'ACTIVE','NGN')
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'ACTIVE','NGN')
        RETURNING *`,
       [
-        userId, finalTarget, finalInstallment, freq,
-        computedRentAmount, platformFeeAmount,
+        userId, Number(target_amount), Number(installment_amount), freq,
         landlord_name           || null,
         landlord_email          || null,
         landlord_bank_name      || null,
@@ -9431,26 +9556,21 @@ app.post('/api/tenant/standalone-vault/init', authenticate, async (req: Request,
     pool.query(
       `INSERT INTO system_ledger (transaction_type, payload, immutable_hash)
        VALUES ('STANDALONE_VAULT_INIT',$1,$2)`,
-      [JSON.stringify({ vault_id: sv.id, tenant_user_id: userId, target_amount: finalTarget, rent_amount: computedRentAmount, platform_fee: platformFeeAmount, frequency: freq }), h]
+      [JSON.stringify({ vault_id: sv.id, tenant_user_id: userId, target_amount, frequency: freq }), h]
     ).catch(() => {});
 
-    console.log(`[STANDALONE-VAULT] Initialized vault=${sv.id} tenant=${userId} rent=₦${computedRentAmount} fee=₦${platformFeeAmount} target=₦${finalTarget} freq=${freq}`);
+    console.log(`[STANDALONE-VAULT] Initialized vault=${sv.id} tenant=${userId} target=₦${target_amount} freq=${freq}`);
 
     return res.status(201).json({
-      success:              true,
-      vault_id:             sv.id,
-      rent_amount:          computedRentAmount,
-      platform_fee_amount:  platformFeeAmount,
-      platform_fee_pct:     2,
-      target_amount:        finalTarget,
-      installment_amount:   finalInstallment,
-      frequency:            sv.frequency,
-      periods:              periods,
-      status:               sv.status,
-      currency:             sv.currency,
-      landlord_supplied:    !!(landlord_name || landlord_email || landlord_bank_name),
-      fee_explanation:      'Nested Ark Rent Success Fee (2%) covers: automated rent planning, smart vault, AutoPay, contribution tracking, payment processing, secure rent release, and payment history.',
-      message:              `Vault initialized. Save ₦${finalInstallment.toLocaleString()} ${freq.toLowerCase()} to reach your ₦${computedRentAmount.toLocaleString()} rent target.`,
+      success:            true,
+      vault_id:           sv.id,
+      target_amount:      parseFloat(sv.target_amount),
+      installment_amount: parseFloat(sv.installment_amount),
+      frequency:          sv.frequency,
+      status:             sv.status,
+      currency:           sv.currency,
+      landlord_supplied:  !!(landlord_name || landlord_email || landlord_bank_name),
+      message:            'Standalone vault initialized. You can now start saving.',
     });
   } catch (e: any) {
     return res.status(500).json({ error: e.message });
@@ -10721,37 +10841,28 @@ const startPendingPayoutCron = (pool: any) => {
             .digest('hex');
 
           await pool.query(
-            `INSERT INTO system_ledger
-               (transaction_type, event_type, entity_type, entity_id, actor_id, description, payload, immutable_hash)
-             VALUES ('LANDLORD_PAYOUT', $1, $2, $3, $4, $5, $6, $7)`,
-            [
-              tData.status ? 'PAYOUT_INITIATED' : 'PAYOUT_FAILED',
-              'FLEX_PAY_VAULT',
-              v.vault_id,                // entity_id = the vault being released
-              v.sponsor_id,              // actor_id  = the landlord receiving funds
-              `Escrow vault released: ₦${rawTotal} gross → ₦${netAmount} net to ${acct.account_name} (${acct.bank_name}). Platform fee: ₦${platformFee}.`,
-              JSON.stringify({
-                reference:              payRef,
-                amount_ngn:             netAmount,
-                gross_total:            rawTotal,
-                platform_fee:           platformFee,
-                user_id:                v.sponsor_id,
-                bank_account_id:        acct.id,
-                bank_name:              acct.bank_name,
-                account_name:           acct.account_name,
-                recipient_code:         acct.paystack_recipient_code,
-                transfer_code:          tData.data?.transfer_code,
-                transfer_status:        tData.status ? 'INITIATED' : 'FAILED',
-                vault_id:               v.vault_id,
-                tenancy_id:             v.tenancy_id,
-                period_label:           periodLabel,
-                source:                 'PAYOUT_CRON',
-                payout_type:            'ESCROW_LUMP_SUM',
-                paystack_error:         tData.status ? null : tData.message,
-                paystack_full_response: fullPaystackResponse,
-              }),
-              ph,
-            ]
+            `INSERT INTO system_ledger (transaction_type, payload, immutable_hash)
+             VALUES ('LANDLORD_PAYOUT', $1, $2)`,
+            [JSON.stringify({
+              reference:              payRef,
+              amount_ngn:             netAmount,
+              gross_total:            rawTotal,
+              platform_fee:           platformFee,
+              user_id:                v.sponsor_id,
+              bank_account_id:        acct.id,
+              bank_name:              acct.bank_name,
+              account_name:           acct.account_name,
+              recipient_code:         acct.paystack_recipient_code,
+              transfer_code:          tData.data?.transfer_code,
+              transfer_status:        tData.status ? 'INITIATED' : 'FAILED',
+              vault_id:               v.vault_id,
+              tenancy_id:             v.tenancy_id,
+              period_label:           periodLabel,
+              source:                 'PAYOUT_CRON',
+              payout_type:            'ESCROW_LUMP_SUM',
+              paystack_error:         tData.status ? null : tData.message,
+              paystack_full_response: fullPaystackResponse, // Full response for debugging
+            }), ph]
           );
 
           if (tData.status) {
@@ -11392,278 +11503,6 @@ app.patch('/api/tenant/profile', authenticate, async (req: Request, res: Respons
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
 
-
-// ════════════════════════════════════════════════════════════════════════════
-// MODULE: TENANT BANKING — Bank Account Storage · AutoPay Standing Order
-// Level 1 (live): verified bank account, debit preference, paystack_auth_code
-// Level 2 (future): direct debit mandate via Paystack Direct Debit API
-// ════════════════════════════════════════════════════════════════════════════
-
-app.get('/api/tenant/bank-accounts', authenticate, async (req: Request, res: Response): Promise<any> => {
-  const userId = (req as any).userId;
-  try {
-    const r = await pool.query(
-      `SELECT id, bank_name, bank_code, account_number, account_name, currency,
-              preferred_debit_day, preferred_amount, is_verified, is_default,
-              direct_debit_enabled, mandate_reference, mandate_status, created_at
-       FROM tenant_bank_profiles
-       WHERE tenant_user_id = $1
-       ORDER BY is_default DESC, created_at DESC`,
-      [userId]
-    );
-    return res.json({
-      success:  true,
-      accounts: r.rows,
-      count:    r.rows.length,
-      autopay_summary: {
-        has_verified_account: r.rows.some((a: any) => a.is_verified),
-        direct_debit_active:  r.rows.some((a: any) => a.direct_debit_enabled && a.mandate_status === 'ACTIVE'),
-        next_debit_day:       r.rows.find((a: any) => a.is_default)?.preferred_debit_day ?? null,
-      },
-    });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
-});
-
-app.post('/api/tenant/bank-accounts', authenticate, async (req: Request, res: Response): Promise<any> => {
-  const userId = (req as any).userId;
-  try {
-    const { bank_name, bank_code, account_number, preferred_debit_day, preferred_amount } = req.body;
-    if (!bank_name || !bank_code || !account_number)
-      return res.status(400).json({ error: 'bank_name, bank_code, and account_number are required' });
-    if (!/^\d{10}$/.test(account_number))
-      return res.status(400).json({ error: 'Account number must be exactly 10 digits' });
-    if (preferred_debit_day && (preferred_debit_day < 1 || preferred_debit_day > 28))
-      return res.status(400).json({ error: 'preferred_debit_day must be between 1 and 28' });
-
-    // NUBAN verification via Paystack
-    let resolvedName = ''; let isVerified = false;
-    if (PAYSTACK_SECRET) {
-      try {
-        const psRes  = await fetch(`${PAYSTACK_BASE}/bank/resolve?account_number=${account_number}&bank_code=${bank_code}`,
-          { headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` } });
-        const psData = await psRes.json() as any;
-        if (psData.status && psData.data?.account_name) { resolvedName = psData.data.account_name; isVerified = true; }
-      } catch { /* non-fatal */ }
-    }
-
-    // Prevent duplicate
-    const existing = await pool.query(
-      `SELECT id FROM tenant_bank_profiles WHERE tenant_user_id=$1 AND account_number=$2 LIMIT 1`, [userId, account_number]
-    );
-    if (existing.rows.length)
-      return res.status(409).json({ error: 'This account number is already saved.', account_id: existing.rows[0].id });
-
-    // First account = default
-    const countRes  = await pool.query(`SELECT COUNT(*) FROM tenant_bank_profiles WHERE tenant_user_id=$1`, [userId]);
-    const isDefault = parseInt(countRes.rows[0].count) === 0;
-
-    const r = await pool.query(
-      `INSERT INTO tenant_bank_profiles
-         (tenant_user_id, bank_name, bank_code, account_number, account_name,
-          preferred_debit_day, preferred_amount, is_verified, is_default)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
-      [userId, bank_name, bank_code, account_number, resolvedName || 'Unverified',
-       preferred_debit_day || null, preferred_amount || null, isVerified, isDefault]
-    );
-
-    const h = crypto.createHash('sha256').update(`tenant-bank-${r.rows[0].id}-${userId}-${Date.now()}`).digest('hex');
-    pool.query(
-      `INSERT INTO system_ledger (transaction_type, payload, immutable_hash) VALUES ('TENANT_BANK_ACCOUNT_ADDED',$1,$2)`,
-      [JSON.stringify({ account_id: r.rows[0].id, tenant_user_id: userId, bank_name, verified: isVerified }), h]
-    ).catch(() => {});
-
-    await logAudit({
-      event_type: 'TENANT_BANK_ACCOUNT_ADDED', actor_id: userId, actor_role: 'TENANT', unit_id: null,
-      description: `Tenant added bank account: ${bank_name} (${isVerified ? 'verified' : 'unverified'})`,
-      metadata: { bank_name, account_number_last4: account_number.slice(-4), verified: isVerified },
-    });
-
-    return res.status(201).json({
-      success:      true,
-      account:      { ...r.rows[0], account_number: r.rows[0].account_number.replace(/\d(?=\d{4})/g, '*') },
-      verified:     isVerified,
-      account_name: resolvedName,
-      message:      isVerified ? `Account verified: ${resolvedName}` : 'Account saved. Auto-verification unavailable — you can still use this account.',
-    });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
-});
-
-app.patch('/api/tenant/bank-accounts/:id', authenticate, async (req: Request, res: Response): Promise<any> => {
-  const userId = (req as any).userId; const { id } = req.params;
-  try {
-    const { preferred_debit_day, preferred_amount } = req.body;
-    if (!preferred_debit_day && !preferred_amount)
-      return res.status(400).json({ error: 'Provide preferred_debit_day or preferred_amount to update' });
-    if (preferred_debit_day && (preferred_debit_day < 1 || preferred_debit_day > 28))
-      return res.status(400).json({ error: 'preferred_debit_day must be between 1 and 28' });
-    const r = await pool.query(
-      `UPDATE tenant_bank_profiles
-       SET preferred_debit_day = COALESCE($1, preferred_debit_day),
-           preferred_amount    = COALESCE($2, preferred_amount),
-           updated_at          = NOW()
-       WHERE id=$3 AND tenant_user_id=$4 RETURNING *`,
-      [preferred_debit_day || null, preferred_amount || null, id, userId]
-    );
-    if (!r.rows.length) return res.status(404).json({ error: 'Account not found' });
-    return res.json({ success: true, account: r.rows[0] });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
-});
-
-app.post('/api/tenant/bank-accounts/:id/set-default', authenticate, async (req: Request, res: Response): Promise<any> => {
-  const userId = (req as any).userId; const { id } = req.params;
-  try {
-    const check = await pool.query(`SELECT id FROM tenant_bank_profiles WHERE id=$1 AND tenant_user_id=$2`, [id, userId]);
-    if (!check.rows.length) return res.status(404).json({ error: 'Account not found' });
-    await pool.query(`UPDATE tenant_bank_profiles SET is_default=false WHERE tenant_user_id=$1`, [userId]);
-    await pool.query(`UPDATE tenant_bank_profiles SET is_default=true, updated_at=NOW() WHERE id=$1`, [id]);
-    return res.json({ success: true, message: 'Default account updated' });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
-});
-
-app.post('/api/tenant/bank-accounts/:id/autopay-preference', authenticate, async (req: Request, res: Response): Promise<any> => {
-  const userId = (req as any).userId; const { id } = req.params;
-  try {
-    const { preferred_debit_day, preferred_amount, enable } = req.body;
-    if (!preferred_debit_day || !preferred_amount)
-      return res.status(400).json({ error: 'preferred_debit_day and preferred_amount are required' });
-    if (preferred_debit_day < 1 || preferred_debit_day > 28)
-      return res.status(400).json({ error: 'preferred_debit_day must be between 1 and 28' });
-    const r = await pool.query(
-      `UPDATE tenant_bank_profiles
-       SET preferred_debit_day  = $1, preferred_amount = $2,
-           direct_debit_enabled = $3, mandate_status   = $4, updated_at = NOW()
-       WHERE id=$5 AND tenant_user_id=$6 RETURNING *`,
-      [preferred_debit_day, preferred_amount, enable === true, enable === true ? 'PENDING' : 'CANCELLED', id, userId]
-    );
-    if (!r.rows.length) return res.status(404).json({ error: 'Account not found' });
-    await logAudit({
-      event_type: 'TENANT_AUTOPAY_PREFERENCE_SET', actor_id: userId, actor_role: 'TENANT', unit_id: null,
-      description: `AutoPay preference: ₦${preferred_amount} on day ${preferred_debit_day} monthly (enabled: ${enable})`,
-      metadata: { account_id: id, preferred_debit_day, preferred_amount, enabled: enable },
-    });
-    return res.json({
-      success:         true,
-      account:         r.rows[0],
-      autopay_enabled: r.rows[0].direct_debit_enabled,
-      mandate_status:  r.rows[0].mandate_status,
-      message:         enable
-        ? `AutoPay set: ₦${Number(preferred_amount).toLocaleString()} on day ${preferred_debit_day} monthly.`
-        : 'AutoPay preference saved. Direct Debit currently disabled.',
-      note: 'Full automatic deductions activate in the next platform update.',
-    });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
-});
-
-app.delete('/api/tenant/bank-accounts/:id', authenticate, async (req: Request, res: Response): Promise<any> => {
-  const userId = (req as any).userId; const { id } = req.params;
-  try {
-    const check = await pool.query(`SELECT * FROM tenant_bank_profiles WHERE id=$1 AND tenant_user_id=$2`, [id, userId]);
-    if (!check.rows.length) return res.status(404).json({ error: 'Account not found' });
-    if (check.rows[0].direct_debit_enabled && check.rows[0].mandate_status === 'ACTIVE')
-      return res.status(409).json({ error: 'Cannot delete an account with an active Direct Debit mandate. Disable AutoPay first.' });
-    await pool.query(`DELETE FROM tenant_bank_profiles WHERE id=$1 AND tenant_user_id=$2`, [id, userId]);
-    if (check.rows[0].is_default) {
-      pool.query(
-        `UPDATE tenant_bank_profiles SET is_default=true, updated_at=NOW() WHERE tenant_user_id=$1 ORDER BY created_at DESC LIMIT 1`,
-        [userId]
-      ).catch(() => {});
-    }
-    await logAudit({
-      event_type: 'TENANT_BANK_ACCOUNT_REMOVED', actor_id: userId, actor_role: 'TENANT', unit_id: null,
-      description: `Tenant removed bank account: ${check.rows[0].bank_name}`,
-      metadata: { account_id: id, bank_name: check.rows[0].bank_name },
-    });
-    return res.json({ success: true, message: 'Bank account removed.' });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
-});
-
-app.get('/api/tenant/autopay-status', authenticate, async (req: Request, res: Response): Promise<any> => {
-  const userId = (req as any).userId;
-  try {
-    const r = await pool.query(
-      `SELECT tbp.*,
-              sv.target_amount, sv.vault_balance, sv.status AS vault_status,
-              sv.installment_amount, sv.frequency, sv.rent_amount, sv.platform_fee_amount
-       FROM tenant_bank_profiles tbp
-       LEFT JOIN standalone_vaults sv ON sv.tenant_user_id = $1
-         AND sv.status NOT IN ('CLOSED','MIGRATED')
-       WHERE tbp.tenant_user_id=$1 AND tbp.is_default=true
-       LIMIT 1`,
-      [userId]
-    );
-    if (!r.rows.length) {
-      return res.json({
-        success: true, has_bank_account: false, autopay_enabled: false, mandate_status: null,
-        message: 'No bank account linked. Add a bank account to enable AutoPay.',
-      });
-    }
-    const acct = r.rows[0];
-    return res.json({
-      success:              true,
-      has_bank_account:     true,
-      bank_name:            acct.bank_name,
-      account_name:         acct.account_name,
-      account_number_last4: acct.account_number.slice(-4),
-      preferred_debit_day:  acct.preferred_debit_day,
-      preferred_amount:     parseFloat(acct.preferred_amount) || null,
-      autopay_enabled:      acct.direct_debit_enabled,
-      mandate_status:       acct.mandate_status,
-      is_verified:          acct.is_verified,
-      vault: acct.target_amount ? {
-        target_amount:       parseFloat(acct.target_amount),
-        rent_amount:         parseFloat(acct.rent_amount)         || null,
-        platform_fee_amount: parseFloat(acct.platform_fee_amount) || null,
-        vault_balance:       parseFloat(acct.vault_balance)       || 0,
-        installment_amount:  parseFloat(acct.installment_amount)  || 0,
-        frequency:           acct.frequency,
-        vault_status:        acct.vault_status,
-      } : null,
-    });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
-});
-
-// ── POST /api/feature-waitlist — log interest in coming-soon features ───────
-// Public endpoint (no auth required — pre-registration users can also notify).
-app.post('/api/feature-waitlist', async (req: Request, res: Response): Promise<any> => {
-  try {
-    const { feature_name, source } = req.body;
-    if (!feature_name) return res.status(400).json({ error: 'feature_name is required' });
-
-    // Optional: extract user_id + email if JWT present
-    let userId: string | null  = null;
-    let email:  string | null  = null;
-    try {
-      const authHeader = req.headers.authorization || '';
-      const token = authHeader.replace('Bearer ', '');
-      if (token) {
-        const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString()) as any;
-        userId = payload.id || payload.user_id || null;
-        if (userId) {
-          const u = await pool.query(`SELECT email FROM users WHERE id=$1`, [userId]);
-          email = u.rows[0]?.email || null;
-        }
-      }
-    } catch { /* non-fatal — anonymous waitlist entry */ }
-
-    // Prevent duplicate entries (same user + same feature)
-    const existing = await pool.query(
-      `SELECT id FROM feature_waitlist WHERE feature_name=$1 AND (user_id=$2 OR (user_id IS NULL AND email=$3)) LIMIT 1`,
-      [feature_name, userId, email]
-    );
-    if (existing.rows.length) {
-      return res.json({ success: true, already_registered: true, message: 'Already on the waitlist for this feature.' });
-    }
-
-    await pool.query(
-      `INSERT INTO feature_waitlist (user_id, feature_name, email, source) VALUES ($1,$2,$3,$4)`,
-      [userId, feature_name, email, source || 'register_page']
-    );
-
-    console.log(`[WAITLIST] ${feature_name} — user=${userId||'anon'} email=${email||'unknown'}`);
-    return res.json({ success: true, message: `You're on the waitlist for ${feature_name}. We'll notify you when it launches.` });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
-});
-
 // ════════════════════════════════════════════════════════════════════════════
 // MODULE: AUDIT & COMPLIANCE — Immutable Event Log · SHA-256 Hash Chain
 // Endpoints: /api/audit/unit, /api/audit/project, /api/audit/tenancy
@@ -12203,6 +12042,233 @@ app.get('/api/admin/standalone-vaults', authenticate, async (req: Request, res: 
   }
 });
 
+// ── GET /api/admin/founder-dashboard ─────────────────────────────────────────
+// ADMIN ONLY — Founder Command Center: users, vaults, revenue, activity feed,
+// signup growth, conversion funnel. All from existing tables.
+app.get('/api/admin/founder-dashboard', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId = (req as any).userId;
+  try {
+    const aRes = await pool.query(`SELECT role FROM users WHERE id=$1`, [userId]);
+    if (!aRes.rows.length || aRes.rows[0].role !== 'ADMIN') {
+      return res.status(403).json({ error: 'ADMIN only.' });
+    }
+
+    const [
+      userStats, vaultStats, paymentStats, activityFeed,
+      signupGrowth, topLandlords, recentSignups,
+    ] = await Promise.all([
+
+      // 1. User counts by role
+      pool.query(`
+        SELECT
+          COUNT(*)                                                             AS total_users,
+          COUNT(*) FILTER (WHERE role='TENANT')                               AS tenants,
+          COUNT(*) FILTER (WHERE role='DEVELOPER' OR account_type='LANDLORD') AS landlords,
+          COUNT(*) FILTER (WHERE role='INVESTOR')                             AS investors,
+          COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '1 day')     AS signups_today,
+          COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '7 days')    AS signups_7d,
+          COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '30 days')   AS signups_30d
+        FROM users
+        WHERE role != 'ADMIN'
+      `),
+
+      // 2. Vault stats (linked + standalone)
+      pool.query(`
+        SELECT
+          (SELECT COUNT(*) FROM flex_pay_vaults WHERE status NOT IN ('TERMINATED','ARCHIVED'))  AS active_linked_vaults,
+          (SELECT COUNT(*) FROM standalone_vaults WHERE status NOT IN ('TERMINATED','ARCHIVED')) AS active_standalone_vaults,
+          (SELECT COALESCE(SUM(vault_balance),0) FROM flex_pay_vaults WHERE status='ACTIVE')     AS linked_vault_total,
+          (SELECT COALESCE(SUM(vault_balance),0) FROM standalone_vaults WHERE status='ACTIVE')   AS standalone_vault_total,
+          (SELECT COUNT(*) FROM flex_pay_vaults WHERE status='FUNDED_READY')                     AS pending_releases_linked,
+          (SELECT COUNT(*) FROM standalone_vaults WHERE status='FUNDED_READY')                   AS pending_releases_standalone
+      `),
+
+      // 3. Payment + revenue stats
+      pool.query(`
+        SELECT
+          (SELECT COALESCE(SUM(amount_ngn),0) FROM flex_contributions WHERE status='SUCCESS')        AS total_flex_contributions,
+          (SELECT COALESCE(SUM(amount_ngn),0) FROM standalone_contributions WHERE status='SUCCESS')  AS total_standalone_contributions,
+          (SELECT COALESCE(SUM(amount_ngn),0) FROM flex_contributions WHERE status='SUCCESS'
+            AND paid_at >= NOW() - INTERVAL '30 days')                                               AS contributions_30d,
+          (SELECT COUNT(*) FROM flex_contributions WHERE status='SUCCESS')                           AS flex_payment_count,
+          (SELECT COUNT(*) FROM standalone_contributions WHERE status='SUCCESS')                     AS standalone_payment_count,
+          (SELECT COALESCE(SUM(amount_released),0) FROM vault_payouts WHERE status='SUCCESS')        AS total_payouts,
+          (SELECT COALESCE(SUM(platform_fee),0) FROM vault_payouts WHERE status='SUCCESS')           AS platform_revenue
+      `),
+
+      // 4. Live activity feed — last 20 events across all major tables
+      pool.query(`
+        SELECT * FROM (
+          SELECT 'signup'       AS event_type,
+                 u.full_name    AS actor,
+                 u.role         AS role,
+                 NULL           AS amount,
+                 u.created_at   AS event_time,
+                 NULL           AS detail
+          FROM users u WHERE u.role != 'ADMIN'
+
+          UNION ALL
+
+          SELECT 'vault_created' AS event_type,
+                 u.full_name,
+                 'TENANT',
+                 NULL,
+                 sv.created_at,
+                 CONCAT('Target: ₦', sv.target_amount::text)
+          FROM standalone_vaults sv
+          JOIN users u ON u.id = sv.tenant_user_id
+
+          UNION ALL
+
+          SELECT 'contribution'  AS event_type,
+                 u.full_name,
+                 'TENANT',
+                 sc.amount_ngn,
+                 sc.paid_at,
+                 'Standalone vault contribution'
+          FROM standalone_contributions sc
+          JOIN standalone_vaults sv ON sv.id = sc.vault_id
+          JOIN users u ON u.id = sv.tenant_user_id
+          WHERE sc.status = 'SUCCESS'
+
+          UNION ALL
+
+          SELECT 'contribution'  AS event_type,
+                 COALESCE(t.tenant_name, u.full_name) AS actor,
+                 'TENANT',
+                 fc.amount_ngn,
+                 fc.paid_at,
+                 'Flex-Pay vault contribution'
+          FROM flex_contributions fc
+          JOIN flex_pay_vaults fpv ON fpv.id = fc.vault_id
+          LEFT JOIN tenancies t ON t.id = fpv.tenancy_id
+          LEFT JOIN users u ON u.id = fpv.tenant_user_id
+          WHERE fc.status = 'SUCCESS'
+
+          UNION ALL
+
+          SELECT 'payout'        AS event_type,
+                 u.full_name,
+                 'LANDLORD',
+                 vp.amount_released,
+                 vp.created_at,
+                 CONCAT('Payout released')
+          FROM vault_payouts vp
+          JOIN users u ON u.id = vp.landlord_id
+          WHERE vp.status = 'SUCCESS'
+        ) feed
+        ORDER BY event_time DESC NULLS LAST
+        LIMIT 25
+      `),
+
+      // 5. Signup growth — last 14 days
+      pool.query(`
+        SELECT
+          DATE(created_at)::text                              AS day,
+          COUNT(*)                                             AS total,
+          COUNT(*) FILTER (WHERE role='TENANT')               AS tenants,
+          COUNT(*) FILTER (WHERE role='DEVELOPER' OR account_type='LANDLORD') AS landlords
+        FROM users
+        WHERE created_at >= NOW() - INTERVAL '14 days' AND role != 'ADMIN'
+        GROUP BY DATE(created_at)
+        ORDER BY day ASC
+      `),
+
+      // 6. Top 5 landlords by tenant count
+      pool.query(`
+        SELECT u.full_name, u.email,
+               COUNT(DISTINCT t.id) AS tenant_count,
+               COUNT(DISTINCT ru.id) AS unit_count
+        FROM users u
+        LEFT JOIN projects p ON p.sponsor_id = u.id
+        LEFT JOIN rental_units ru ON ru.project_id = p.id
+        LEFT JOIN tenancies t ON t.unit_id = ru.id AND t.status = 'ACTIVE'
+        WHERE u.role = 'DEVELOPER' OR u.account_type = 'LANDLORD'
+        GROUP BY u.id, u.full_name, u.email
+        ORDER BY tenant_count DESC
+        LIMIT 5
+      `),
+
+      // 7. Most recent 10 signups
+      pool.query(`
+        SELECT full_name, email, role, account_type, created_at
+        FROM users
+        WHERE role != 'ADMIN'
+        ORDER BY created_at DESC
+        LIMIT 10
+      `),
+    ]);
+
+    const u  = userStats.rows[0];
+    const v  = vaultStats.rows[0];
+    const p  = paymentStats.rows[0];
+
+    const totalContributions =
+      parseFloat(p.total_flex_contributions || 0) +
+      parseFloat(p.total_standalone_contributions || 0);
+    const totalVaultBalance =
+      parseFloat(v.linked_vault_total || 0) +
+      parseFloat(v.standalone_vault_total || 0);
+    const totalPayments =
+      parseInt(p.flex_payment_count || 0) +
+      parseInt(p.standalone_payment_count || 0);
+
+    return res.json({
+      success: true,
+      generated_at: new Date().toISOString(),
+
+      users: {
+        total:         parseInt(u.total_users || 0),
+        tenants:       parseInt(u.tenants     || 0),
+        landlords:     parseInt(u.landlords   || 0),
+        investors:     parseInt(u.investors   || 0),
+        signups_today: parseInt(u.signups_today || 0),
+        signups_7d:    parseInt(u.signups_7d    || 0),
+        signups_30d:   parseInt(u.signups_30d   || 0),
+      },
+
+      vaults: {
+        active_linked:      parseInt(v.active_linked_vaults      || 0),
+        active_standalone:  parseInt(v.active_standalone_vaults  || 0),
+        total_active:       parseInt(v.active_linked_vaults || 0) + parseInt(v.active_standalone_vaults || 0),
+        balance_held:       totalVaultBalance,
+        pending_releases:   parseInt(v.pending_releases_linked || 0) + parseInt(v.pending_releases_standalone || 0),
+      },
+
+      finance: {
+        total_contributions: totalContributions,
+        contributions_30d:   parseFloat(p.contributions_30d  || 0),
+        total_payments:      totalPayments,
+        total_payouts:       parseFloat(p.total_payouts      || 0),
+        platform_revenue:    parseFloat(p.platform_revenue   || 0),
+      },
+
+      // Conversion funnel (users → vaults → contributions → funded)
+      funnel: {
+        registered:            parseInt(u.total_users || 0),
+        created_vault:         parseInt(v.active_linked_vaults || 0) + parseInt(v.active_standalone_vaults || 0),
+        made_contribution:     totalPayments > 0 ? Math.min(totalPayments, parseInt(u.tenants || 0)) : 0,
+        reached_100_pct:       parseInt(v.pending_releases_linked || 0) + parseInt(v.pending_releases_standalone || 0),
+      },
+
+      activity_feed: activityFeed.rows.map(e => ({
+        event_type: e.event_type,
+        actor:      e.actor,
+        role:       e.role,
+        amount:     e.amount ? parseFloat(e.amount) : null,
+        detail:     e.detail,
+        time:       e.event_time,
+      })),
+
+      signup_growth: signupGrowth.rows,
+      top_landlords: topLandlords.rows,
+      recent_signups: recentSignups.rows,
+    });
+  } catch (e: any) {
+    console.error('[FOUNDER-DASHBOARD]', e.message);
+    return res.status(500).json({ error: e.message });
+  }
+});
 
 async function startServer() {
   try {
