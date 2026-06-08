@@ -1499,8 +1499,10 @@ app.post("/api/auth/register", async (req: Request, res: Response): Promise<any>
     } catch (welcomeErr: any) {
       console.error('⚠️ Welcome email failed (non-fatal):', welcomeErr.message);
     }
-      success: true, 
-      user: result.rows[0], 
+
+    return res.status(201).json({
+      success: true,
+      user: result.rows[0],
       tokens: { access_token: token, expires_in: JWT_EXPIRY },
       message: "Account created. Check your email to verify your account."
     });
