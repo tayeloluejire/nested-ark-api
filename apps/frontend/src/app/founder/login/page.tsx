@@ -4,20 +4,18 @@ export const dynamic = 'force-dynamic';
 /**
  * /founder/login/page.tsx
  * Isolated Founder / Platform Admin login.
- * Role-validates on response — only FOUNDER / DEVELOPER role proceeds.
+ * Role-validates on response — only FOUNDER / DEVELOPER / ADMIN role proceeds.
  * Founder accounts are created directly in DB (not via public registration).
- * Redirects to /admin/founder on success.
+ * Uses window.location.href for hard redirect to bypass Next.js middleware role routing.
  */
 
 import { useState } from 'react';
-import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { ShieldCheck, Loader2, Eye, EyeOff, AlertCircle, Lock } from 'lucide-react';
 
 const API_BASE = '/api';
 
 export default function FounderLoginPage() {
-  const router   = useRouter();
   const [email,    setEmail]    = useState('');
   const [password, setPassword] = useState('');
   const [showPw,   setShowPw]   = useState(false);
@@ -47,23 +45,26 @@ export default function FounderLoginPage() {
         return;
       }
 
-      // Persist token (same pattern as other portals)
+      // Persist token — same pattern as all other portals
       const token = data.token || data.tokens?.access_token || data.access_token;
       if (token) {
         localStorage.setItem('token', token);
         sessionStorage.setItem('token', token);
+        // Mark as founder session so middleware/navbar renders correctly
+        localStorage.setItem('ark_role', role);
+        localStorage.setItem('ark_user', JSON.stringify(data.user));
       }
 
-      router.push('/admin/founder');
+      // Hard redirect — bypasses Next.js middleware role-based routing
+      // that would otherwise send DEVELOPER role to /projects/my/
+      window.location.href = '/admin/founder';
     } catch (e: any) {
       setError(e.message || 'Login failed. Please try again.');
+      setLoading(false);
     }
-    setLoading(false);
   };
 
-  const inp = `w-full bg-black border rounded-xl px-4 py-3 text-sm text-white outline-none transition-colors ${
-    error ? 'border-zinc-700 focus:border-teal-500' : 'border-zinc-800 focus:border-teal-500'
-  }`;
+  const inp = `w-full bg-black border border-zinc-800 rounded-xl px-4 py-3 text-sm text-white outline-none transition-colors focus:border-teal-500`;
 
   return (
     <div className="min-h-screen bg-[#050505] text-white flex flex-col items-center justify-center px-4">
@@ -115,7 +116,7 @@ export default function FounderLoginPage() {
             </label>
             <input
               type="email"
-              autoComplete="email"
+              autoComplete="username"
               placeholder="founder@nestedark.com"
               value={email}
               onChange={e => setEmail(e.target.value)}
@@ -164,21 +165,19 @@ export default function FounderLoginPage() {
           </button>
         </div>
 
-        {/* Footer nav — small, professional, not distracting */}
+        {/* Footer nav */}
         <div className="text-center space-y-2">
           <div className="flex items-center justify-center gap-4 text-[10px] text-zinc-700">
-            <Link href="/login"
-              className="hover:text-zinc-400 transition-colors">
+            <Link href="/login" className="hover:text-zinc-400 transition-colors">
               Tenant / Landlord Login
             </Link>
             <span>·</span>
-            <Link href="/"
-              className="hover:text-zinc-400 transition-colors">
+            <Link href="/" className="hover:text-zinc-400 transition-colors">
               Home
             </Link>
           </div>
           <p className="text-[9px] text-zinc-800 font-mono">
-            Impressions & Impacts Ltd · Nested Ark OS
+            Impressions &amp; Impacts Ltd · Nested Ark OS
           </p>
         </div>
       </div>
