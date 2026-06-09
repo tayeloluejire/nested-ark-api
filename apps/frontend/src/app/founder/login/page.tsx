@@ -4,9 +4,8 @@ export const dynamic = 'force-dynamic';
 /**
  * /founder/login/page.tsx
  * Isolated Founder / Platform Admin login.
- * Role-validates on response — only FOUNDER / DEVELOPER / ADMIN role proceeds.
- * Founder accounts are created directly in DB (not via public registration).
- * Uses window.location.href for hard redirect to bypass Next.js middleware role routing.
+ * After auth: writes cookies server-side via /api/set-auth-cookies
+ * so Next.js middleware can read them on the very next request.
  */
 
 import { useState } from 'react';
@@ -14,6 +13,7 @@ import Link from 'next/link';
 import { ShieldCheck, Loader2, Eye, EyeOff, AlertCircle, Lock } from 'lucide-react';
 
 const API_BASE = '/api';
+const FOUNDER_ROLES = ['ADMIN', 'FOUNDER', 'DEVELOPER'];
 
 export default function FounderLoginPage() {
   const [email,    setEmail]    = useState('');
@@ -24,51 +24,65 @@ export default function FounderLoginPage() {
 
   const handleLogin = async () => {
     setError('');
-    if (!email.trim() || !password) { setError('Email and password are required'); return; }
+    if (!email.trim() || !password) {
+      setError('Email and password are required');
+      return;
+    }
     setLoading(true);
+
     try {
+      // Step 1: Authenticate
       const res  = await fetch(`${API_BASE}/auth/login`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ email: email.trim().toLowerCase(), password }),
+        body:    JSON.stringify({
+          email:    email.trim().toLowerCase(),
+          password,
+        }),
       });
       const data = await res.json();
 
       if (!res.ok) throw new Error(data.error || 'Login failed');
 
-      // Role gate — only FOUNDER / DEVELOPER / ADMIN may proceed
-      const role = (data.user?.role || data.role || '').toUpperCase();
-      const ALLOWED = ['FOUNDER', 'DEVELOPER', 'ADMIN'];
-      if (!ALLOWED.includes(role)) {
+      const role  = (data.user?.role || data.role || '').toUpperCase();
+      const token = data.token || data.tokens?.access_token || data.access_token;
+
+      // Step 2: Role gate
+      if (!FOUNDER_ROLES.includes(role)) {
         setError('Access denied. This portal is restricted to platform administrators.');
         setLoading(false);
         return;
       }
 
-      // Persist token — same pattern as all other portals
-      const token = data.token || data.tokens?.access_token || data.access_token;
-      if (token) {
-        localStorage.setItem('token', token);
-        sessionStorage.setItem('token', token);
-        localStorage.setItem('ark_role', role);
-        localStorage.setItem('ark_user', JSON.stringify(data.user));
+      if (!token) throw new Error('No token received from server');
 
-        // Write cookies so Next.js middleware can read role + token
-        // (middleware cannot access localStorage — cookies only)
-        document.cookie = `ark_token=${token}; path=/; SameSite=Lax`;
-        document.cookie = `ark_role=${role}; path=/; SameSite=Lax`;
-      }
+      // Step 3: Write to localStorage + sessionStorage (for client-side API calls)
+      localStorage.setItem('token',    token);
+      localStorage.setItem('ark_role', role);
+      localStorage.setItem('ark_user', JSON.stringify(data.user ?? {}));
+      sessionStorage.setItem('token',    token);
+      sessionStorage.setItem('ark_role', role);
 
-      // Hard redirect — bypasses Next.js middleware role-based routing
-      // that would otherwise send DEVELOPER role to /projects/my/
+      // Step 4: Write cookies via Next.js API route — this is what middleware reads.
+      // Must await so Set-Cookie headers are committed before the redirect fires.
+      await fetch(`${API_BASE}/set-auth-cookies`, {
+        method:      'POST',
+        headers:     { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body:        JSON.stringify({ token, role }),
+      });
+
+      // Step 5: Hard redirect — cookies are now set server-side
       window.location.href = '/admin/founder';
+
     } catch (e: any) {
       setError(e.message || 'Login failed. Please try again.');
       setLoading(false);
     }
   };
 
-  const inp = `w-full bg-black border border-zinc-800 rounded-xl px-4 py-3 text-sm text-white outline-none transition-colors focus:border-teal-500`;
+  const inp = `w-full bg-black border border-zinc-800 rounded-xl px-4 py-3 text-sm
+    text-white outline-none transition-colors focus:border-teal-500`;
 
   return (
     <div className="min-h-screen bg-[#050505] text-white flex flex-col items-center justify-center px-4">
@@ -101,7 +115,8 @@ export default function FounderLoginPage() {
           <div className="flex items-start gap-2 p-3 rounded-xl border border-zinc-800 bg-black/40">
             <Lock size={10} className="text-zinc-600 shrink-0 mt-0.5" />
             <p className="text-[9px] text-zinc-600 leading-relaxed">
-              Restricted access. Founder accounts are provisioned directly by the platform administrator — not via public registration.
+              Restricted access. Founder accounts are provisioned directly by the platform
+              administrator — not via public registration.
             </p>
           </div>
 
@@ -157,7 +172,8 @@ export default function FounderLoginPage() {
           <button
             onClick={handleLogin}
             disabled={loading}
-            className={`w-full py-3.5 rounded-xl font-black text-[10px] uppercase tracking-widest transition-all flex items-center justify-center gap-2 mt-2 ${
+            className={`w-full py-3.5 rounded-xl font-black text-[10px] uppercase tracking-widest
+              transition-all flex items-center justify-center gap-2 mt-2 ${
               loading
                 ? 'bg-zinc-800 text-zinc-600 cursor-not-allowed'
                 : 'bg-teal-500 text-black hover:bg-teal-400'

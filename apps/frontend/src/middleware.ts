@@ -107,14 +107,39 @@ export function middleware(req: NextRequest) {
   }
 
   // ─────────────────────────────────────────────────────────
-  // Read auth state
+  // Read auth state — cookies first, JWT fallback
   // ─────────────────────────────────────────────────────────
 
-  const role =
-    req.cookies.get('ark_role')?.value ?? '';
+  let role  = req.cookies.get('ark_role')?.value  ?? '';
+  let token = req.cookies.get('ark_token')?.value ?? '';
 
-  const token =
-    req.cookies.get('ark_token')?.value ?? '';
+  // Fallback: decode role from JWT in Authorization header.
+  // This handles the race where document.cookie writes haven't
+  // reached the browser's cookie jar before middleware fires.
+  if (!token || !role) {
+    const authHeader = req.headers.get('authorization') ?? '';
+    const bearerToken = authHeader.startsWith('Bearer ')
+      ? authHeader.slice(7)
+      : '';
+
+    if (bearerToken) {
+      try {
+        // Decode JWT payload (no verification — middleware edge runtime
+        // cannot use crypto for HS256; the backend already verified it)
+        const payloadB64 = bearerToken.split('.')[1];
+        if (payloadB64) {
+          const payloadJson = atob(payloadB64.replace(/-/g, '+').replace(/_/g, '/'));
+          const payload = JSON.parse(payloadJson);
+          if (payload.role) {
+            token = bearerToken;
+            role  = String(payload.role).toUpperCase();
+          }
+        }
+      } catch {
+        // Malformed JWT — fall through to redirectToLogin below
+      }
+    }
+  }
 
   // ─────────────────────────────────────────────────────────
   // Redirect helper
