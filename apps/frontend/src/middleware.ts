@@ -24,7 +24,6 @@ const PUBLIC_PATHS = new Set([
   '/payment-callback',
   '/marketplace',
   '/founder/login',
-  '/admin/founder',
 ]);
 
 // ─────────────────────────────────────────────────────────────
@@ -41,8 +40,6 @@ const PUBLIC_PREFIXES = [
   '/tenant/invite',
   '/marketplace',
   '/faq',
-  '/founder',
-  '/admin/founder',
 ];
 
 // ─────────────────────────────────────────────────────────────
@@ -175,14 +172,9 @@ export function middleware(req: NextRequest) {
   // ─────────────────────────────────────────────────────────
 
   if (pathname.startsWith('/admin')) {
+    const adminAllowed = ['ADMIN', 'DEVELOPER', 'FOUNDER'];
 
-    // Founder Command Center — auth handled client-side on the page itself
-    if (pathname.startsWith('/admin/founder')) {
-      return NextResponse.next();
-    }
-
-    // All other /admin/* — ADMIN only (unchanged)
-    if (role !== 'ADMIN') {
+    if (!adminAllowed.includes(role)) {
       return redirectToLogin('admin_only');
     }
 
