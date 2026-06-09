@@ -117,11 +117,10 @@ const ROLES = [
   },
 ] as const;
 
-// ── Roles live now vs coming soon ────────────────────────────────────────────
+// ── Phase 1 launch: only Landlord + Tenant are live ──────────────────────────
 const LIVE_ROLE_IDS = ['LANDLORD', 'TENANT'] as const;
 type LiveRoleId = typeof LIVE_ROLE_IDS[number];
 
-// Rich descriptions for coming-soon modal
 const COMING_SOON_DETAILS: Record<string, { icon: string; title: string; teaser: string; phase: string }> = {
   INFRASTRUCTURE: {
     icon: '🏗️', title: 'Infrastructure Developer',
@@ -193,7 +192,6 @@ function RegisterContent() {
   const [waitlistSubmitted,        setWaitlistSubmitted]        = useState<string | null>(null);
 
   const handleNotifyMe = async (roleId: string) => {
-    // Best-effort: log interest without blocking UX
     try {
       const token = typeof window !== 'undefined'
         ? localStorage.getItem('token') || sessionStorage.getItem('token') : null;
@@ -202,7 +200,7 @@ function RegisterContent() {
         headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
         body: JSON.stringify({ feature_name: roleId, source: 'register_page' }),
       });
-    } catch { /* non-fatal — modal still closes */ }
+    } catch { /* non-fatal */ }
     setWaitlistSubmitted(roleId);
     setTimeout(() => { setComingSoonRole(null); setWaitlistSubmitted(null); }, 2000);
   };
@@ -466,7 +464,7 @@ function RegisterContent() {
   return (
     <div className="min-h-screen bg-[#050505] text-white flex flex-col">
 
-      {/* ── Coming Soon Modal ─────────────────────────────────────────────── */}
+      {/* ── Coming Soon Modal ─────────────────────────────────────────── */}
       {comingSoonRole && (() => {
         const cs = COMING_SOON_DETAILS[comingSoonRole];
         if (!cs) return null;
@@ -487,7 +485,10 @@ function RegisterContent() {
                     <p className="text-[9px] text-amber-400 uppercase font-bold tracking-widest mt-0.5">{cs.phase}</p>
                   </div>
                 </div>
-                <button onClick={() => setComingSoonRole(null)} className="text-zinc-600 hover:text-white text-xl w-7 h-7 flex items-center justify-center rounded-lg hover:bg-zinc-800 transition-all flex-shrink-0">×</button>
+                <button
+                  onClick={() => setComingSoonRole(null)}
+                  className="text-zinc-600 hover:text-white text-xl w-7 h-7 flex items-center justify-center rounded-lg hover:bg-zinc-800 transition-all flex-shrink-0"
+                >×</button>
               </div>
               <p className="text-zinc-400 text-sm leading-relaxed">{cs.teaser}</p>
               <div className="p-3 rounded-xl border border-zinc-800 bg-zinc-900/60 text-center">
@@ -501,12 +502,16 @@ function RegisterContent() {
                 </div>
               ) : (
                 <div className="space-y-3">
-                  <button onClick={() => handleNotifyMe(comingSoonRole)}
-                    className="w-full py-3 rounded-xl bg-teal-500 text-black font-black text-[10px] uppercase tracking-widest hover:bg-teal-400 transition-all">
+                  <button
+                    onClick={() => handleNotifyMe(comingSoonRole)}
+                    className="w-full py-3 rounded-xl bg-teal-500 text-black font-black text-[10px] uppercase tracking-widest hover:bg-teal-400 transition-all"
+                  >
                     🔔 Notify Me When Live
                   </button>
-                  <button onClick={() => setComingSoonRole(null)}
-                    className="w-full py-2.5 rounded-xl border border-zinc-700 text-zinc-400 font-black text-[10px] uppercase tracking-widest hover:border-zinc-600 transition-all">
+                  <button
+                    onClick={() => setComingSoonRole(null)}
+                    className="w-full py-2.5 rounded-xl border border-zinc-700 text-zinc-400 font-black text-[10px] uppercase tracking-widest hover:border-zinc-600 transition-all"
+                  >
                     Back to Registration
                   </button>
                 </div>
@@ -567,7 +572,7 @@ function RegisterContent() {
             </p>
             <div className="space-y-2 max-h-[380px] overflow-y-auto pr-1">
 
-              {/* ── Live roles: Landlord + Tenant ──────────────────────── */}
+              {/* ── Live roles: Landlord + Tenant ─────────────────────── */}
               {ROLES.filter(r => LIVE_ROLE_IDS.includes(r.id as LiveRoleId)).map(role => (
                 <button
                   key={role.id}
@@ -587,14 +592,16 @@ function RegisterContent() {
                       </span>
                     )}
                   </div>
-                  <p className="text-[9px] text-teal-500 uppercase font-bold tracking-widest mt-0.5">{role.sub}</p>
+                  <p className="text-[9px] text-teal-500 uppercase font-bold tracking-widest mt-0.5">
+                    {role.sub}
+                  </p>
                   <p className="text-zinc-500 text-[10px] mt-1 leading-relaxed">{role.desc}</p>
                 </button>
               ))}
 
-              {/* ── Coming Soon roles: locked with modal trigger ────────── */}
-              <div className="pt-2 pb-1">
-                <p className="text-[8px] text-zinc-700 uppercase font-black tracking-widest">Coming Soon</p>
+              {/* ── Coming Soon roles: locked, click opens modal ─────── */}
+              <div className="pt-2 pb-0.5">
+                <p className="text-[8px] text-zinc-700 uppercase font-black tracking-widest">More roles coming soon</p>
               </div>
               {ROLES.filter(r => !LIVE_ROLE_IDS.includes(r.id as LiveRoleId)).map(role => {
                 const cs = COMING_SOON_DETAILS[role.id];
@@ -603,18 +610,17 @@ function RegisterContent() {
                     key={role.id}
                     type="button"
                     onClick={() => setComingSoonRole(role.id)}
-                    className="w-full p-4 rounded-xl border border-zinc-800/50 bg-zinc-900/10 text-left opacity-60 hover:opacity-80 transition-all relative overflow-hidden"
+                    className="w-full p-4 rounded-xl border border-zinc-800/40 bg-zinc-900/10 text-left opacity-55 hover:opacity-75 transition-all relative"
                   >
                     <div className="flex items-center justify-between">
-                      <p className="font-black text-sm text-zinc-400">{role.label}</p>
-                      <span className="text-[8px] px-2 py-0.5 bg-zinc-800 text-zinc-500 rounded font-mono uppercase tracking-widest border border-zinc-700">
+                      <p className="font-black text-sm text-zinc-500">{role.label}</p>
+                      <span className="text-[8px] px-2 py-0.5 bg-zinc-800 text-zinc-600 rounded border border-zinc-700 font-mono uppercase tracking-widest">
                         Soon
                       </span>
                     </div>
                     <p className="text-[9px] text-zinc-600 uppercase font-bold tracking-widest mt-0.5">{role.sub}</p>
-                    {cs && <p className="text-[8px] text-zinc-600 mt-0.5">{cs.phase}</p>}
-                    {/* Diagonal lock overlay */}
-                    <div className="absolute top-2 right-2 text-zinc-700 text-xs">🔒</div>
+                    {cs && <p className="text-[8px] text-zinc-700 mt-0.5">{cs.phase}</p>}
+                    <div className="absolute top-2.5 right-10 text-zinc-700 text-[10px]">🔒</div>
                   </button>
                 );
               })}

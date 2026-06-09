@@ -35,6 +35,7 @@ function TenantNav() {
     { href: '/tenant/vault',         label: 'My Vault'     },
     { href: '/tenant/pay',           label: 'Pay Rent'     },
     { href: '/tenant/contributions', label: 'History'      },
+    { href: '/tenant/banking',       label: 'My Banking'   },
     { href: '/tenant/notices',       label: 'My Notices'   },
     { href: '/marketplace',          label: 'Marketplace'  },
   ];

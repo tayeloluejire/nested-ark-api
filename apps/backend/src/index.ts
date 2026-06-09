@@ -4518,7 +4518,7 @@ app.post("/api/payments/webhook",
         }
         const sv         = svRes.rows[0];
         const target     = parseFloat(sv.target_amount);
-        const newBalance = Math.min(parseFloat(sv.vault_balance) + amountNgn, target * 1.5);
+        const newBalance = parseFloat(sv.vault_balance) + amountNgn; // No cap — accumulate all tenant payments
         const periodLabel = new Date().toISOString().slice(0, 7);
         const newPeriods  = newBalance >= target ? (parseInt(sv.funded_periods) || 0) + 1 : parseInt(sv.funded_periods) || 0;
         const newStatus   = newBalance >= target ? 'FUNDED_READY' : sv.status;
@@ -9961,6 +9961,39 @@ app.get('/api/tenant/verify-payment', authenticate, async (req: Request, res: Re
       });
     }
 
+    // ── Layer 1b: Check standalone_contributions (independent vault — ARK-SV-* refs) ──
+    const sr = await pool.query(
+      `SELECT sc.id, sc.amount_ngn, sc.paystack_ref, sc.period_label, sc.ledger_hash,
+              sc.status, sc.paid_at,
+              sv.vault_balance, sv.target_amount, sv.status AS vault_status, sv.id AS vault_id,
+              u.full_name AS tenant_name
+       FROM standalone_contributions sc
+       JOIN standalone_vaults sv ON sv.id = sc.vault_id
+       JOIN users u              ON u.id  = sv.tenant_user_id
+       WHERE sc.paystack_ref = $1`,
+      [reference]
+    ).catch(() => ({ rows: [] as any[] }));
+
+    if (sr.rows.length) {
+      const row     = sr.rows[0];
+      const balance = Math.max(0, Number(row.vault_balance) || 0);
+      const target  = Math.max(1, Number(row.target_amount) || 1);
+      return res.json({
+        verified:      true,
+        amount_ngn:    Math.max(0, Number(row.amount_ngn) || 0),
+        reference:     row.paystack_ref,
+        vault_balance: balance,
+        target_amount: Math.max(0, Number(row.target_amount) || 0),
+        funded_pct:    Math.min(Math.round((balance / target) * 100), 100),
+        vault_status:  row.vault_status,
+        vault_type:    'standalone',
+        tenant_name:   row.tenant_name,
+        period_label:  row.period_label || new Date().toISOString().slice(0, 7),
+        ledger_hash:   row.ledger_hash || '',
+        paid_at:       row.paid_at,
+      });
+    }
+
     // ── Layer 2: Webhook may be delayed — call Paystack directly ──────────
     if (!PAYSTACK_SECRET) {
       return res.status(202).json({
@@ -10018,10 +10051,7 @@ app.get('/api/tenant/verify-payment', authenticate, async (req: Request, res: Re
 
     const v           = vaultQuery.rows[0];
     const periodLabel = meta.period_month || new Date().toISOString().slice(0, 7);
-    const newBalance  = Math.min(
-      parseFloat(v.vault_balance) + amountNgn,
-      parseFloat(v.target_amount) * 1.5
-    );
+    const newBalance  = parseFloat(v.vault_balance) + amountNgn; // No cap — accumulate all funds
     const target      = parseFloat(v.target_amount);
     const h = crypto.createHash('sha256')
       .update(`self-heal-${v.id}-${amountNgn}-${reference}-${Date.now()}`)
