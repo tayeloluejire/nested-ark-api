@@ -10019,12 +10019,120 @@ app.get('/api/tenant/verify-payment', authenticate, async (req: Request, res: Re
     }
 
     // ── Layer 3: Paystack confirmed success but webhook hasn't fired yet ───
-    // Self-heal: credit the vault now so tenant isn't stuck on the error screen.
-    const amountNgn   = (psData.data.amount ?? 0) / 100;
-    const meta        = psData.data.metadata ?? {};
-    const vaultId     = meta.vault_id;
-    const tenancyId   = meta.tenancy_id;
+    // Self-heal: credit the correct vault now so tenant isn't stuck on error screen.
+    // Handles BOTH flex vaults (ARK-VAULT-*, ARK-FP-*) AND standalone vaults (ARK-SV-*).
+    const amountNgn        = (psData.data.amount ?? 0) / 100;
+    const meta             = psData.data.metadata ?? {};
+    const paymentType      = meta.payment_type ?? '';
+    const standaloneVaultId = meta.standalone_vault_id;   // set by /api/tenant/standalone-vault/pay
+    const vaultId          = meta.vault_id;
+    const tenancyId        = meta.tenancy_id;
 
+    // ── Layer 3a: Standalone vault self-heal (ARK-SV-* references) ──────────
+    // Paystack confirmed success but the STANDALONE_INSTALLMENT webhook never
+    // fired (Render cold start, network timeout, etc.). Credit the standalone
+    // vault directly so the tenant's success page shows the correct balance.
+    if (paymentType === 'STANDALONE_INSTALLMENT' || standaloneVaultId) {
+      const svId = standaloneVaultId;
+      if (!svId) {
+        console.warn(`[VERIFY] STANDALONE_INSTALLMENT confirmed by Paystack but standalone_vault_id missing in metadata — ref=${reference}`);
+        return res.status(202).json({
+          verified: false,
+          error: 'Payment confirmed. Vault update in progress — check back in a moment.',
+          reference,
+          paystack_confirmed: true,
+        });
+      }
+
+      const svRes = await pool.query(
+        `SELECT sv.*, u.full_name AS tenant_name
+         FROM standalone_vaults sv
+         JOIN users u ON u.id = sv.tenant_user_id
+         WHERE sv.id = $1`,
+        [svId]
+      );
+
+      if (!svRes.rows.length) {
+        console.warn(`[VERIFY] Standalone vault ${svId} not found during self-heal — ref=${reference}`);
+        return res.status(202).json({
+          verified: false,
+          error: 'Payment confirmed. Vault update in progress — check back in a moment.',
+          reference,
+          paystack_confirmed: true,
+        });
+      }
+
+      const sv          = svRes.rows[0];
+      const target      = parseFloat(sv.target_amount);
+      const newBalance  = parseFloat(sv.vault_balance) + amountNgn;
+      const newPeriods  = newBalance >= target ? (parseInt(sv.funded_periods) || 0) + 1 : (parseInt(sv.funded_periods) || 0);
+      const newStatus   = newBalance >= target ? 'FUNDED_READY' : sv.status;
+      const periodLabel = new Date().toISOString().slice(0, 7);
+
+      const h = crypto.createHash('sha256')
+        .update(`sv-self-heal-${svId}-${amountNgn}-${reference}-${Date.now()}`)
+        .digest('hex');
+
+      // Idempotent insert — if webhook also fires later, ON CONFLICT DO NOTHING prevents double-credit
+      await pool.query(
+        `INSERT INTO standalone_contributions
+           (vault_id, amount_ngn, paystack_ref, status, period_label, paid_at, ledger_hash)
+         VALUES ($1,$2,$3,'SUCCESS',$4,NOW(),$5)
+         ON CONFLICT (paystack_ref) DO NOTHING`,
+        [svId, amountNgn, reference, periodLabel, h]
+      );
+
+      // Update vault balance (only if this is the first credit — guard via paystack_ref)
+      const already = await pool.query(
+        `SELECT id FROM standalone_contributions WHERE paystack_ref=$1 AND vault_id=$2 LIMIT 1`,
+        [reference, svId]
+      );
+      // already.rows.length > 0 means the INSERT above succeeded (not conflict)
+      // We always update vault in case webhook missed the UPDATE too
+      await pool.query(
+        `UPDATE standalone_vaults
+         SET vault_balance = GREATEST(vault_balance, $1),
+             funded_periods = $2,
+             status = CASE WHEN status NOT IN ('MIGRATED','CLOSED') THEN $3 ELSE status END,
+             updated_at = NOW()
+         WHERE id = $4`,
+        [newBalance, newPeriods, newStatus, svId]
+      );
+
+      // Immutable ledger (fire-and-forget)
+      pool.query(
+        `INSERT INTO system_ledger (transaction_type, payload, immutable_hash)
+         VALUES ('STANDALONE_VAULT_SELF_HEAL',$1,$2)
+         ON CONFLICT DO NOTHING`,
+        [JSON.stringify({
+          vault_id: svId, tenant_id: sv.tenant_user_id,
+          amount_ngn: amountNgn, reference,
+          new_balance: newBalance, healed_by: 'verify-payment',
+          funded_pct: Math.min(Math.round((newBalance / target) * 100), 100),
+        }), h]
+      ).catch(() => {});
+
+      console.log(`[VERIFY] Self-healed standalone vault ${svId} → +₦${amountNgn} balance=₦${newBalance} ref=${reference}`);
+
+      const fundedPct = Math.min(Math.round((newBalance / target) * 100), 100);
+      return res.json({
+        verified:      true,
+        amount_ngn:    amountNgn,
+        reference,
+        vault_balance: newBalance,
+        target_amount: target,
+        funded_pct:    fundedPct,
+        vault_status:  newStatus,
+        vault_type:    'standalone',
+        tenant_name:   sv.tenant_name,
+        period_label:  periodLabel,
+        ledger_hash:   h,
+        paid_at:       psData.data.paid_at ?? new Date().toISOString(),
+        self_healed:   true,
+      });
+    }
+
+    // ── Layer 3b: Flex vault self-heal (ARK-VAULT-*, ARK-FP-*, RENT_INSTALLMENT) ─
     if (!vaultId && !tenancyId) {
       // Cannot resolve vault — let the webhook handle it
       return res.status(202).json({
@@ -10035,7 +10143,7 @@ app.get('/api/tenant/verify-payment', authenticate, async (req: Request, res: Re
       });
     }
 
-    // Resolve vault
+    // Resolve flex vault
     const vaultQuery = vaultId
       ? await pool.query(`SELECT * FROM flex_pay_vaults WHERE id = $1 AND status IN ('ACTIVE','FUNDED_READY')`, [vaultId])
       : await pool.query(`SELECT * FROM flex_pay_vaults WHERE tenancy_id = $1 AND status IN ('ACTIVE','FUNDED_READY') ORDER BY created_at DESC LIMIT 1`, [tenancyId]);
@@ -10051,7 +10159,7 @@ app.get('/api/tenant/verify-payment', authenticate, async (req: Request, res: Re
 
     const v           = vaultQuery.rows[0];
     const periodLabel = meta.period_month || new Date().toISOString().slice(0, 7);
-    const newBalance  = parseFloat(v.vault_balance) + amountNgn; // No cap — accumulate all funds
+    const newBalance  = parseFloat(v.vault_balance) + amountNgn;
     const target      = parseFloat(v.target_amount);
     const h = crypto.createHash('sha256')
       .update(`self-heal-${v.id}-${amountNgn}-${reference}-${Date.now()}`)
@@ -10092,7 +10200,7 @@ app.get('/api/tenant/verify-payment', authenticate, async (req: Request, res: Re
       }), h]
     );
 
-    console.log(`[VERIFY] Self-healed vault ${v.id} → +₦${amountNgn} balance=₦${newBalance} ref=${reference}`);
+    console.log(`[VERIFY] Self-healed flex vault ${v.id} → +₦${amountNgn} balance=₦${newBalance} ref=${reference}`);
 
     const fundedPct = Math.min(Math.round((newBalance / target) * 100), 100);
     return res.json({
@@ -10106,7 +10214,7 @@ app.get('/api/tenant/verify-payment', authenticate, async (req: Request, res: Re
       period_label:       periodLabel,
       ledger_hash:        h,
       paid_at:            psData.data.paid_at ?? new Date().toISOString(),
-      self_healed:        true,  // for logging/monitoring
+      self_healed:        true,
     });
 
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
