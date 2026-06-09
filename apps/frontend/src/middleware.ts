@@ -23,6 +23,7 @@ const PUBLIC_PATHS = new Set([
   '/payment-success',
   '/payment-callback',
   '/marketplace',
+  '/founder/login',
 ]);
 
 // ─────────────────────────────────────────────────────────────
@@ -171,6 +172,20 @@ export function middleware(req: NextRequest) {
   // ─────────────────────────────────────────────────────────
 
   if (pathname.startsWith('/admin')) {
+
+    // Founder Command Center — accessible to DEVELOPER and FOUNDER
+    // in addition to ADMIN. All other /admin/* remain ADMIN only.
+    if (pathname.startsWith('/admin/founder')) {
+      const allowed = ['ADMIN', 'FOUNDER', 'DEVELOPER'];
+
+      if (!allowed.includes(role)) {
+        return redirectToLogin('admin_only');
+      }
+
+      return NextResponse.next();
+    }
+
+    // All other admin routes — ADMIN only (unchanged)
     if (role !== 'ADMIN') {
       return redirectToLogin('admin_only');
     }

@@ -50,9 +50,13 @@ export default function FounderLoginPage() {
       if (token) {
         localStorage.setItem('token', token);
         sessionStorage.setItem('token', token);
-        // Mark as founder session so middleware/navbar renders correctly
         localStorage.setItem('ark_role', role);
         localStorage.setItem('ark_user', JSON.stringify(data.user));
+
+        // Write cookies so Next.js middleware can read role + token
+        // (middleware cannot access localStorage — cookies only)
+        document.cookie = `ark_token=${token}; path=/; SameSite=Lax`;
+        document.cookie = `ark_role=${role}; path=/; SameSite=Lax`;
       }
 
       // Hard redirect — bypasses Next.js middleware role-based routing
