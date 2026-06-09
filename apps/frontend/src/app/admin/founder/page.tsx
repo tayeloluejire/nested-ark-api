@@ -1,442 +1,345 @@
 'use client';
 export const dynamic = 'force-dynamic';
+
 /**
  * /admin/founder/page.tsx
- * ADMIN ONLY — Founder Command Center
- * API: GET /api/admin/founder-dashboard
- *
- * Sections:
- *  1. Live KPI counters (users, vaults, revenue, payouts)
- *  2. Activity feed — last 25 platform events
- *  3. Signup growth — last 14 days
- *  4. Conversion funnel
- *  5. Recent signups
- *  6. Top landlords
+ * Founder / Platform Admin Command Center.
+ * Accessible to roles: ADMIN, FOUNDER, DEVELOPER
+ * Auth guard checks localStorage token + role (client-side).
+ * Middleware handles server-side route protection.
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useEffect, useState, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import Navbar from '@/components/Navbar';
-import Footer from '@/components/Footer';
-import api from '@/lib/api';
 import {
-  Users, Wallet, TrendingUp, DollarSign, RefreshCw,
-  Loader2, AlertCircle, Building2, ShieldCheck, Zap,
-  ArrowRight, CheckCircle2, Clock, BarChart3, Home,
+  Users, Building2, TrendingUp, Zap, ShieldCheck,
+  RefreshCw, AlertCircle, CreditCard, Activity,
+  ArrowUpRight, DollarSign, Clock, CheckCircle2,
 } from 'lucide-react';
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-const fmt = (n: number) =>
-  new Intl.NumberFormat('en-NG', { style:'currency', currency:'NGN', minimumFractionDigits:0 }).format(n || 0);
-const fmtN  = (n: number) => Number(n || 0).toLocaleString();
-const fmtTime = (t: string) => {
-  try {
-    return new Date(t).toLocaleTimeString('en-NG', { hour:'2-digit', minute:'2-digit' });
-  } catch { return '—'; }
-};
-const fmtDate = (t: string) => {
-  try {
-    return new Date(t).toLocaleDateString('en-NG', { day:'2-digit', month:'short' });
-  } catch { return '—'; }
-};
+const API_BASE = '/api';
 
-// ── Types ─────────────────────────────────────────────────────────────────────
+// Roles allowed on this page — must match middleware
+const FOUNDER_ROLES = ['ADMIN', 'FOUNDER', 'DEVELOPER'];
+
+function getToken(): string | null {
+  if (typeof window === 'undefined') return null;
+  return localStorage.getItem('token') || sessionStorage.getItem('token');
+}
+
+function getRole(): string {
+  if (typeof window === 'undefined') return '';
+  return (
+    localStorage.getItem('ark_role') ||
+    sessionStorage.getItem('ark_role') ||
+    ''
+  ).toUpperCase();
+}
+
+const fmt = (n: number | string) =>
+  `₦${Number(n).toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+const fmtNum = (n: number | string) =>
+  Number(n).toLocaleString('en-NG');
+
 interface DashboardData {
-  generated_at:   string;
-  users: {
-    total: number; tenants: number; landlords: number; investors: number;
-    signups_today: number; signups_7d: number; signups_30d: number;
-  };
-  vaults: {
-    active_linked: number; active_standalone: number; total_active: number;
-    balance_held: number; pending_releases: number;
-  };
-  finance: {
-    total_contributions: number; contributions_30d: number; total_payments: number;
-    total_payouts: number; platform_revenue: number;
-  };
-  funnel: {
-    registered: number; created_vault: number;
-    made_contribution: number; reached_100_pct: number;
-  };
-  activity_feed:  ActivityEvent[];
-  signup_growth:  { day: string; total: number; tenants: number; landlords: number }[];
-  top_landlords:  { full_name: string; email: string; tenant_count: number; unit_count: number }[];
-  recent_signups: { full_name: string; email: string; role: string; account_type: string; created_at: string }[];
+  // Today
+  signups_today:         number;
+  vaults_created_today:  number;
+  contributions_today:   number;
+  revenue_today:         number;
+  // Users
+  total_tenants:         number;
+  total_landlords:       number;
+  total_investors:       number;
+  total_users:           number;
+  // Vaults
+  active_vaults:         number;
+  funded_vaults:         number;
+  standalone_vaults:     number;
+  // Financial
+  total_contributions:   number;
+  total_platform_revenue:number;
+  total_payouts_released:number;
+  pending_payouts:       number;
+  // Banking
+  linked_bank_accounts:  number;
+  autopay_enabled:       number;
+  autopay_waitlist:      number;
+  // Alerts
+  failed_payments:       number;
+  failed_payouts:        number;
+  pending_kyc:           number;
 }
 
-interface ActivityEvent {
-  event_type: string; actor: string; role: string;
-  amount: number | null; detail: string; time: string;
-}
-
-// ── KPI card ──────────────────────────────────────────────────────────────────
-function KpiCard({ label, value, sub, color, icon: Icon, accent = false }: {
+// ── Stat Card ─────────────────────────────────────────────────────────────────
+function StatCard({
+  label, value, sub, color = 'text-white', alert = false,
+}: {
   label: string; value: string | number; sub?: string;
-  color: string; icon: React.ElementType; accent?: boolean;
+  color?: string; alert?: boolean;
 }) {
   return (
-    <div className={`p-5 rounded-2xl border space-y-2 ${
-      accent ? 'border-teal-500/30 bg-teal-500/5' : 'border-zinc-800 bg-zinc-900/20'
-    }`}>
-      <div className="flex items-center justify-between">
-        <p className="text-[8px] text-zinc-500 uppercase font-black tracking-widest">{label}</p>
-        <Icon size={14} className={color} />
-      </div>
-      <p className={`text-2xl font-black font-mono tabular-nums ${color}`}>{value}</p>
-      {sub && <p className="text-[9px] text-zinc-600">{sub}</p>}
+    <div className={`p-4 rounded-2xl border ${alert ? 'border-red-500/30 bg-red-500/5' : 'border-zinc-800 bg-zinc-900/20'}`}>
+      <p className="text-[8px] text-zinc-600 uppercase font-bold tracking-widest mb-1">{label}</p>
+      <p className={`text-xl font-black font-mono ${alert ? 'text-red-400' : color}`}>{value}</p>
+      {sub && <p className="text-[9px] text-zinc-600 mt-0.5">{sub}</p>}
     </div>
   );
 }
 
-// ── Activity event row ─────────────────────────────────────────────────────────
-function ActivityRow({ event }: { event: ActivityEvent }) {
-  const config: Record<string, { icon: string; color: string; label: string }> = {
-    signup:       { icon: '👤', color: 'text-teal-400',  label: 'New signup'      },
-    vault_created:{ icon: '🏦', color: 'text-green-400', label: 'Vault created'   },
-    contribution: { icon: '💰', color: 'text-amber-400', label: 'Contribution'    },
-    payout:       { icon: '✅', color: 'text-blue-400',  label: 'Payout released' },
-  };
-  const c = config[event.event_type] || { icon: '⚡', color: 'text-zinc-400', label: event.event_type };
-  return (
-    <div className="flex items-start gap-3 py-2.5 border-b border-zinc-800/60 last:border-0">
-      <span className="text-base shrink-0 mt-0.5">{c.icon}</span>
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 flex-wrap">
-          <p className={`text-[10px] font-black uppercase ${c.color}`}>{c.label}</p>
-          <p className="text-xs text-white font-bold truncate">{event.actor || '—'}</p>
-          {event.role && (
-            <span className="text-[7px] px-1.5 py-0.5 rounded border border-zinc-700 text-zinc-500 uppercase font-bold">
-              {event.role}
-            </span>
-          )}
-        </div>
-        <div className="flex items-center gap-3 mt-0.5">
-          {event.amount != null && (
-            <p className="text-[10px] text-teal-400 font-mono font-bold">{fmt(event.amount)}</p>
-          )}
-          {event.detail && (
-            <p className="text-[9px] text-zinc-600">{event.detail}</p>
-          )}
-        </div>
-      </div>
-      <div className="shrink-0 text-right">
-        <p className="text-[9px] text-zinc-600 font-mono">{fmtTime(event.time)}</p>
-        <p className="text-[8px] text-zinc-700 font-mono">{fmtDate(event.time)}</p>
-      </div>
-    </div>
-  );
-}
-
-// ── Mini bar chart ─────────────────────────────────────────────────────────────
-function MiniBar({ value, max, color = 'bg-teal-500', label }: {
-  value: number; max: number; color?: string; label?: string;
+// ── Section Header ────────────────────────────────────────────────────────────
+function SectionHeader({ icon: Icon, title, color = 'text-amber-400' }: {
+  icon: any; title: string; color?: string;
 }) {
-  const pct = max > 0 ? Math.round((value / max) * 100) : 0;
   return (
-    <div className="space-y-1">
-      <div className="h-2 bg-zinc-800 rounded-full overflow-hidden">
-        <div className={`h-full rounded-full ${color}`} style={{ width: `${pct}%`, transition: 'width 0.8s ease' }} />
-      </div>
-      {label && <p className="text-[8px] text-zinc-600 font-mono">{label}</p>}
+    <div className="flex items-center gap-2 mb-3">
+      <Icon size={14} className={color} />
+      <p className={`text-[9px] uppercase font-black tracking-widest ${color}`}>{title}</p>
     </div>
   );
 }
 
-// ── Funnel step ───────────────────────────────────────────────────────────────
-function FunnelStep({ label, value, total, icon: Icon, color }: {
-  label: string; value: number; total: number; icon: React.ElementType; color: string;
-}) {
-  const pct = total > 0 ? Math.round((value / total) * 100) : 0;
-  return (
-    <div className="flex items-center gap-4 py-3 border-b border-zinc-800/60 last:border-0">
-      <div className={`w-8 h-8 rounded-xl flex items-center justify-center bg-zinc-900 border border-zinc-800 shrink-0`}>
-        <Icon size={14} className={color} />
-      </div>
-      <div className="flex-1 min-w-0 space-y-1">
-        <p className="text-xs text-zinc-300 font-bold">{label}</p>
-        <MiniBar value={value} max={total} color={color.replace('text-','bg-')} />
-      </div>
-      <div className="text-right shrink-0">
-        <p className={`font-black font-mono text-sm ${color}`}>{fmtN(value)}</p>
-        <p className="text-[9px] text-zinc-600">{pct}%</p>
-      </div>
-    </div>
-  );
-}
-
-// ── Main page ─────────────────────────────────────────────────────────────────
+// ── Main Page ─────────────────────────────────────────────────────────────────
 export default function FounderDashboardPage() {
-  const [data,       setData]       = useState<DashboardData | null>(null);
-  const [loading,    setLoading]    = useState(true);
-  const [error,      setError]      = useState('');
-  const [lastUpdated,setLastUpdated]= useState('');
-  const [autoRefresh,setAutoRefresh]= useState(false);
+  const router  = useRouter();
+  const [data,    setData]    = useState<DashboardData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error,   setError]   = useState('');
+  const [userName, setUserName] = useState('Founder');
 
-  const load = useCallback(() => {
+  const load = useCallback(async () => {
     setLoading(true);
-    api.get('/api/admin/founder-dashboard')
-      .then(r => {
-        setData(r.data);
-        setLastUpdated(new Date().toLocaleTimeString('en-NG', { hour:'2-digit', minute:'2-digit', second:'2-digit' }));
-        setError('');
-      })
-      .catch(e => setError(e?.response?.data?.error ?? 'Failed to load dashboard'))
-      .finally(() => setLoading(false));
-  }, []);
+    setError('');
+
+    const token = getToken();
+    const role  = getRole();
+
+    // Client-side role guard — accepts DEVELOPER, FOUNDER, ADMIN
+    if (!token || !FOUNDER_ROLES.includes(role)) {
+      // Ensure cookies are written before redirecting
+      if (token && role) {
+        document.cookie = `ark_token=${token}; path=/; SameSite=Lax`;
+        document.cookie = `ark_role=${role}; path=/; SameSite=Lax`;
+      }
+      router.replace('/founder/login');
+      return;
+    }
+
+    // Ensure cookies always reflect current localStorage state
+    // (guards against middleware seeing stale/missing cookies)
+    document.cookie = `ark_token=${token}; path=/; SameSite=Lax`;
+    document.cookie = `ark_role=${role}; path=/; SameSite=Lax`;
+
+    try {
+      const res  = await fetch(`${API_BASE}/admin/founder-dashboard`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const json = await res.json();
+
+      if (!res.ok) throw new Error(json.error || 'Failed to load dashboard');
+
+      setData(json.stats || json);
+
+      // Try to get user name
+      const stored = localStorage.getItem('ark_user');
+      if (stored) {
+        try {
+          const u = JSON.parse(stored);
+          setUserName(u.full_name?.split(' ')[0] || 'Founder');
+        } catch {}
+      }
+    } catch (e: any) {
+      setError(e.message);
+    }
+    setLoading(false);
+  }, [router]);
 
   useEffect(() => { load(); }, [load]);
 
-  // Auto-refresh every 30s when enabled
-  useEffect(() => {
-    if (!autoRefresh) return;
-    const t = setInterval(load, 30_000);
-    return () => clearInterval(t);
-  }, [autoRefresh, load]);
+  if (loading) return (
+    <div className="min-h-screen bg-[#050505] text-white flex items-center justify-center">
+      <RefreshCw className="animate-spin text-amber-500 mr-3" size={20} />
+      <span className="text-zinc-500 font-mono text-sm">Loading command center…</span>
+    </div>
+  );
 
   return (
-    <div className="min-h-screen bg-[#050505] text-white flex flex-col">
-      <Navbar />
-      <main className="flex-1 max-w-6xl mx-auto px-6 py-10 w-full space-y-8">
+    <div className="min-h-screen bg-[#050505] text-white">
 
-        {/* Header */}
-        <div className="flex flex-col sm:flex-row justify-between sm:items-end gap-4 border-b border-zinc-800 pb-6">
-          <div>
-            <p className="text-[9px] text-teal-500 font-mono font-black tracking-[0.25em] uppercase mb-1">
-              Admin · Private
-            </p>
-            <h1 className="text-3xl font-black uppercase tracking-tighter">
-              Founder Dashboard
-            </h1>
-            <p className="text-zinc-500 text-xs mt-1">
-              Real-time Nested Ark OS ecosystem health
-            </p>
+      {/* Top bar */}
+      <div className="border-b border-zinc-800 bg-[#050505]/95 backdrop-blur-sm sticky top-0 z-10">
+        <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-xl bg-amber-500/15 border border-amber-500/20 flex items-center justify-center">
+              <ShieldCheck size={14} className="text-amber-400" />
+            </div>
+            <div>
+              <p className="text-[9px] text-amber-500 font-mono font-black tracking-widest uppercase">
+                Nested Ark OS · Founder
+              </p>
+              <p className="text-xs font-black">Command Center</p>
+            </div>
           </div>
           <div className="flex items-center gap-3">
-            {lastUpdated && (
-              <span className="text-[9px] text-zinc-600 font-mono">
-                Updated {lastUpdated}
-              </span>
-            )}
+            <p className="text-[10px] text-zinc-500 hidden md:block">
+              Welcome, {userName}
+            </p>
             <button
-              onClick={() => setAutoRefresh(!autoRefresh)}
-              className={`px-3 py-2 rounded-xl text-[9px] font-black uppercase tracking-widest border transition-all ${
-                autoRefresh
-                  ? 'border-teal-500/40 bg-teal-500/10 text-teal-400'
-                  : 'border-zinc-700 text-zinc-500 hover:border-zinc-600'
-              }`}>
-              {autoRefresh ? '⏸ Auto' : '▶ Auto'}
+              onClick={load}
+              className="p-2 rounded-lg border border-zinc-800 hover:border-zinc-700 transition-colors">
+              <RefreshCw size={12} className="text-zinc-500" />
             </button>
-            <button onClick={load} disabled={loading}
-              className="flex items-center gap-2 px-4 py-2.5 bg-zinc-900 border border-zinc-800 rounded-xl hover:border-zinc-600 transition-colors">
-              <RefreshCw size={13} className={`text-zinc-400 ${loading ? 'animate-spin' : ''}`} />
+            <button
+              onClick={() => {
+                localStorage.clear();
+                sessionStorage.clear();
+                document.cookie = 'ark_token=; path=/; max-age=0';
+                document.cookie = 'ark_role=; path=/; max-age=0';
+                window.location.href = '/founder/login';
+              }}
+              className="px-3 py-1.5 rounded-lg border border-zinc-800 text-[9px] font-black uppercase tracking-widest text-zinc-500 hover:text-red-400 hover:border-red-500/30 transition-colors">
+              Sign Out
             </button>
           </div>
         </div>
+      </div>
+
+      <main className="max-w-6xl mx-auto px-4 py-8 space-y-8">
 
         {/* Error */}
         {error && (
-          <div className="p-4 rounded-xl border border-red-500/20 bg-red-500/5 text-red-400 text-sm font-bold flex items-center gap-2">
-            <AlertCircle size={14} /> {error}
+          <div className="p-4 rounded-2xl border border-red-500/20 bg-red-500/5 flex items-center gap-3">
+            <AlertCircle size={14} className="text-red-400 shrink-0" />
+            <p className="text-red-400 text-sm">{error}</p>
+            <button onClick={load} className="ml-auto text-[9px] text-red-400 font-black uppercase tracking-widest hover:underline">Retry</button>
           </div>
         )}
 
-        {loading && !data && (
-          <div className="flex items-center justify-center py-32">
-            <Loader2 className="animate-spin text-teal-500" size={32} />
-          </div>
-        )}
+        {/* Header */}
+        <div className="border-l-2 border-amber-500 pl-4">
+          <p className="text-[9px] text-amber-500 font-mono font-black tracking-widest uppercase mb-1">
+            Platform Administration
+          </p>
+          <h1 className="text-2xl font-black uppercase tracking-tighter">Founder Dashboard</h1>
+          <p className="text-zinc-500 text-xs mt-1">
+            {new Date().toLocaleDateString('en-NG', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+          </p>
+        </div>
 
         {data && (
           <>
-            {/* ── Section 1: User KPIs ──────────────────────────────────── */}
-            <section className="space-y-3">
-              <p className="text-[9px] text-zinc-500 uppercase font-black tracking-widest">Platform Users</p>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                <KpiCard label="Total Users"    value={fmtN(data.users.total)}     color="text-white"     icon={Users}     accent />
-                <KpiCard label="Tenants"         value={fmtN(data.users.tenants)}   color="text-green-400" icon={Home}      />
-                <KpiCard label="Landlords"       value={fmtN(data.users.landlords)} color="text-teal-400"  icon={Building2} />
-                <KpiCard label="Investors"       value={fmtN(data.users.investors)} color="text-amber-400" icon={TrendingUp} />
+            {/* TODAY */}
+            <div>
+              <SectionHeader icon={Activity} title="Today's Activity" color="text-teal-400" />
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <StatCard label="Signups Today"       value={fmtNum(data.signups_today)}        color="text-teal-400" />
+                <StatCard label="Vaults Created"      value={fmtNum(data.vaults_created_today)} color="text-teal-400" />
+                <StatCard label="Contributions"       value={fmtNum(data.contributions_today)}  color="text-amber-400" />
+                <StatCard label="Revenue Today"       value={fmt(data.revenue_today)}            color="text-green-400" />
               </div>
-              <div className="grid grid-cols-3 gap-4">
-                <KpiCard label="Signups Today"   value={fmtN(data.users.signups_today)} color="text-teal-400"  icon={Zap}
-                  sub={`${fmtN(data.users.signups_7d)} this week`} />
-                <KpiCard label="Signups 7 Days"  value={fmtN(data.users.signups_7d)}    color="text-white"    icon={Users}    />
-                <KpiCard label="Signups 30 Days" value={fmtN(data.users.signups_30d)}   color="text-zinc-300" icon={BarChart3} />
-              </div>
-            </section>
-
-            {/* ── Section 2: Vault & Finance KPIs ──────────────────────── */}
-            <section className="space-y-3">
-              <p className="text-[9px] text-zinc-500 uppercase font-black tracking-widest">Vaults & Finance</p>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                <KpiCard label="Active Vaults"    value={fmtN(data.vaults.total_active)}     color="text-green-400" icon={Wallet}     accent />
-                <KpiCard label="Escrow Held"      value={fmt(data.vaults.balance_held)}       color="text-teal-400"  icon={ShieldCheck}
-                  sub={`${fmtN(data.vaults.pending_releases)} pending release`} />
-                <KpiCard label="Total Contributions" value={fmt(data.finance.total_contributions)} color="text-white" icon={DollarSign}
-                  sub={`${fmt(data.finance.contributions_30d)} this month`} />
-                <KpiCard label="Platform Revenue" value={fmt(data.finance.platform_revenue)} color="text-amber-400" icon={TrendingUp}
-                  sub={`${fmt(data.finance.total_payouts)} in payouts`} />
-              </div>
-            </section>
-
-            {/* ── Section 3: Activity Feed + Funnel (2-col) ─────────────── */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-
-              {/* Activity feed */}
-              <section className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <p className="text-[9px] text-zinc-500 uppercase font-black tracking-widest">
-                    Live Activity Feed
-                  </p>
-                  <span className="flex items-center gap-1 text-[8px] text-teal-500">
-                    <span className="w-1.5 h-1.5 rounded-full bg-teal-500 animate-pulse" />
-                    Live
-                  </span>
-                </div>
-                <div className="p-4 rounded-2xl border border-zinc-800 bg-zinc-900/20 max-h-96 overflow-y-auto">
-                  {data.activity_feed.length === 0 ? (
-                    <p className="text-zinc-600 text-sm text-center py-8">No activity yet.</p>
-                  ) : (
-                    data.activity_feed.map((e, i) => <ActivityRow key={i} event={e} />)
-                  )}
-                </div>
-              </section>
-
-              {/* Conversion funnel */}
-              <section className="space-y-3">
-                <p className="text-[9px] text-zinc-500 uppercase font-black tracking-widest">Conversion Funnel</p>
-                <div className="p-4 rounded-2xl border border-zinc-800 bg-zinc-900/20">
-                  <FunnelStep label="Registered"         value={data.funnel.registered}         total={data.funnel.registered} icon={Users}      color="text-white" />
-                  <FunnelStep label="Created Vault"      value={data.funnel.created_vault}      total={data.funnel.registered} icon={Wallet}     color="text-green-400" />
-                  <FunnelStep label="Made Contribution"  value={data.funnel.made_contribution}  total={data.funnel.registered} icon={DollarSign} color="text-teal-400" />
-                  <FunnelStep label="Reached 100% Funded" value={data.funnel.reached_100_pct}  total={data.funnel.registered} icon={CheckCircle2}color="text-amber-400" />
-                </div>
-              </section>
             </div>
 
-            {/* ── Section 4: Signup growth chart (14 days) ──────────────── */}
-            {data.signup_growth.length > 0 && (
-              <section className="space-y-3">
-                <p className="text-[9px] text-zinc-500 uppercase font-black tracking-widest">
-                  Signup Growth — Last 14 Days
+            {/* USERS */}
+            <div>
+              <SectionHeader icon={Users} title="User Metrics" />
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <StatCard label="Total Users"     value={fmtNum(data.total_users)}     color="text-white" />
+                <StatCard label="Tenants"         value={fmtNum(data.total_tenants)}   color="text-teal-400" />
+                <StatCard label="Landlords"       value={fmtNum(data.total_landlords)} color="text-amber-400" />
+                <StatCard label="Investors"       value={fmtNum(data.total_investors)} color="text-purple-400" />
+              </div>
+            </div>
+
+            {/* VAULTS */}
+            <div>
+              <SectionHeader icon={Building2} title="Vault Metrics" />
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                <StatCard label="Active Vaults"     value={fmtNum(data.active_vaults)}     color="text-teal-400" />
+                <StatCard label="Funded Vaults"     value={fmtNum(data.funded_vaults)}     color="text-green-400" />
+                <StatCard label="Standalone Vaults" value={fmtNum(data.standalone_vaults)} color="text-zinc-400" />
+              </div>
+            </div>
+
+            {/* FINANCIAL */}
+            <div>
+              <SectionHeader icon={DollarSign} title="Financial Snapshot" color="text-green-400" />
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <StatCard label="Total Contributions" value={fmt(data.total_contributions)}    color="text-white" />
+                <StatCard label="Platform Revenue"    value={fmt(data.total_platform_revenue)} color="text-green-400" />
+                <StatCard label="Payouts Released"    value={fmt(data.total_payouts_released)} color="text-teal-400" />
+                <StatCard label="Pending Payouts"     value={fmt(data.pending_payouts)}        color="text-amber-400" />
+              </div>
+            </div>
+
+            {/* BANKING */}
+            <div>
+              <SectionHeader icon={CreditCard} title="Banking Metrics" color="text-purple-400" />
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                <StatCard label="Linked Accounts"  value={fmtNum(data.linked_bank_accounts)} color="text-purple-400" />
+                <StatCard label="AutoPay Enabled"  value={fmtNum(data.autopay_enabled)}      color="text-teal-400" />
+                <StatCard label="AutoPay Waitlist" value={fmtNum(data.autopay_waitlist)}      color="text-zinc-400" />
+              </div>
+            </div>
+
+            {/* ALERTS */}
+            <div>
+              <SectionHeader icon={AlertCircle} title="Alerts" color="text-red-400" />
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                <StatCard label="Failed Payments" value={fmtNum(data.failed_payments)} alert={data.failed_payments > 0} />
+                <StatCard label="Failed Payouts"  value={fmtNum(data.failed_payouts)}  alert={data.failed_payouts > 0} />
+                <StatCard label="Pending KYC"     value={fmtNum(data.pending_kyc)}     alert={data.pending_kyc > 0} />
+              </div>
+            </div>
+
+            {/* QUICK ACTIONS */}
+            <div>
+              <SectionHeader icon={Zap} title="Quick Actions" color="text-amber-400" />
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                {[
+                  { label: 'View Users',        href: '/admin/users'       },
+                  { label: 'View Vaults',       href: '/admin/overview'    },
+                  { label: 'View Revenue',      href: '/admin/revenue'     },
+                  { label: 'View Ledger',       href: '/admin/ledger'      },
+                  { label: 'View Projects',     href: '/admin/projects'    },
+                  { label: 'View Market',       href: '/admin/market'      },
+                  { label: 'View News',         href: '/admin/news'        },
+                  { label: 'View Audit Logs',   href: '/ledger'            },
+                ].map(a => (
+                  <Link key={a.href} href={a.href}
+                    className="flex items-center justify-between p-3.5 rounded-xl border border-zinc-800 bg-zinc-900/20 hover:border-amber-500/30 hover:bg-amber-500/5 transition-all group">
+                    <span className="text-[10px] font-black uppercase tracking-widest text-zinc-400 group-hover:text-amber-400 transition-colors">{a.label}</span>
+                    <ArrowUpRight size={11} className="text-zinc-700 group-hover:text-amber-400 transition-colors" />
+                  </Link>
+                ))}
+              </div>
+            </div>
+
+            {/* PLATFORM INFO */}
+            <div className="p-4 rounded-2xl border border-zinc-800 bg-zinc-900/10 flex items-center justify-between flex-wrap gap-3">
+              <div className="flex items-center gap-2">
+                <CheckCircle2 size={12} className="text-green-400" />
+                <p className="text-[9px] text-zinc-500 font-mono">
+                  Nested Ark OS · Impressions &amp; Impacts Ltd · Lagos · London · Dubai
                 </p>
-                <div className="p-4 rounded-2xl border border-zinc-800 bg-zinc-900/20">
-                  <div className="flex items-end gap-2 h-24">
-                    {(() => {
-                      const max = Math.max(...data.signup_growth.map(d => Number(d.total)), 1);
-                      return data.signup_growth.map((d, i) => {
-                        const pct = Math.max(4, (Number(d.total) / max) * 100);
-                        return (
-                          <div key={i} className="flex-1 flex flex-col items-center gap-1">
-                            <span className="text-[7px] text-zinc-500 font-mono">{d.total}</span>
-                            <div className="w-full flex flex-col gap-0.5 items-center">
-                              <div
-                                className="w-full rounded-t-sm bg-teal-500/60"
-                                style={{ height: `${(Number(d.tenants || 0) / max) * 80}px`, minHeight: d.tenants ? '3px' : '0' }}
-                              />
-                              <div
-                                className="w-full bg-amber-500/60"
-                                style={{ height: `${(Number(d.landlords || 0) / max) * 80}px`, minHeight: d.landlords ? '3px' : '0' }}
-                              />
-                            </div>
-                            <span className="text-[7px] text-zinc-700 font-mono">{d.day?.slice(5)}</span>
-                          </div>
-                        );
-                      });
-                    })()}
-                  </div>
-                  <div className="flex items-center gap-4 mt-3">
-                    <span className="flex items-center gap-1.5 text-[8px] text-zinc-500">
-                      <span className="w-2 h-2 rounded-sm bg-teal-500/60" /> Tenants
-                    </span>
-                    <span className="flex items-center gap-1.5 text-[8px] text-zinc-500">
-                      <span className="w-2 h-2 rounded-sm bg-amber-500/60" /> Landlords
-                    </span>
-                  </div>
-                </div>
-              </section>
-            )}
-
-            {/* ── Section 5: Recent signups + Top landlords (2-col) ─────── */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-
-              {/* Recent signups */}
-              <section className="space-y-3">
-                <p className="text-[9px] text-zinc-500 uppercase font-black tracking-widest">Recent Signups</p>
-                <div className="rounded-2xl border border-zinc-800 overflow-hidden">
-                  {data.recent_signups.map((u, i) => (
-                    <div key={i} className={`flex items-center gap-3 px-4 py-3 ${
-                      i < data.recent_signups.length - 1 ? 'border-b border-zinc-800/60' : ''
-                    }`}>
-                      <div className="w-7 h-7 rounded-full bg-zinc-800 flex items-center justify-center shrink-0">
-                        <span className="text-[10px] font-black text-zinc-400">
-                          {u.full_name?.[0]?.toUpperCase() || '?'}
-                        </span>
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-xs font-bold text-white truncate">{u.full_name || u.email}</p>
-                        <p className="text-[9px] text-zinc-600 truncate">{u.email}</p>
-                      </div>
-                      <div className="text-right shrink-0">
-                        <span className={`text-[8px] px-2 py-0.5 rounded border font-black uppercase ${
-                          u.role === 'TENANT'
-                            ? 'border-green-500/30 text-green-400'
-                            : u.role === 'DEVELOPER' || u.account_type === 'LANDLORD'
-                              ? 'border-teal-500/30 text-teal-400'
-                              : 'border-zinc-700 text-zinc-500'
-                        }`}>{u.account_type || u.role}</span>
-                        <p className="text-[8px] text-zinc-700 font-mono mt-0.5">{fmtDate(u.created_at)}</p>
-                      </div>
-                    </div>
-                  ))}
-                  {data.recent_signups.length === 0 && (
-                    <p className="text-zinc-600 text-sm text-center py-8">No signups yet.</p>
-                  )}
-                </div>
-              </section>
-
-              {/* Top landlords */}
-              <section className="space-y-3">
-                <p className="text-[9px] text-zinc-500 uppercase font-black tracking-widest">Top Landlords by Tenants</p>
-                <div className="rounded-2xl border border-zinc-800 overflow-hidden">
-                  {data.top_landlords.map((l, i) => (
-                    <div key={i} className={`flex items-center gap-3 px-4 py-3 ${
-                      i < data.top_landlords.length - 1 ? 'border-b border-zinc-800/60' : ''
-                    }`}>
-                      <div className="w-7 h-7 rounded-full bg-teal-500/10 border border-teal-500/20 flex items-center justify-center shrink-0">
-                        <span className="text-[10px] font-black text-teal-400">
-                          {i + 1}
-                        </span>
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-xs font-bold text-white truncate">{l.full_name}</p>
-                        <p className="text-[9px] text-zinc-600 truncate">{l.email}</p>
-                      </div>
-                      <div className="text-right shrink-0 space-y-0.5">
-                        <p className="text-teal-400 font-black font-mono text-sm">{l.tenant_count}</p>
-                        <p className="text-[8px] text-zinc-600">{l.unit_count} units</p>
-                      </div>
-                    </div>
-                  ))}
-                  {data.top_landlords.length === 0 && (
-                    <p className="text-zinc-600 text-sm text-center py-8">No landlords yet.</p>
-                  )}
-                </div>
-              </section>
-            </div>
-
-            {/* Footer */}
-            <div className="flex items-center justify-center gap-2 pt-4 border-t border-zinc-900">
-              <ShieldCheck size={10} className="text-teal-500" />
-              <p className="text-[9px] text-zinc-600 font-mono uppercase tracking-widest">
-                Nested Ark OS · Founder Command Center · {data.generated_at ? new Date(data.generated_at).toLocaleString('en-NG') : ''}
+              </div>
+              <p className="text-[9px] text-zinc-700 font-mono">
+                © {new Date().getFullYear()} · All rights reserved
               </p>
             </div>
           </>
         )}
+
+        {!data && !loading && !error && (
+          <div className="text-center py-20 text-zinc-600">
+            <p className="font-mono text-sm">No dashboard data available.</p>
+            <button onClick={load} className="mt-4 text-amber-400 text-xs font-black uppercase tracking-widest hover:underline">
+              Retry
+            </button>
+          </div>
+        )}
       </main>
-      <Footer />
     </div>
   );
 }

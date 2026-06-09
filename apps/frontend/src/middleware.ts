@@ -173,19 +173,19 @@ export function middleware(req: NextRequest) {
 
   if (pathname.startsWith('/admin')) {
 
-    // Founder Command Center — accessible to DEVELOPER and FOUNDER
-    // in addition to ADMIN. All other /admin/* remain ADMIN only.
+    // Founder Command Center — DEVELOPER and FOUNDER allowed
+    // All other /admin/* remain ADMIN only
     if (pathname.startsWith('/admin/founder')) {
-      const allowed = ['ADMIN', 'FOUNDER', 'DEVELOPER'];
+      const founderAllowed = ['ADMIN', 'FOUNDER', 'DEVELOPER'];
 
-      if (!allowed.includes(role)) {
+      if (!founderAllowed.includes(role)) {
         return redirectToLogin('admin_only');
       }
 
       return NextResponse.next();
     }
 
-    // All other admin routes — ADMIN only (unchanged)
+    // All other /admin/* — ADMIN only (unchanged)
     if (role !== 'ADMIN') {
       return redirectToLogin('admin_only');
     }
