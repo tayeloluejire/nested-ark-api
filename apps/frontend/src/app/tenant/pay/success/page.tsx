@@ -9,7 +9,7 @@ export const dynamic = 'force-dynamic';
  */
 
 import { useEffect, useState, Suspense } from 'react';
-import { useSearchParams, usePathname } from 'next/navigation';
+import { useSearchParams, usePathname, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import Navbar from '@/components/Navbar';
 import Footer from '@/components/Footer';
@@ -114,6 +114,15 @@ function downloadReceiptHTML(result: VerifyResult) {
         <div style="font-size:9px;text-transform:uppercase;letter-spacing:2px;color:#6b7280;margin-bottom:6px">Amount Paid</div>
         <div class="amount">${fmt(result.amount_ngn)}</div>
         <div class="badge">SUCCESS</div>
+        <div style="margin-top:10px;display:flex;justify-content:center;gap:8px;flex-wrap:wrap">
+          <span style="display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-radius:20px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1px;background:rgba(0,114,255,0.12);color:#60a5fa;border:1px solid rgba(96,165,250,0.3)">
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12s5.37 12 12 12 12-5.37 12-12S18.63 0 12 0zm0 4.8c3.97 0 7.2 3.23 7.2 7.2s-3.23 7.2-7.2 7.2S4.8 15.97 4.8 12 8.03 4.8 12 4.8z"/></svg>
+            Powered by Paystack
+          </span>
+          <span style="display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-radius:20px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1px;background:rgba(20,184,166,0.1);color:#14b8a6;border:1px solid rgba(20,184,166,0.25)">
+            🔐 SHA-256 Secured · Nested Ark Ledger
+          </span>
+        </div>
       </div>
       <div class="row"><span class="label">Reference</span><span class="value" style="font-family:monospace;font-size:9px">${result.reference}</span></div>
       <div class="row"><span class="label">Tenant</span><span class="value">${result.tenant_name || '—'}</span></div>
@@ -174,6 +183,7 @@ function HashDisplay({ hash }: { hash: string }) {
 // ── Success Content ───────────────────────────────────────────────────────────
 function SuccessContent() {
   const params    = useSearchParams();
+  const router    = useRouter();
   const reference = params.get('reference') || params.get('trxref') || '';
 
   const [status,  setStatus] = useState<'loading' | 'success' | 'error'>('loading');
@@ -182,7 +192,9 @@ function SuccessContent() {
   const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
-    if (!reference) { setErrMsg('No payment reference found.'); setStatus('error'); return; }
+    // No reference means user navigated directly to /tenant/pay/success —
+    // send them straight to the vault dashboard, never show the error screen.
+    if (!reference) { router.replace('/tenant/vault'); return; }
 
     let attempts  = 0;
     const MAX     = 12;
@@ -308,6 +320,16 @@ function SuccessContent() {
               {result.tenant_name && (
                 <p className="text-[10px] text-zinc-500 mt-1">Tenant: {result.tenant_name}</p>
               )}
+              {/* Trust badges */}
+              <div className="flex items-center justify-center gap-2 flex-wrap mt-4">
+                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full border border-blue-500/30 bg-blue-500/10 text-blue-400 text-[9px] font-black uppercase tracking-widest">
+                  <svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="12"/></svg>
+                  Powered by Paystack
+                </span>
+                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full border border-teal-500/30 bg-teal-500/10 text-teal-400 text-[9px] font-black uppercase tracking-widest">
+                  🔐 SHA-256 · Nested Ark Ledger
+                </span>
+              </div>
             </div>
 
             {/* Vault gauge */}
