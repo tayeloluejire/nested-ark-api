@@ -30,9 +30,14 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   const router    = useRouter();
   const [open, setOpen] = useState(false);
 
+  // Founder Command Center has its own isolated layout and auth guard.
+  // Bypass the admin sidebar entirely — /admin/founder renders standalone.
+  if (pathname.startsWith('/admin/founder')) {
+    return <>{children}</>;
+  }
+
   useEffect(() => {
-    const ADMIN_ROLES = ['ADMIN', 'DEVELOPER', 'FOUNDER'];
-    if (!isLoading && (!user || !ADMIN_ROLES.includes(user.role))) {
+    if (!isLoading && (!user || user.role !== 'ADMIN')) {
       router.replace('/login');
     }
   }, [user, isLoading, router]);
