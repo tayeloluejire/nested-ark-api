@@ -45,6 +45,7 @@ export type DbRole =
   | 'CONTRACTOR'
   | 'GOVERNMENT'
   | 'ADMIN'
+  | 'FOUNDER'
   | 'VERIFIER'
   | 'SUPPLIER'
   | 'BANK'
@@ -197,6 +198,7 @@ function deriveAccountType(
     case 'GOVERNMENT':
     case 'VERIFIER':    return 'GOVERNMENT';
     case 'ADMIN':       return 'ADMIN';
+    case 'FOUNDER':                 return 'ADMIN';
     case 'DEVELOPER':
     case 'PROJECT_SPONSOR':
       if (storedType === 'LANDLORD') return 'LANDLORD';
@@ -217,7 +219,8 @@ export function roleHomePath(
   switch (role) {
     case 'TENANT':                  return '/tenant/dashboard';
     case 'INVESTOR':                return '/portfolio';
-    case 'ADMIN':                   return '/admin';
+    case 'ADMIN':
+    case 'FOUNDER':                 return '/admin/founder';
     case 'GOVERNMENT':
     case 'VERIFIER':                return '/admin';
     case 'CONTRACTOR':

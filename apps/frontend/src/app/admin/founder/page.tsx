@@ -54,6 +54,10 @@ interface DashboardData {
   total_landlords:       number;
   total_investors:       number;
   total_users:           number;
+  total_government:      number;
+  total_verifiers:       number;
+  total_admins:          number;
+  total_contractors:     number;
   // Vaults
   active_vaults:         number;
   funded_vaults:         number;
@@ -245,10 +249,14 @@ export default function FounderDashboardPage() {
             <div>
               <SectionHeader icon={Users} title="User Metrics" />
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                <StatCard label="Total Users"     value={fmtNum(data.total_users)}     color="text-white" />
-                <StatCard label="Tenants"         value={fmtNum(data.total_tenants)}   color="text-teal-400" />
-                <StatCard label="Landlords"       value={fmtNum(data.total_landlords)} color="text-amber-400" />
-                <StatCard label="Investors"       value={fmtNum(data.total_investors)} color="text-purple-400" />
+                <StatCard label="Total Users"    value={fmtNum(data.total_users)}        color="text-white" />
+                <StatCard label="Tenants"        value={fmtNum(data.total_tenants)}      color="text-teal-400" />
+                <StatCard label="Landlords"      value={fmtNum(data.total_landlords)}    color="text-amber-400" />
+                <StatCard label="Investors"      value={fmtNum(data.total_investors)}    color="text-purple-400" />
+                <StatCard label="Government"     value={fmtNum(data.total_government)}   color="text-blue-400" />
+                <StatCard label="Verifiers"      value={fmtNum(data.total_verifiers)}    color="text-zinc-400" />
+                <StatCard label="Contractors"    value={fmtNum(data.total_contractors)}  color="text-orange-400" />
+                <StatCard label="Admins"         value={fmtNum(data.total_admins)}       color="text-red-400" />
               </div>
             </div>
 
