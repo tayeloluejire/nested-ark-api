@@ -27,13 +27,7 @@ import {
 const safeN = (v: any): number => { const n = Number(v); return (v == null || isNaN(n)) ? 0 : n; };
 const safeF = (v: any): string  => safeN(v).toLocaleString();
 const safeD = (v: any, d = 2): string => safeN(v).toFixed(d);
-function fmtNum(raw: any): string {
-  const n = safeN(raw);
-  if (n >= 1_000_000_000) return `$${safeD(n / 1_000_000_000, 1)}B`;
-  if (n >= 1_000_000)     return `$${safeD(n / 1_000_000, 1)}M`;
-  if (n >= 1_000)         return `$${safeD(n / 1_000, 0)}K`;
-  return `$${n.toFixed(0)}`;
-}
+// fmtNum is now provided by useCurrency() hook as { fmt: fmtNum }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface Stats {
@@ -50,6 +44,56 @@ interface SearchResult {
 }
 
 type RoleTab = 'landlord' | 'investor' | 'developer' | 'diaspora' | 'tenant';
+
+// ── Geo-aware currency config ─────────────────────────────────────────────────
+const GEO_CURRENCY: Record<string, { symbol: string; code: string; locale: string }> = {
+  NG: { symbol: '₦',   code: 'NGN', locale: 'en-NG' },
+  GB: { symbol: '£',   code: 'GBP', locale: 'en-GB' },
+  US: { symbol: '$',   code: 'USD', locale: 'en-US' },
+  CA: { symbol: 'CA$', code: 'CAD', locale: 'en-CA' },
+  AU: { symbol: 'A$',  code: 'AUD', locale: 'en-AU' },
+  AE: { symbol: 'AED', code: 'AED', locale: 'ar-AE' },
+  GH: { symbol: 'GH₵', code: 'GHS', locale: 'en-GH' },
+  KE: { symbol: 'KSh', code: 'KES', locale: 'sw-KE' },
+  DE: { symbol: '€',   code: 'EUR', locale: 'de-DE' },
+  FR: { symbol: '€',   code: 'EUR', locale: 'fr-FR' },
+  SG: { symbol: 'S$',  code: 'SGD', locale: 'en-SG' },
+  IN: { symbol: '₹',   code: 'INR', locale: 'en-IN' },
+  JP: { symbol: '¥',   code: 'JPY', locale: 'ja-JP' },
+};
+const DEFAULT_CURRENCY = { symbol: '$', code: 'USD', locale: 'en-US' };
+
+function useCurrency() {
+  const [currency, setCurrency] = useState(DEFAULT_CURRENCY);
+  const [country,  setCountry]  = useState('');
+
+  useEffect(() => {
+    const locale = (typeof navigator !== 'undefined' ? navigator.language : 'en-US') || 'en-US';
+    const region = locale.split('-')[1]?.toUpperCase() || '';
+    if (region && GEO_CURRENCY[region]) {
+      setCurrency(GEO_CURRENCY[region]);
+      setCountry(region);
+    }
+    fetch('https://ipapi.co/json/', { cache: 'force-cache' })
+      .then(r => r.json())
+      .then(data => {
+        const cc = data.country_code?.toUpperCase();
+        if (cc && GEO_CURRENCY[cc]) { setCurrency(GEO_CURRENCY[cc]); setCountry(cc); }
+      })
+      .catch(() => {});
+  }, []);
+
+  const fmt = (raw: any): string => {
+    const n = safeN(raw);
+    const sym = currency.symbol;
+    if (n >= 1_000_000_000) return `${sym}${safeD(n / 1_000_000_000, 1)}B`;
+    if (n >= 1_000_000)     return `${sym}${safeD(n / 1_000_000, 1)}M`;
+    if (n >= 1_000)         return `${sym}${safeD(n / 1_000, 0)}K`;
+    return `${sym}${n.toFixed(0)}`;
+  };
+
+  return { currency, country, fmt };
+}
 
 // ── Animated counter ──────────────────────────────────────────────────────────
 function Counter({ target, prefix = '', suffix = '' }: { target: number; prefix?: string; suffix?: string }) {
