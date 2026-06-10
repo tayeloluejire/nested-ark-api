@@ -25,7 +25,7 @@ const navItems = [
 ];
 
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
-  const { user, logout, isLoading } = useAuth();
+  const { user, logout, loading: isLoading } = useAuth();
   const pathname  = usePathname();
   const router    = useRouter();
   const [open, setOpen] = useState(false);
