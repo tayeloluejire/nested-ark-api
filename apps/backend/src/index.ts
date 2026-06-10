@@ -11106,12 +11106,12 @@ app.get('/api/admin/founder-dashboard', authenticate, async (req: Request, res: 
         SELECT
           COUNT(*)                                                             AS total_users,
           COUNT(*) FILTER (WHERE role='TENANT')                               AS tenants,
-          COUNT(*) FILTER (WHERE role='DEVELOPER' OR account_type='LANDLORD') AS landlords,
+          COUNT(*) FILTER (WHERE role='DEVELOPER') AS landlords,
           COUNT(*) FILTER (WHERE role='INVESTOR')                             AS investors,
           COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '1 day')     AS signups_today,
           COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '7 days')    AS signups_7d,
           COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '30 days')   AS signups_30d
-        FROM users
+        FROM public.users
         WHERE role != 'ADMIN'
       `),
 
@@ -11148,7 +11148,7 @@ app.get('/api/admin/founder-dashboard', authenticate, async (req: Request, res: 
                  NULL           AS amount,
                  u.created_at   AS event_time,
                  NULL           AS detail
-          FROM users u WHERE u.role != 'ADMIN'
+          FROM public.users u WHERE u.role != 'ADMIN'
 
           UNION ALL
 
@@ -11159,7 +11159,7 @@ app.get('/api/admin/founder-dashboard', authenticate, async (req: Request, res: 
                  sv.created_at,
                  CONCAT('Target: ₦', sv.target_amount::text)
           FROM standalone_vaults sv
-          JOIN users u ON u.id = sv.tenant_user_id
+          JOIN public.users u ON u.id = sv.tenant_user_id
 
           UNION ALL
 
@@ -11171,7 +11171,7 @@ app.get('/api/admin/founder-dashboard', authenticate, async (req: Request, res: 
                  'Standalone vault contribution'
           FROM standalone_contributions sc
           JOIN standalone_vaults sv ON sv.id = sc.vault_id
-          JOIN users u ON u.id = sv.tenant_user_id
+          JOIN public.users u ON u.id = sv.tenant_user_id
           WHERE sc.status = 'SUCCESS'
 
           UNION ALL
@@ -11185,7 +11185,7 @@ app.get('/api/admin/founder-dashboard', authenticate, async (req: Request, res: 
           FROM flex_contributions fc
           JOIN flex_pay_vaults fpv ON fpv.id = fc.vault_id
           LEFT JOIN tenancies t ON t.id = fpv.tenancy_id
-          LEFT JOIN users u ON u.id = fpv.tenant_user_id
+          LEFT JOIN public.users u ON u.id = fpv.tenant_user_id
           WHERE fc.status = 'SUCCESS'
 
           UNION ALL
@@ -11197,7 +11197,7 @@ app.get('/api/admin/founder-dashboard', authenticate, async (req: Request, res: 
                  vp.created_at,
                  CONCAT('Payout released')
           FROM vault_payouts vp
-          JOIN users u ON u.id = vp.landlord_id
+          JOIN public.users u ON u.id = vp.landlord_id
           WHERE vp.status = 'SUCCESS'
         ) feed
         ORDER BY event_time DESC NULLS LAST
@@ -11210,8 +11210,8 @@ app.get('/api/admin/founder-dashboard', authenticate, async (req: Request, res: 
           DATE(created_at)::text                              AS day,
           COUNT(*)                                             AS total,
           COUNT(*) FILTER (WHERE role='TENANT')               AS tenants,
-          COUNT(*) FILTER (WHERE role='DEVELOPER' OR account_type='LANDLORD') AS landlords
-        FROM users
+          COUNT(*) FILTER (WHERE role='DEVELOPER') AS landlords
+        FROM public.users
         WHERE created_at >= NOW() - INTERVAL '14 days' AND role != 'ADMIN'
         GROUP BY DATE(created_at)
         ORDER BY day ASC
@@ -11222,11 +11222,11 @@ app.get('/api/admin/founder-dashboard', authenticate, async (req: Request, res: 
         SELECT u.full_name, u.email,
                COUNT(DISTINCT t.id) AS tenant_count,
                COUNT(DISTINCT ru.id) AS unit_count
-        FROM users u
+        FROM public.users u
         LEFT JOIN projects p ON p.sponsor_id = u.id
         LEFT JOIN rental_units ru ON ru.project_id = p.id
         LEFT JOIN tenancies t ON t.unit_id = ru.id AND t.status = 'ACTIVE'
-        WHERE u.role = 'DEVELOPER' OR u.account_type = 'LANDLORD'
+        WHERE u.role = 'DEVELOPER'
         GROUP BY u.id, u.full_name, u.email
         ORDER BY tenant_count DESC
         LIMIT 5
@@ -11234,8 +11234,8 @@ app.get('/api/admin/founder-dashboard', authenticate, async (req: Request, res: 
 
       // 7. Most recent 10 signups
       pool.query(`
-        SELECT full_name, email, role, account_type, created_at
-        FROM users
+        SELECT full_name, email, role, created_at
+        FROM public.users
         WHERE role != 'ADMIN'
         ORDER BY created_at DESC
         LIMIT 10
