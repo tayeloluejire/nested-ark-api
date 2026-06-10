@@ -11104,15 +11104,15 @@ app.get('/api/admin/founder-dashboard', authenticate, async (req: Request, res: 
       // 1. User counts by role
       pool.query(`
         SELECT
-          COUNT(*)                                                             AS total_users,
-          COUNT(*) FILTER (WHERE role='TENANT')                               AS tenants,
-          COUNT(*) FILTER (WHERE role='DEVELOPER') AS landlords,
-          COUNT(*) FILTER (WHERE role='INVESTOR')                             AS investors,
-          COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '1 day')     AS signups_today,
-          COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '7 days')    AS signups_7d,
-          COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '30 days')   AS signups_30d
+          COUNT(*)                                                                  AS total_users,
+          COUNT(*) FILTER (WHERE role='TENANT')                                    AS tenants,
+          COUNT(*) FILTER (WHERE role='DEVELOPER')                                 AS landlords,
+          COUNT(*) FILTER (WHERE role='INVESTOR')                                  AS investors,
+          COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '1 day')          AS signups_today,
+          COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '7 days')         AS signups_7d,
+          COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '30 days')        AS signups_30d
+        FROM public.users
         WHERE role NOT IN ('ADMIN','DEVELOPER')
-        WHERE role != 'ADMIN'
       `),
 
       // 2. Vault stats (linked + standalone)
