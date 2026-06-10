@@ -221,6 +221,7 @@ const RD: Record<RoleTab, {
 
 // ═════════════════════════════════════════════════════════════════════════════
 export default function HomePage() {
+  const { currency, country, fmt: fmtNum } = useCurrency();
   const [stats, setStats]                 = useState<Stats | null>(null);
   const [searchInput, setSearchInput]     = useState('');
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
@@ -334,6 +335,16 @@ export default function HomePage() {
             ))}
           </div>
         </section>
+
+        {/* ── CURRENCY BADGE ──────────────────────────────────────────────── */}
+        {country && (
+          <div className="px-4">
+            <div className="flex items-center gap-2 px-3 py-2 rounded-xl border border-zinc-800 bg-zinc-900/40 w-fit">
+              <span className="text-[9px] text-zinc-500 font-mono uppercase tracking-widest">Showing prices in</span>
+              <span className="text-[9px] font-black text-teal-400 uppercase tracking-widest">{currency.code} {currency.symbol}</span>
+            </div>
+          </div>
+        )}
 
         {/* ── LIVE STATS ────────────────────────────────────────────────── */}
         <section className="px-4">
