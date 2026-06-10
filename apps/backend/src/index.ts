@@ -11098,7 +11098,7 @@ app.get('/api/admin/founder-dashboard', authenticate, async (req: Request, res: 
 
     const [
       userStats, vaultStats, paymentStats, activityFeed,
-      signupGrowth, topLandlords, recentSignups,
+      signupGrowth, topLandlords, recentSignups, bankingStats, alertStats,
     ] = await Promise.all([
 
       // 1. User counts by role
@@ -11111,7 +11111,7 @@ app.get('/api/admin/founder-dashboard', authenticate, async (req: Request, res: 
           COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '1 day')     AS signups_today,
           COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '7 days')    AS signups_7d,
           COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '30 days')   AS signups_30d
-        FROM public.users
+        WHERE role NOT IN ('ADMIN','DEVELOPER')
         WHERE role != 'ADMIN'
       `),
 
@@ -11243,61 +11243,86 @@ app.get('/api/admin/founder-dashboard', authenticate, async (req: Request, res: 
         ORDER BY created_at DESC
         LIMIT 10
       `),
+      `),
+
+      // 8. Banking metrics
+      pool.query(`
+        SELECT
+          (SELECT COUNT(*) FROM landlord_bank_accounts)                                    AS landlord_accounts,
+          (SELECT COUNT(*) FROM tenant_bank_profiles)                                      AS tenant_accounts,
+          (SELECT COUNT(*) FROM tenant_bank_profiles WHERE preferred_debit_day IS NOT NULL) AS autopay_enabled,
+          (SELECT COUNT(*) FROM feature_waitlist WHERE feature_name='autopay')             AS autopay_waitlist
+      `),
+
+      // 9. Alert metrics
+      pool.query(`
+        SELECT
+          (SELECT COUNT(*) FROM flex_contributions      WHERE status='FAILED') AS failed_flex,
+          (SELECT COUNT(*) FROM standalone_contributions WHERE status='FAILED') AS failed_standalone,
+          (SELECT COUNT(*) FROM system_ledger
+           WHERE transaction_type IN ('LANDLORD_PAYOUT','FLEX_CASHOUT')
+             AND (payload->>'transfer_status') = 'failed')                     AS failed_payouts,
+          (SELECT COUNT(*) FROM kyc_records WHERE kyc_status='PENDING')        AS pending_kyc
+      `),
     ]);
 
     const u  = userStats.rows[0];
     const v  = vaultStats.rows[0];
     const p  = paymentStats.rows[0];
+    const bk = bankingStats.rows[0];
+    const al = alertStats.rows[0];
 
-    const totalContributions =
-      parseFloat(p.total_flex_contributions || 0) +
-      parseFloat(p.total_standalone_contributions || 0);
-    const totalVaultBalance =
-      parseFloat(v.linked_vault_total || 0) +
-      parseFloat(v.standalone_vault_total || 0);
-    const totalPayments =
-      parseInt(p.flex_payment_count || 0) +
-      parseInt(p.standalone_payment_count || 0);
+    const n = (val: any): number => parseInt(String(val  || 0)) || 0;
+    const f = (val: any): number => parseFloat(String(val || 0)) || 0;
+
+    const totalContributions = f(p.total_flex_contributions) + f(p.total_standalone_contributions);
+    const totalPayments      = n(p.flex_payment_count) + n(p.standalone_payment_count);
+    const failedPayments     = n(al.failed_flex) + n(al.failed_standalone);
 
     return res.json({
       success: true,
       generated_at: new Date().toISOString(),
 
-      users: {
-        total:         parseInt(u.total_users || 0),
-        tenants:       parseInt(u.tenants     || 0),
-        landlords:     parseInt(u.landlords   || 0),
-        investors:     parseInt(u.investors   || 0),
-        signups_today: parseInt(u.signups_today || 0),
-        signups_7d:    parseInt(u.signups_7d    || 0),
-        signups_30d:   parseInt(u.signups_30d   || 0),
-      },
+      // Today
+      signups_today:         n(u.signups_today),
+      vaults_created_today:  0,
+      contributions_today:   totalPayments,
+      revenue_today:         0,
 
-      vaults: {
-        active_linked:      parseInt(v.active_linked_vaults      || 0),
-        active_standalone:  parseInt(v.active_standalone_vaults  || 0),
-        total_active:       parseInt(v.active_linked_vaults || 0) + parseInt(v.active_standalone_vaults || 0),
-        balance_held:       totalVaultBalance,
-        pending_releases:   parseInt(v.pending_releases_linked || 0) + parseInt(v.pending_releases_standalone || 0),
-      },
+      // Users
+      total_users:           n(u.total_users),
+      total_tenants:         n(u.tenants),
+      total_landlords:       n(u.landlords),
+      total_investors:       n(u.investors),
 
-      finance: {
-        total_contributions: totalContributions,
-        contributions_30d:   parseFloat(p.contributions_30d  || 0),
-        total_payments:      totalPayments,
-        total_payouts:       parseFloat(p.total_payouts      || 0),
-        platform_revenue:    parseFloat(p.platform_revenue   || 0),
-      },
+      // Vaults
+      active_vaults:         n(v.active_linked_vaults) + n(v.active_standalone_vaults),
+      funded_vaults:         n(v.pending_releases_linked) + n(v.pending_releases_standalone),
+      standalone_vaults:     n(v.active_standalone_vaults),
 
-      // Conversion funnel (users → vaults → contributions → funded)
-      funnel: {
-        registered:            parseInt(u.total_users || 0),
-        created_vault:         parseInt(v.active_linked_vaults || 0) + parseInt(v.active_standalone_vaults || 0),
-        made_contribution:     totalPayments > 0 ? Math.min(totalPayments, parseInt(u.tenants || 0)) : 0,
-        reached_100_pct:       parseInt(v.pending_releases_linked || 0) + parseInt(v.pending_releases_standalone || 0),
-      },
+      // Financial
+      total_contributions:   totalContributions,
+      total_platform_revenue:f(p.platform_revenue),
+      total_payouts_released:f(p.total_payouts),
+      pending_payouts:       0,
 
-      activity_feed: activityFeed.rows.map(e => ({
+      // Banking
+      linked_bank_accounts:  n(bk.landlord_accounts) + n(bk.tenant_accounts),
+      autopay_enabled:       n(bk.autopay_enabled),
+      autopay_waitlist:      n(bk.autopay_waitlist),
+
+      // Alerts
+      failed_payments:       failedPayments,
+      failed_payouts:        n(al.failed_payouts),
+      pending_kyc:           n(al.pending_kyc),
+
+      // Extended
+      signups_7d:            n(u.signups_7d),
+      signups_30d:           n(u.signups_30d),
+      total_payments:        totalPayments,
+      vault_balance_held:    f(v.linked_vault_total) + f(v.standalone_vault_total),
+
+      activity_feed: activityFeed.rows.map((e: any) => ({
         event_type: e.event_type,
         actor:      e.actor,
         role:       e.role,
@@ -11305,9 +11330,8 @@ app.get('/api/admin/founder-dashboard', authenticate, async (req: Request, res: 
         detail:     e.detail,
         time:       e.event_time,
       })),
-
-      signup_growth: signupGrowth.rows,
-      top_landlords: topLandlords.rows,
+      signup_growth:  signupGrowth.rows,
+      top_landlords:  topLandlords.rows,
       recent_signups: recentSignups.rows,
     });
   } catch (e: any) {
