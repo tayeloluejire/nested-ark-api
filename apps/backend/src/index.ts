@@ -11239,10 +11239,9 @@ app.get('/api/admin/founder-dashboard', authenticate, async (req: Request, res: 
       pool.query(`
         SELECT full_name, email, role, created_at
         FROM public.users
-        WHERE role != 'ADMIN'
+        WHERE role NOT IN ('ADMIN','DEVELOPER')
         ORDER BY created_at DESC
         LIMIT 10
-      `),
       `),
 
       // 8. Banking metrics
