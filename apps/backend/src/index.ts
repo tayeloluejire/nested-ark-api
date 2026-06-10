@@ -11256,12 +11256,10 @@ app.get('/api/admin/founder-dashboard', authenticate, async (req: Request, res: 
       // 9. Alert metrics
       pool.query(`
         SELECT
-          (SELECT COUNT(*) FROM flex_contributions      WHERE status='FAILED') AS failed_flex,
-          (SELECT COUNT(*) FROM standalone_contributions WHERE status='FAILED') AS failed_standalone,
-          (SELECT COUNT(*) FROM system_ledger
-           WHERE transaction_type IN ('LANDLORD_PAYOUT','FLEX_CASHOUT')
-             AND (payload->>'transfer_status') = 'failed')                     AS failed_payouts,
-          (SELECT COUNT(*) FROM kyc_records WHERE kyc_status='PENDING')        AS pending_kyc
+          (SELECT COUNT(*) FROM flex_contributions       WHERE status='FAILED')        AS failed_flex,
+          (SELECT COUNT(*) FROM standalone_contributions WHERE status='FAILED')        AS failed_standalone,
+          (SELECT COUNT(*) FROM system_ledger WHERE transaction_type IN ('LANDLORD_PAYOUT','FLEX_CASHOUT') AND payload IS NOT NULL AND (payload->>'transfer_status')='failed') AS failed_payouts,
+          (SELECT COUNT(*) FROM kyc_records              WHERE kyc_status='PENDING')   AS pending_kyc
       `),
     ]);
 
