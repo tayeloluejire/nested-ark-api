@@ -11142,36 +11142,37 @@ app.get('/api/admin/founder-dashboard', authenticate, async (req: Request, res: 
            WHERE status='COMPLETED')                                                                  AS platform_revenue
       `),
 
-      // 4. Live activity feed — last 20 events across all major tables
+      // 4. Live activity feed — last 25 events across all major tables
+      // All UNION branches explicitly typed: amount NUMERIC, detail TEXT
       pool.query(`
         SELECT * FROM (
-          SELECT 'signup'       AS event_type,
-                 u.full_name    AS actor,
-                 u.role         AS role,
-                 NULL           AS amount,
-                 u.created_at   AS event_time,
-                 NULL           AS detail
-          FROM public.users u WHERE u.role != 'ADMIN'
+          SELECT 'signup'::text          AS event_type,
+                 u.full_name::text       AS actor,
+                 u.role::text            AS role,
+                 NULL::numeric           AS amount,
+                 u.created_at            AS event_time,
+                 NULL::text              AS detail
+          FROM public.users u WHERE u.role NOT IN ('ADMIN','DEVELOPER')
 
           UNION ALL
 
-          SELECT 'vault_created' AS event_type,
-                 u.full_name,
-                 'TENANT',
-                 NULL,
+          SELECT 'vault_created'::text,
+                 u.full_name::text,
+                 'TENANT'::text,
+                 NULL::numeric,
                  sv.created_at,
-                 CONCAT('Target: ₦', sv.target_amount::text)
+                 CONCAT('Target: ₦', sv.target_amount::text)::text
           FROM standalone_vaults sv
           JOIN public.users u ON u.id = sv.tenant_user_id
 
           UNION ALL
 
-          SELECT 'contribution'  AS event_type,
-                 u.full_name,
-                 'TENANT',
-                 sc.amount_ngn,
+          SELECT 'contribution'::text,
+                 u.full_name::text,
+                 'TENANT'::text,
+                 sc.amount_ngn::numeric,
                  sc.paid_at,
-                 'Standalone vault contribution'
+                 'Standalone vault contribution'::text
           FROM standalone_contributions sc
           JOIN standalone_vaults sv ON sv.id = sc.vault_id
           JOIN public.users u ON u.id = sv.tenant_user_id
@@ -11179,12 +11180,12 @@ app.get('/api/admin/founder-dashboard', authenticate, async (req: Request, res: 
 
           UNION ALL
 
-          SELECT 'contribution'  AS event_type,
-                 COALESCE(t.tenant_name, u.full_name) AS actor,
-                 'TENANT',
-                 fc.amount_ngn,
+          SELECT 'contribution'::text,
+                 COALESCE(t.tenant_name, u.full_name)::text,
+                 'TENANT'::text,
+                 fc.amount_ngn::numeric,
                  fc.paid_at,
-                 'Flex-Pay vault contribution'
+                 'Flex-Pay vault contribution'::text
           FROM flex_contributions fc
           JOIN flex_pay_vaults fpv ON fpv.id = fc.vault_id
           LEFT JOIN tenancies t ON t.id = fpv.tenancy_id
@@ -11193,12 +11194,12 @@ app.get('/api/admin/founder-dashboard', authenticate, async (req: Request, res: 
 
           UNION ALL
 
-          SELECT 'payout'                                    AS event_type,
-                 COALESCE(sl.payload->>'landlord_name','Landlord') AS actor,
-                 'LANDLORD'                                        AS role,
-                 (sl.payload->>'net_payout')::numeric              AS amount,
-                 sl.created_at                                     AS event_time,
-                 'Payout released'                                 AS detail
+          SELECT 'payout'::text,
+                 COALESCE(sl.payload->>'landlord_name','Landlord')::text,
+                 'LANDLORD'::text,
+                 COALESCE((sl.payload->>'net_payout')::numeric, 0),
+                 sl.created_at,
+                 'Payout released'::text
           FROM system_ledger sl
           WHERE sl.transaction_type IN ('LANDLORD_PAYOUT','FLEX_CASHOUT','AUTO_PAYOUT')
         ) feed
