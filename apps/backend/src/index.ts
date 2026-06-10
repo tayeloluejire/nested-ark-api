@@ -1318,7 +1318,7 @@ app.post("/api/auth/register", async (req: Request, res: Response): Promise<any>
     const userId = uuidv4();
     
     const result = await pool.query(
-      "INSERT INTO public.users (id, email, password, full_name, phone, role) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, email, full_name, role",
+      "INSERT INTO users (id, email, password, full_name, phone, role) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, email, full_name, role",
       [userId, email.toLowerCase(), hashedPassword, full_name, phone || null, role || "PROJECT_SPONSOR"]
     );
 
@@ -1518,7 +1518,7 @@ app.post("/api/auth/login", async (req: Request, res: Response): Promise<any> =>
     const { email, password } = req.body;
     if (!email || !password) return res.status(400).json({ error: "Email and password required" });
 
-    const result = await pool.query("SELECT * FROM public.users WHERE email = $1", [email.toLowerCase()]);
+    const result = await pool.query("SELECT * FROM users WHERE email = $1", [email.toLowerCase()]);
     
     if (result.rows.length === 0) {
       console.log(`❌ Login failed: User not found - ${email}`);
@@ -1564,7 +1564,7 @@ app.post("/api/auth/login", async (req: Request, res: Response): Promise<any> =>
 
 app.get("/api/auth/me", authenticate, async (req: Request, res: Response): Promise<any> => {
   try {
-    const result = await pool.query("SELECT id, email, full_name, role FROM public.users WHERE id = $1", [(req as any).userId]);
+    const result = await pool.query("SELECT id, email, full_name, role FROM users WHERE id = $1", [(req as any).userId]);
     if (result.rows.length === 0) return res.status(404).json({ error: "User not found" });
     return res.json({ success: true, user: result.rows[0] });
   } catch (error: any) {
@@ -1586,7 +1586,7 @@ app.post("/api/auth/forgot-password", async (req: Request, res: Response): Promi
 
   try {
     const userResult = await pool.query(
-      "SELECT id, full_name FROM public.users WHERE email = $1",
+      "SELECT id, full_name FROM users WHERE email = $1",
       [email.toLowerCase()]
     );
 
@@ -1674,7 +1674,7 @@ app.post("/api/auth/verify-reset-token", async (req: Request, res: Response): Pr
     const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
     const result = await pool.query(
       `SELECT prt.*, u.email FROM password_reset_tokens prt
-       JOIN public.users u ON prt.user_id = u.id
+       JOIN users u ON prt.user_id = u.id
        WHERE prt.token_hash = $1 AND prt.used = false AND prt.expires_at > NOW()`,
       [tokenHash]
     );
@@ -1706,7 +1706,7 @@ app.post("/api/auth/reset-password", async (req: Request, res: Response): Promis
     const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
     const result = await pool.query(
       `SELECT prt.id, prt.user_id, u.email FROM password_reset_tokens prt
-       JOIN public.users u ON prt.user_id = u.id
+       JOIN users u ON prt.user_id = u.id
        WHERE prt.token_hash = $1 AND prt.used = false AND prt.expires_at > NOW()`,
       [tokenHash]
     );
@@ -1719,7 +1719,7 @@ app.post("/api/auth/reset-password", async (req: Request, res: Response): Promis
 
     // Hash new password and update user
     const hashedPassword = await bcryptjs.hash(new_password, 12);
-    await pool.query("UPDATE public.users SET password = $1, updated_at = NOW() WHERE id = $2", [hashedPassword, row.user_id]);
+    await pool.query("UPDATE users SET password = $1, updated_at = NOW() WHERE id = $2", [hashedPassword, row.user_id]);
 
     // Mark token as used (single-use)
     await pool.query("UPDATE password_reset_tokens SET used = true WHERE id = $1", [row.id]);
@@ -1783,7 +1783,7 @@ app.post("/api/projects", authenticate, async (req: Request, res: Response): Pro
     const projectNumber = await generateProjectNumber();
 
     // Get submitter info for default owner fields
-    const userRes = await pool.query("SELECT full_name, email FROM public.users WHERE id=$1", [userId]);
+    const userRes = await pool.query("SELECT full_name, email FROM users WHERE id=$1", [userId]);
     const u = userRes.rows[0];
 
     // Compute project_mode in TypeScript — eliminates PostgreSQL $18 type-inference
@@ -1933,7 +1933,7 @@ app.get("/api/projects", async (req: Request, res: Response): Promise<any> => {
         (SELECT json_agg(json_build_object('id',pd.id,'doc_type',pd.doc_type,'title',pd.title,'file_url',pd.file_url,'thumbnail_url',pd.thumbnail_url,'is_public',pd.is_public,'requires_kyc',pd.requires_kyc))
          FROM project_documents pd WHERE pd.project_id = p.id AND pd.is_public = true LIMIT 6) AS public_documents
       FROM projects p
-      LEFT JOIN public.users u ON p.sponsor_id = u.id
+      LEFT JOIN users u ON p.sponsor_id = u.id
       ${where}
       ORDER BY ${orderBy}
       LIMIT $${params.length + 1} OFFSET $${params.length + 2}
@@ -2032,7 +2032,7 @@ app.get('/api/projects/search', async (req: Request, res: Response): Promise<any
           END                                                  AS has_rental
 
        FROM projects p
-       LEFT JOIN public.users u ON p.sponsor_id = u.id
+       LEFT JOIN users u ON p.sponsor_id = u.id
        WHERE (p.visibility = 'PUBLIC' OR p.visibility IS NULL)
          AND (
            $1 = ''
@@ -2161,7 +2161,7 @@ app.get("/api/projects/:projectId", async (req: Request, res: Response): Promise
         (SELECT COUNT(*) FROM project_views pv WHERE pv.project_id = p.id) AS view_count,
         (SELECT COUNT(*) FROM project_saves ps WHERE ps.project_id = p.id) AS save_count
        FROM projects p
-       LEFT JOIN public.users u ON p.sponsor_id = u.id
+       LEFT JOIN users u ON p.sponsor_id = u.id
        WHERE ${lookup}`,
       [projectId]
     );
@@ -2185,7 +2185,7 @@ app.get("/api/projects/:projectId", async (req: Request, res: Response): Promise
 app.put("/api/projects/:projectId", authenticate, async (req: Request, res: Response): Promise<any> => {
   const userId = (req as any).userId;
   try {
-    const roleRes = await pool.query("SELECT role FROM public.users WHERE id=$1", [userId]);
+    const roleRes = await pool.query("SELECT role FROM users WHERE id=$1", [userId]);
     const role    = roleRes.rows[0]?.role;
     const proj    = await pool.query("SELECT sponsor_id FROM projects WHERE id=$1", [req.params.projectId]);
     if (proj.rows.length === 0) return res.status(404).json({ error: "Project not found" });
@@ -2234,7 +2234,7 @@ app.put("/api/projects/:projectId", authenticate, async (req: Request, res: Resp
 app.delete("/api/projects/:projectId", authenticate, async (req: Request, res: Response): Promise<any> => {
   const userId = (req as any).userId;
   try {
-    const roleRes = await pool.query("SELECT role FROM public.users WHERE id=$1", [userId]);
+    const roleRes = await pool.query("SELECT role FROM users WHERE id=$1", [userId]);
     const role    = roleRes.rows[0]?.role;
     const proj    = await pool.query("SELECT sponsor_id FROM projects WHERE id=$1", [req.params.projectId]);
     if (proj.rows.length === 0) return res.status(404).json({ error: "Project not found" });
@@ -2275,7 +2275,7 @@ app.post("/api/projects/:projectId/documents", authenticate, async (req: Request
   try {
     const proj = await pool.query("SELECT sponsor_id FROM projects WHERE id=$1", [req.params.projectId]);
     if (proj.rows.length === 0) return res.status(404).json({ error: "Project not found" });
-    const roleRes = await pool.query("SELECT role FROM public.users WHERE id=$1", [userId]);
+    const roleRes = await pool.query("SELECT role FROM users WHERE id=$1", [userId]);
     const role = roleRes.rows[0]?.role;
     if (proj.rows[0].sponsor_id !== userId && !['ADMIN','GOVERNMENT'].includes(role))
       return res.status(403).json({ error: "Not authorised to add documents" });
@@ -2316,7 +2316,7 @@ app.delete("/api/projects/:projectId/documents/:docId", authenticate, async (req
   const userId = (req as any).userId;
   try {
     const proj = await pool.query("SELECT sponsor_id FROM projects WHERE id=$1", [req.params.projectId]);
-    const roleRes = await pool.query("SELECT role FROM public.users WHERE id=$1", [userId]);
+    const roleRes = await pool.query("SELECT role FROM users WHERE id=$1", [userId]);
     const role = roleRes.rows[0]?.role;
     if (proj.rows[0]?.sponsor_id !== userId && !['ADMIN'].includes(role))
       return res.status(403).json({ error: "Not authorised" });
@@ -2359,7 +2359,7 @@ app.post("/api/projects/:projectId/milestones", authenticate, async (req: Reques
   try {
     const proj = await pool.query("SELECT sponsor_id FROM projects WHERE id=$1", [req.params.projectId]);
     if (proj.rows.length === 0) return res.status(404).json({ error: "Project not found" });
-    const roleRes = await pool.query("SELECT role FROM public.users WHERE id=$1", [userId]);
+    const roleRes = await pool.query("SELECT role FROM users WHERE id=$1", [userId]);
     const role = roleRes.rows[0]?.role;
     if (proj.rows[0].sponsor_id !== userId && !['ADMIN','GOVERNMENT'].includes(role))
       return res.status(403).json({ error: "Not authorised" });
@@ -2396,7 +2396,7 @@ app.get("/api/marketplace/stats", async (req: Request, res: Response): Promise<a
       pool.query("SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE status='ACTIVE') AS active, COALESCE(SUM(budget),0) AS total_val FROM projects"),
       pool.query("SELECT COALESCE(SUM(amount_ngn),0) AS total_ngn FROM payment_transactions WHERE status='SUCCESS'"),
       pool.query("SELECT COUNT(*) AS total FROM bids"),
-      pool.query("SELECT COUNT(*) AS total FROM public.users"),
+      pool.query("SELECT COUNT(*) AS total FROM users"),
       pool.query("SELECT COUNT(DISTINCT country) AS total FROM projects"),
     ]);
     // Fetch live rates for the stats strip
@@ -2426,7 +2426,7 @@ app.get("/api/marketplace/stats", async (req: Request, res: Response): Promise<a
 // GET /api/admin/revenue — all revenue metrics, ADMIN only
 app.get("/api/admin/revenue", authenticate, async (req: Request, res: Response): Promise<any> => {
   const userId = (req as any).userId;
-  const roleCheck = await pool.query("SELECT role FROM public.users WHERE id = $1", [userId]);
+  const roleCheck = await pool.query("SELECT role FROM users WHERE id = $1", [userId]);
   if (roleCheck.rows[0]?.role !== 'ADMIN') return res.status(403).json({ error: "Admin only" });
 
   const { range = '30d' } = req.query;
@@ -3207,7 +3207,7 @@ app.post("/api/milestones/approve-and-release", authenticate, async (req: Reques
   if (!milestone_id) return res.status(400).json({ error: "milestone_id required" });
 
   // Only GOVERNMENT or ADMIN can authorize release
-  const userCheck = await pool.query("SELECT role FROM public.users WHERE id = $1", [userId]);
+  const userCheck = await pool.query("SELECT role FROM users WHERE id = $1", [userId]);
   if (userCheck.rows.length === 0) return res.status(401).json({ error: "Unauthorized" });
   const userRole = userCheck.rows[0].role;
   if (userRole !== 'GOVERNMENT' && userRole !== 'ADMIN') {
@@ -3593,7 +3593,7 @@ app.post("/api/milestones/:milestoneId/verify/human", authenticate, async (req: 
     const { approved, notes, geo_latitude, geo_longitude } = req.body;
     const userId = (req as any).userId;
 
-    const userCheck = await pool.query("SELECT role FROM public.users WHERE id = $1", [userId]);
+    const userCheck = await pool.query("SELECT role FROM users WHERE id = $1", [userId]);
     if (userCheck.rows.length === 0) return res.status(401).json({ error: "Unauthorized" });
     const role = userCheck.rows[0].role;
     if (!['GOVERNMENT', 'ADMIN', 'VERIFIER'].includes(role)) {
@@ -3732,7 +3732,7 @@ app.post("/api/auth/update-role", async (req: Request, res: Response): Promise<a
   if (!validRoles.includes(new_role)) return res.status(400).json({ error: `Invalid role. Use: ${validRoles.join(', ')}` });
   try {
     const result = await pool.query(
-      "UPDATE public.users SET role = $1, updated_at = NOW() WHERE email = $2 RETURNING id, email, role, full_name",
+      "UPDATE users SET role = $1, updated_at = NOW() WHERE email = $2 RETURNING id, email, role, full_name",
       [new_role, email.toLowerCase()]
     );
     if (result.rows.length === 0) return res.status(404).json({ error: `User not found: ${email}` });
@@ -3746,13 +3746,13 @@ app.post("/api/auth/update-role", async (req: Request, res: Response): Promise<a
 // List all users (admin tool)
 app.get("/api/admin/users", authenticate, async (req: Request, res: Response): Promise<any> => {
   const userId = (req as any).userId;
-  const roleCheck = await pool.query("SELECT role FROM public.users WHERE id = $1", [userId]);
+  const roleCheck = await pool.query("SELECT role FROM users WHERE id = $1", [userId]);
   if (!['ADMIN', 'GOVERNMENT'].includes(roleCheck.rows[0]?.role)) {
     return res.status(403).json({ error: "Admin only" });
   }
   try {
     const result = await pool.query(
-      "SELECT id, email, full_name, role, created_at FROM public.users ORDER BY created_at DESC"
+      "SELECT id, email, full_name, role, created_at FROM users ORDER BY created_at DESC"
     );
     return res.json({ success: true, users: result.rows, count: result.rows.length });
   } catch (error: any) {
@@ -3764,7 +3764,7 @@ app.get("/api/admin/users", authenticate, async (req: Request, res: Response): P
 // Supports filters: status=PENDING|VERIFIED|PAID, project_id
 app.get("/api/admin/approval-queue", authenticate, async (req: Request, res: Response): Promise<any> => {
   const userId = (req as any).userId;
-  const roleCheck = await pool.query("SELECT role FROM public.users WHERE id = $1", [userId]);
+  const roleCheck = await pool.query("SELECT role FROM users WHERE id = $1", [userId]);
   if (!['ADMIN', 'GOVERNMENT'].includes(roleCheck.rows[0]?.role)) {
     return res.status(403).json({ error: "Admin only" });
   }
@@ -3815,7 +3815,7 @@ app.get("/api/admin/approval-queue", authenticate, async (req: Request, res: Res
 // GET: Admin dashboard summary
 app.get("/api/admin/summary", authenticate, async (req: Request, res: Response): Promise<any> => {
   const userId = (req as any).userId;
-  const roleCheck = await pool.query("SELECT role FROM public.users WHERE id = $1", [userId]);
+  const roleCheck = await pool.query("SELECT role FROM users WHERE id = $1", [userId]);
   if (!['ADMIN', 'GOVERNMENT'].includes(roleCheck.rows[0]?.role)) {
     return res.status(403).json({ error: "Admin only" });
   }
@@ -3824,7 +3824,7 @@ app.get("/api/admin/summary", authenticate, async (req: Request, res: Response):
       users, projects, milestones, investments,
       pendingApprovals, ledgerCount, readyForRelease, recentActivity
     ] = await Promise.all([
-      pool.query("SELECT COUNT(*) as total, COUNT(CASE WHEN role='GOVERNMENT' THEN 1 END) as govts, COUNT(CASE WHEN role='CONTRACTOR' THEN 1 END) as contractors, COUNT(CASE WHEN role='INVESTOR' THEN 1 END) as investors FROM public.users"),
+      pool.query("SELECT COUNT(*) as total, COUNT(CASE WHEN role='GOVERNMENT' THEN 1 END) as govts, COUNT(CASE WHEN role='CONTRACTOR' THEN 1 END) as contractors, COUNT(CASE WHEN role='INVESTOR' THEN 1 END) as investors FROM users"),
       pool.query("SELECT COUNT(*) as total, COUNT(CASE WHEN status='ACTIVE' THEN 1 END) as active, COUNT(CASE WHEN gov_verified THEN 1 END) as verified FROM projects"),
       pool.query("SELECT COUNT(*) as total, COUNT(CASE WHEN status='PAID' THEN 1 END) as paid, SUM(budget_allocation) as total_value FROM milestones"),
       pool.query("SELECT COALESCE(SUM(amount),0) as total, COUNT(*) as count FROM investments WHERE status='COMMITTED'"),
@@ -3855,7 +3855,7 @@ app.get("/api/admin/summary", authenticate, async (req: Request, res: Response):
 // POST: Admin batch approve — human audit for a milestone
 app.post("/api/admin/milestones/:milestoneId/human-approve", authenticate, async (req: Request, res: Response): Promise<any> => {
   const userId = (req as any).userId;
-  const roleCheck = await pool.query("SELECT role FROM public.users WHERE id = $1", [userId]);
+  const roleCheck = await pool.query("SELECT role FROM users WHERE id = $1", [userId]);
   if (!['ADMIN', 'GOVERNMENT', 'VERIFIER'].includes(roleCheck.rows[0]?.role)) {
     return res.status(403).json({ error: "Insufficient permissions" });
   }
@@ -3886,7 +3886,7 @@ app.post("/api/admin/milestones/:milestoneId/human-approve", authenticate, async
 // POST: Admin release funds (alias of approve-and-release with skip_drone option)
 app.post("/api/admin/milestones/:milestoneId/release", authenticate, async (req: Request, res: Response): Promise<any> => {
   const userId = (req as any).userId;
-  const roleCheck = await pool.query("SELECT role FROM public.users WHERE id = $1", [userId]);
+  const roleCheck = await pool.query("SELECT role FROM users WHERE id = $1", [userId]);
   if (!['ADMIN', 'GOVERNMENT'].includes(roleCheck.rows[0]?.role)) {
     return res.status(403).json({ error: "Only ADMIN or GOVERNMENT can release funds" });
   }
@@ -4571,7 +4571,7 @@ app.post("/api/payments/webhook",
             if (!hitMilestone) return;
 
             const uRes = await pool.query(
-              `SELECT full_name, email FROM public.users WHERE id = $1 LIMIT 1`,
+              `SELECT full_name, email FROM users WHERE id = $1 LIMIT 1`,
               [sv.tenant_user_id]
             );
             if (!uRes.rows.length || !uRes.rows[0].email) return;
@@ -4805,7 +4805,7 @@ app.post("/api/payments/initialize", authenticate, async (req: Request, res: Res
 
   try {
     // Get investor email
-    const userResult = await pool.query("SELECT email, full_name FROM public.users WHERE id = $1", [userId]);
+    const userResult = await pool.query("SELECT email, full_name FROM users WHERE id = $1", [userId]);
     if (userResult.rows.length === 0) return res.status(404).json({ error: 'User not found' });
     const { email } = userResult.rows[0];
 
@@ -4999,7 +4999,7 @@ app.get("/api/kyc/status", authenticate, async (req: Request, res: Response): Pr
 // POST /api/admin/kyc/:userId/review — admin approves or rejects KYC
 app.post("/api/admin/kyc/:userId/review", authenticate, async (req: Request, res: Response): Promise<any> => {
   const adminId = (req as any).userId;
-  const roleCheck = await pool.query("SELECT role FROM public.users WHERE id = $1", [adminId]);
+  const roleCheck = await pool.query("SELECT role FROM users WHERE id = $1", [adminId]);
   if (!['ADMIN', 'GOVERNMENT'].includes(roleCheck.rows[0]?.role)) return res.status(403).json({ error: 'Admin only' });
   const { approved, rejection_reason } = req.body;
   const status = approved ? 'VERIFIED' : 'REJECTED';
@@ -5020,11 +5020,11 @@ app.post("/api/admin/kyc/:userId/review", authenticate, async (req: Request, res
 // GET /api/admin/kyc — admin view all pending KYC records
 app.get("/api/admin/kyc", authenticate, async (req: Request, res: Response): Promise<any> => {
   const adminId = (req as any).userId;
-  const roleCheck = await pool.query("SELECT role FROM public.users WHERE id = $1", [adminId]);
+  const roleCheck = await pool.query("SELECT role FROM users WHERE id = $1", [adminId]);
   if (!['ADMIN', 'GOVERNMENT'].includes(roleCheck.rows[0]?.role)) return res.status(403).json({ error: 'Admin only' });
   try {
     const result = await pool.query(
-      `SELECT k.*, u.email, u.full_name as user_full_name FROM kyc_records k JOIN public.users u ON k.user_id = u.id ORDER BY k.created_at DESC`
+      `SELECT k.*, u.email, u.full_name as user_full_name FROM kyc_records k JOIN users u ON k.user_id = u.id ORDER BY k.created_at DESC`
     );
     return res.json({ success: true, records: result.rows, count: result.rows.length });
   } catch (err: any) {
@@ -5045,8 +5045,8 @@ app.post("/api/seed", async (req: Request, res: Response): Promise<any> => {
   try {
     const isEmail = sponsor_id.includes('@');
     const userCheck = isEmail
-      ? await pool.query("SELECT id, role FROM public.users WHERE email = $1", [sponsor_id.toLowerCase()])
-      : await pool.query("SELECT id, role FROM public.users WHERE id = $1", [sponsor_id]);
+      ? await pool.query("SELECT id, role FROM users WHERE email = $1", [sponsor_id.toLowerCase()])
+      : await pool.query("SELECT id, role FROM users WHERE id = $1", [sponsor_id]);
 
     if (userCheck.rows.length === 0) {
       return res.status(404).json({ error: `No user found for '${sponsor_id}'. Register as GOVERNMENT first.` });
@@ -5321,7 +5321,7 @@ app.get("/api/geo/projects", async (req: Request, res: Response): Promise<any> =
 // POST /api/ticker/ad — submit a sponsored ad (ADMIN/GOVERNMENT only)
 app.post("/api/ticker/ad", authenticate, async (req: Request, res: Response): Promise<any> => {
   try {
-    const userCheck = await pool.query("SELECT role FROM public.users WHERE id = $1", [(req as any).userId]);
+    const userCheck = await pool.query("SELECT role FROM users WHERE id = $1", [(req as any).userId]);
     if (!['ADMIN', 'GOVERNMENT'].includes(userCheck.rows[0]?.role)) {
       return res.status(403).json({ error: "Only ADMIN or GOVERNMENT can create ad listings" });
     }
@@ -5351,7 +5351,7 @@ app.post("/api/ticker/ad", authenticate, async (req: Request, res: Response): Pr
 
 // GET all ticker items (admin view)
 app.get("/api/admin/ticker", authenticate, async (req: Request, res: Response): Promise<any> => {
-  const userCheck = await pool.query("SELECT role FROM public.users WHERE id = $1", [(req as any).userId]);
+  const userCheck = await pool.query("SELECT role FROM users WHERE id = $1", [(req as any).userId]);
   if (!['ADMIN', 'GOVERNMENT'].includes(userCheck.rows[0]?.role)) return res.status(403).json({ error: "Admin only" });
   try {
     const items = await pool.query("SELECT * FROM ticker_news ORDER BY priority DESC, created_at DESC LIMIT 100");
@@ -5362,7 +5362,7 @@ app.get("/api/admin/ticker", authenticate, async (req: Request, res: Response): 
 
 // POST — push a new ticker item
 app.post("/api/admin/ticker", authenticate, async (req: Request, res: Response): Promise<any> => {
-  const userCheck = await pool.query("SELECT role FROM public.users WHERE id = $1", [(req as any).userId]);
+  const userCheck = await pool.query("SELECT role FROM users WHERE id = $1", [(req as any).userId]);
   if (!['ADMIN', 'GOVERNMENT'].includes(userCheck.rows[0]?.role)) return res.status(403).json({ error: "Admin only" });
   const { content, item_type = 'NEWS', sponsor_name, link_url, priority = 1 } = req.body;
   if (!content?.trim()) return res.status(400).json({ error: "content required" });
@@ -5377,7 +5377,7 @@ app.post("/api/admin/ticker", authenticate, async (req: Request, res: Response):
 
 // PUT — update a ticker item
 app.put("/api/admin/ticker/:id", authenticate, async (req: Request, res: Response): Promise<any> => {
-  const userCheck = await pool.query("SELECT role FROM public.users WHERE id = $1", [(req as any).userId]);
+  const userCheck = await pool.query("SELECT role FROM users WHERE id = $1", [(req as any).userId]);
   if (!['ADMIN', 'GOVERNMENT'].includes(userCheck.rows[0]?.role)) return res.status(403).json({ error: "Admin only" });
   const { content, item_type, sponsor_name, link_url, priority, is_active } = req.body;
   try {
@@ -5400,7 +5400,7 @@ app.put("/api/admin/ticker/:id", authenticate, async (req: Request, res: Respons
 
 // DELETE — remove a ticker item
 app.delete("/api/admin/ticker/:id", authenticate, async (req: Request, res: Response): Promise<any> => {
-  const userCheck = await pool.query("SELECT role FROM public.users WHERE id = $1", [(req as any).userId]);
+  const userCheck = await pool.query("SELECT role FROM users WHERE id = $1", [(req as any).userId]);
   if (!['ADMIN', 'GOVERNMENT'].includes(userCheck.rows[0]?.role)) return res.status(403).json({ error: "Admin only" });
   try {
     await pool.query("DELETE FROM ticker_news WHERE id = $1", [req.params.id]);
@@ -5410,7 +5410,7 @@ app.delete("/api/admin/ticker/:id", authenticate, async (req: Request, res: Resp
 
 // POST — toggle active status
 app.post("/api/admin/ticker/:id/toggle", authenticate, async (req: Request, res: Response): Promise<any> => {
-  const userCheck = await pool.query("SELECT role FROM public.users WHERE id = $1", [(req as any).userId]);
+  const userCheck = await pool.query("SELECT role FROM users WHERE id = $1", [(req as any).userId]);
   if (!['ADMIN', 'GOVERNMENT'].includes(userCheck.rows[0]?.role)) return res.status(403).json({ error: "Admin only" });
   try {
     const result = await pool.query(
@@ -5545,7 +5545,7 @@ app.get("/api/market/config", async (req: Request, res: Response): Promise<any> 
 // PUT /api/admin/market/config — admin updates a market config value
 app.put("/api/admin/market/config", authenticate, async (req: Request, res: Response): Promise<any> => {
   const adminId = (req as any).userId;
-  const roleCheck = await pool.query("SELECT role FROM public.users WHERE id = $1", [adminId]);
+  const roleCheck = await pool.query("SELECT role FROM users WHERE id = $1", [adminId]);
   if (roleCheck.rows[0]?.role !== 'ADMIN') return res.status(403).json({ error: 'Admin only' });
 
   const { key, value } = req.body;
@@ -5760,7 +5760,7 @@ async function computeYieldDistributions(
     const splitsRes = await client.query(
       `SELECT ss.*, u.full_name, u.email
        FROM stakeholder_splits ss
-       LEFT JOIN public.users u ON ss.user_id = u.id
+       LEFT JOIN users u ON ss.user_id = u.id
        WHERE ss.project_id = $1
        ORDER BY ss.role, ss.share_pct DESC`,
       [projectId]
@@ -5787,7 +5787,7 @@ async function computeYieldDistributions(
 
     const investorsRes = await client.query(
       `SELECT i.investor_id, i.amount, u.full_name, u.email
-       FROM investments i JOIN public.users u ON i.investor_id=u.id
+       FROM investments i JOIN users u ON i.investor_id=u.id
        WHERE i.project_id=$1 AND i.status='COMMITTED'`,
       [projectId]
     );
@@ -5801,7 +5801,7 @@ async function computeYieldDistributions(
 
     // ── 5. Get platform admin user ──────────────────────────────────────
     const adminRes = await client.query(
-      `SELECT id FROM public.users WHERE role='ADMIN' ORDER BY created_at LIMIT 1`
+      `SELECT id FROM users WHERE role='ADMIN' ORDER BY created_at LIMIT 1`
     );
     const adminId = adminRes.rows[0]?.id;
 
@@ -6104,7 +6104,7 @@ app.post('/api/landlord/bank-accounts', authenticate, async (req: Request, res: 
       try {
         // Fetch landlord profile for contact details
         const landlordRes = await pool.query(
-          `SELECT full_name, email, phone FROM public.users WHERE id=$1`, [userId]
+          `SELECT full_name, email, phone FROM users WHERE id=$1`, [userId]
         );
         const landlord = landlordRes.rows[0];
         const saRes = await fetch(`${PAYSTACK_BASE}/subaccount`, {
@@ -6233,7 +6233,7 @@ app.post('/api/landlord/bank-accounts/:id/create-recipient', authenticate, async
     if (!subaccountCode) {
       try {
         const landlordRes = await pool.query(
-          `SELECT full_name, email, phone FROM public.users WHERE id=$1`, [acct.user_id]
+          `SELECT full_name, email, phone FROM users WHERE id=$1`, [acct.user_id]
         );
         const landlord = landlordRes.rows[0];
         const saRes = await fetch(`${PAYSTACK_BASE}/subaccount`, {
@@ -6925,7 +6925,7 @@ app.post('/api/rental/consume-invite', authenticate, async (req: Request, res: R
     if (!tenancy_id) return res.status(400).json({ error: 'tenancy_id required' });
 
     // Verify tenancy exists and email matches
-    const userRes = await pool.query('SELECT email, role FROM public.users WHERE id=$1', [userId]);
+    const userRes = await pool.query('SELECT email, role FROM users WHERE id=$1', [userId]);
     if (!userRes.rows.length) return res.status(404).json({ error: 'User not found' });
     const user = userRes.rows[0];
 
@@ -6947,7 +6947,7 @@ app.post('/api/rental/consume-invite', authenticate, async (req: Request, res: R
     );
 
     // Ensure user has TENANT role
-    await pool.query(`UPDATE public.users SET role='TENANT' WHERE id=$1 AND role NOT IN ('ADMIN','GOVERNMENT','VERIFIER')`, [userId]);
+    await pool.query(`UPDATE users SET role='TENANT' WHERE id=$1 AND role NOT IN ('ADMIN','GOVERNMENT','VERIFIER')`, [userId]);
 
     // Link vault too
     await pool.query(
@@ -7282,7 +7282,7 @@ app.delete('/api/rental/units/:id', authenticate, async (req: Request, res: Resp
     const ownCheck = await pool.query(
       `SELECT ru.id, ru.status FROM rental_units ru
        JOIN projects p ON p.id = ru.project_id
-       WHERE ru.id = $1 AND (p.sponsor_id = $2 OR (SELECT role FROM public.users WHERE id=$2)='ADMIN')`,
+       WHERE ru.id = $1 AND (p.sponsor_id = $2 OR (SELECT role FROM users WHERE id=$2)='ADMIN')`,
       [id, userId]
     );
     if (!ownCheck.rows.length) return res.status(403).json({ error: 'Unit not found or access denied' });
@@ -7329,7 +7329,7 @@ app.post('/api/rental/marketplace/advertise', authenticate, async (req: Request,
     if (unitRes.rows[0].status === 'OCCUPIED') return res.status(400).json({ error: 'Cannot advertise an occupied unit' });
 
     // Landlord email
-    const userRes = await pool.query('SELECT email FROM public.users WHERE id=$1', [userId]);
+    const userRes = await pool.query('SELECT email FROM users WHERE id=$1', [userId]);
     const email   = userRes.rows[0]?.email;
 
     const ref = `ARK-ADVERT-${unit_id.slice(0,8).toUpperCase()}-${Date.now()}`;
@@ -7631,7 +7631,7 @@ app.get('/api/rental/project/:projectId', authenticate, async (req: Request, res
       pool.query(
         `SELECT yd.*, u.full_name, u.email
          FROM yield_distributions yd
-         LEFT JOIN public.users u ON yd.recipient_id=u.id
+         LEFT JOIN users u ON yd.recipient_id=u.id
          WHERE yd.project_id=$1 ORDER BY yd.distributed_at DESC LIMIT 100`, [projectId]
       ),
       pool.query(
@@ -7713,7 +7713,7 @@ app.get('/api/rental/stakeholders/:projectId', authenticate, async (req: Request
     const r = await pool.query(
       `SELECT ss.*, u.full_name, u.email
        FROM stakeholder_splits ss
-       LEFT JOIN public.users u ON ss.user_id=u.id
+       LEFT JOIN users u ON ss.user_id=u.id
        WHERE ss.project_id=$1 ORDER BY ss.role`,
       [req.params.projectId]
     );
@@ -7795,7 +7795,7 @@ app.get('/api/maintenance/:projectId', authenticate, async (req: Request, res: R
     const r = await pool.query(
       `SELECT ml.*, u.full_name AS reported_by_name
        FROM maintenance_logs ml
-       LEFT JOIN public.users u ON ml.reported_by=u.id
+       LEFT JOIN users u ON ml.reported_by=u.id
        WHERE ml.project_id=$1 ORDER BY ml.created_at DESC`,
       [req.params.projectId]
     );
@@ -7810,7 +7810,7 @@ app.get('/api/maintenance/:projectId', authenticate, async (req: Request, res: R
 // ============================================================================
 app.get('/api/admin/overview', authenticate, async (req: Request, res: Response): Promise<any> => {
   const userId   = (req as any).userId;
-  const roleCheck = await pool.query('SELECT role FROM public.users WHERE id = $1', [userId]);
+  const roleCheck = await pool.query('SELECT role FROM users WHERE id = $1', [userId]);
   if (!['ADMIN', 'GOVERNMENT'].includes(roleCheck.rows[0]?.role)) {
     return res.status(403).json({ error: 'Admin only' });
   }
@@ -7919,7 +7919,7 @@ app.get('/api/admin/overview', authenticate, async (req: Request, res: Response)
           i.created_at
         FROM investments i
         JOIN projects p ON p.id = i.project_id
-        JOIN public.users u    ON u.id = i.investor_id
+        JOIN users u    ON u.id = i.investor_id
         WHERE i.status = 'COMMITTED'
         ORDER BY i.created_at DESC LIMIT 4
       `).catch(() => ({ rows: [] })),
@@ -7935,7 +7935,7 @@ app.get('/api/admin/overview', authenticate, async (req: Request, res: Response)
           rp.created_at
         FROM rent_payments rp
         JOIN projects p ON p.id = rp.project_id
-        LEFT JOIN public.users u ON u.id = rp.tenant_id
+        LEFT JOIN users u ON u.id = rp.tenant_id
         ORDER BY rp.created_at DESC LIMIT 3
       `).catch(() => ({ rows: [] })),
 
@@ -7951,7 +7951,7 @@ app.get('/api/admin/overview', authenticate, async (req: Request, res: Response)
         FROM bids b
         JOIN projects p      ON p.id = b.project_id
         JOIN contractors c   ON c.id = b.contractor_id
-        JOIN public.users u         ON u.id = c.user_id
+        JOIN users u         ON u.id = c.user_id
         ORDER BY b.created_at DESC LIMIT 3
       `).catch(() => ({ rows: [] })),
 
@@ -8251,7 +8251,7 @@ app.post('/api/flex-pay/cashout', authenticate, async (req: Request, res: Respon
     const vault = await client.query(`SELECT fpv.*, p.sponsor_id FROM flex_pay_vaults fpv JOIN projects p ON p.id = fpv.project_id WHERE fpv.id = $1 FOR UPDATE`, [vault_id]);
     if (!vault.rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Vault not found' }); }
     const v = vault.rows[0];
-    const roleCheck = await client.query(`SELECT role FROM public.users WHERE id = $1`, [userId]);
+    const roleCheck = await client.query(`SELECT role FROM users WHERE id = $1`, [userId]);
     if (v.sponsor_id !== userId && roleCheck.rows[0]?.role !== 'ADMIN') { await client.query('ROLLBACK'); return res.status(403).json({ error: 'Only the property owner can initiate cashout' }); }
     if (parseFloat(v.vault_balance) < parseFloat(v.target_amount) * 0.5) { await client.query('ROLLBACK'); return res.status(400).json({ error: `Vault only at ${Math.round(parseFloat(v.vault_balance)/parseFloat(v.target_amount)*100)}%. Minimum 50% required.` }); }
     const platformFee = parseFloat(v.vault_balance) * 0.02;
@@ -8347,7 +8347,7 @@ app.post('/api/milestones/:milestoneId/mobilize', authenticate, async (req: Requ
     const mRes = await client.query(`SELECT m.*, p.sponsor_id, p.title AS project_title FROM milestones m JOIN projects p ON p.id = m.project_id WHERE m.id = $1 FOR UPDATE`, [milestoneId]);
     if (!mRes.rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Milestone not found' }); }
     const m = mRes.rows[0];
-    const roleCheck = await client.query(`SELECT role FROM public.users WHERE id = $1`, [userId]);
+    const roleCheck = await client.query(`SELECT role FROM users WHERE id = $1`, [userId]);
     if (m.sponsor_id !== userId && !['ADMIN','GOVERNMENT'].includes(roleCheck.rows[0]?.role)) { await client.query('ROLLBACK'); return res.status(403).json({ error: 'Only project owner or admin can release mobilization' }); }
     if (m.mobilization_paid) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'Mobilization already paid for this milestone' }); }
     const totalBudget   = parseFloat(m.budget_allocation || 0);
@@ -8373,7 +8373,7 @@ app.post('/api/milestones/:milestoneId/release-completion', authenticate, async 
     const mRes = await client.query(`SELECT m.*, p.sponsor_id FROM milestones m JOIN projects p ON p.id = m.project_id WHERE m.id = $1 FOR UPDATE`, [milestoneId]);
     if (!mRes.rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Milestone not found' }); }
     const m = mRes.rows[0];
-    const roleCheck = await client.query(`SELECT role FROM public.users WHERE id=$1`, [userId]);
+    const roleCheck = await client.query(`SELECT role FROM users WHERE id=$1`, [userId]);
     if (!['ADMIN','GOVERNMENT','VERIFIER'].includes(roleCheck.rows[0]?.role) && m.sponsor_id !== userId) { await client.query('ROLLBACK'); return res.status(403).json({ error: 'Insufficient permissions to release completion payment' }); }
     if (!m.mobilization_paid)  { await client.query('ROLLBACK'); return res.status(400).json({ error: 'Mobilization not yet released for this milestone' }); }
     if (m.completion_paid)     { await client.query('ROLLBACK'); return res.status(400).json({ error: 'Completion payment already released' }); }
@@ -8410,7 +8410,7 @@ app.post('/api/reminders/send-bulk', authenticate, async (req: Request, res: Res
   try {
     const pRes = await pool.query(`SELECT sponsor_id FROM projects WHERE id=$1`, [project_id]);
     if (!pRes.rows.length) return res.status(404).json({ error: 'Project not found' });
-    const roleCheck = await pool.query(`SELECT role FROM public.users WHERE id=$1`, [userId]);
+    const roleCheck = await pool.query(`SELECT role FROM users WHERE id=$1`, [userId]);
     if (pRes.rows[0].sponsor_id !== userId && !['ADMIN'].includes(roleCheck.rows[0]?.role)) return res.status(403).json({ error: 'Only project owner or admin can send reminders' });
     const tenancies = await pool.query(`SELECT t.*, ru.unit_name, ru.rent_amount, p.title AS project_title, p.project_number FROM tenancies t JOIN rental_units ru ON ru.id = t.unit_id LEFT JOIN projects p ON p.id = t.project_id WHERE t.project_id = $1 AND t.status = 'ACTIVE'`, [project_id]);
     const mailer = getMailer();
@@ -8449,7 +8449,7 @@ app.post(['/api/notices/generate', '/api/notices/generate/'], authenticate, asyn
     const tenRes = await pool.query(`SELECT t.*, ru.unit_name, ru.rent_amount, p.title AS project_title, p.project_number, p.sponsor_id FROM tenancies t JOIN rental_units ru ON ru.id = t.unit_id LEFT JOIN projects p ON p.id = t.project_id WHERE t.id = $1`, [tenancy_id]);
     if (!tenRes.rows.length) return res.status(404).json({ error: 'Tenancy not found' });
     const t = tenRes.rows[0];
-    const roleCheck = await pool.query(`SELECT role FROM public.users WHERE id=$1`, [userId]);
+    const roleCheck = await pool.query(`SELECT role FROM users WHERE id=$1`, [userId]);
     if (t.sponsor_id !== userId && !['ADMIN','DEVELOPER'].includes(roleCheck.rows[0]?.role)) return res.status(403).json({ error: 'Only property owner or admin can issue notices' });
     const seqRes = await pool.query(`SELECT nextval('notice_number_seq') AS n`);
     const noticeNumber = `ARK-${notice_type.slice(0,3)}-${new Date().getFullYear()}-${String(seqRes.rows[0].n).padStart(5,'0')}`;
@@ -9004,7 +9004,7 @@ app.get('/api/flex-pay/receipt/:contributionId', authenticate, async (req: Reque
            t.tenant_user_id = $2
            OR fpv.tenant_user_id = $2
            OR p.sponsor_id = $2
-           OR (SELECT role FROM public.users WHERE id=$2) = 'ADMIN'
+           OR (SELECT role FROM users WHERE id=$2) = 'ADMIN'
          )`,
       [contributionId, userId]
     );
@@ -9025,7 +9025,7 @@ app.get('/api/flex-pay/receipt/:contributionId', authenticate, async (req: Reque
        FROM flex_contributions fc
        JOIN flex_pay_vaults fpv      ON fpv.id  = fc.vault_id
        LEFT JOIN tenancies t          ON t.id   = fpv.tenancy_id
-       LEFT JOIN public.users u              ON u.id   = fpv.tenant_user_id
+       LEFT JOIN users u              ON u.id   = fpv.tenant_user_id
        LEFT JOIN rental_units ru      ON ru.id  = COALESCE(fpv.unit_id, t.unit_id)
        LEFT JOIN projects p           ON p.id   = COALESCE(fpv.project_id, ru.project_id)
        WHERE fc.id = $1`,
@@ -9120,7 +9120,7 @@ app.get('/api/tenant/my-tenancy', authenticate, async (req: Request, res: Respon
     );
     // Fallback: match by email (before consume-invite has run)
     if (!tenancy.rows.length) {
-      const userRes = await pool.query('SELECT email FROM public.users WHERE id=$1', [userId]);
+      const userRes = await pool.query('SELECT email FROM users WHERE id=$1', [userId]);
       if (userRes.rows.length) {
         tenancy = await pool.query(
           `${FULL_SELECT} WHERE t.tenant_email = $1 AND t.status = 'ACTIVE' ORDER BY t.created_at DESC LIMIT 1`,
@@ -9175,7 +9175,7 @@ app.post('/api/messaging/send', authenticate, async (req: Request, res: Response
     );
     if (!tenRes.rows.length) return res.status(404).json({ error: 'Tenancy not found' });
     const t  = tenRes.rows[0];
-    const rc = await pool.query('SELECT role FROM public.users WHERE id=$1', [userId]);
+    const rc = await pool.query('SELECT role FROM users WHERE id=$1', [userId]);
     if (t.sponsor_id !== userId && !['ADMIN'].includes(rc.rows[0]?.role)) {
       return res.status(403).json({ error: 'Only property owner or admin can send messages' });
     }
@@ -9451,7 +9451,7 @@ app.get('/api/tenant/my-vault', authenticate, async (req: Request, res: Response
     if (byId.rows.length) {
       tenancyRow = byId.rows[0];
     } else {
-      const uRes = await pool.query('SELECT email FROM public.users WHERE id = $1', [userId]);
+      const uRes = await pool.query('SELECT email FROM users WHERE id = $1', [userId]);
       if (uRes.rows.length) {
         const byEmail = await pool.query(
           `SELECT id FROM tenancies WHERE tenant_email = $1 AND status = 'ACTIVE'
@@ -9465,7 +9465,7 @@ app.get('/api/tenant/my-vault', authenticate, async (req: Request, res: Response
     if (!tenancyRow) {
       // ── Independent Tenant — no landlord-linked tenancy yet ───────────────
       const uInfo = await pool.query(
-        `SELECT email, full_name, phone FROM public.users WHERE id = $1`, [userId]
+        `SELECT email, full_name, phone FROM users WHERE id = $1`, [userId]
       );
       const u = uInfo.rows[0] || {};
       // Check for an existing standalone vault
@@ -9563,7 +9563,7 @@ app.get('/api/tenant/my-vault', authenticate, async (req: Request, res: Response
 app.post('/api/tenant/standalone-vault/init', authenticate, async (req: Request, res: Response): Promise<any> => {
   const userId = (req as any).userId;
   try {
-    const uRes = await pool.query(`SELECT role, email, full_name FROM public.users WHERE id=$1`, [userId]);
+    const uRes = await pool.query(`SELECT role, email, full_name FROM users WHERE id=$1`, [userId]);
     if (!uRes.rows.length) return res.status(404).json({ error: 'User not found' });
     if (uRes.rows[0].role !== 'TENANT') {
       return res.status(403).json({ error: 'Only TENANT accounts may initialize a standalone vault' });
@@ -9754,7 +9754,7 @@ app.post('/api/tenant/standalone-vault/pay', authenticate, async (req: Request, 
     const svRes = await pool.query(
       `SELECT sv.*, u.email AS user_email, u.full_name
        FROM standalone_vaults sv
-       JOIN public.users u ON u.id = sv.tenant_user_id
+       JOIN users u ON u.id = sv.tenant_user_id
        WHERE sv.tenant_user_id = $1 AND sv.status NOT IN ('MIGRATED','CLOSED')
        ORDER BY sv.created_at DESC LIMIT 1`,
       [userId]
@@ -9845,7 +9845,7 @@ app.get('/api/tenant/my-contributions', authenticate, async (req: Request, res: 
     if (byId.rows.length) {
       tenancyId = byId.rows[0].id;
     } else {
-      const uRes = await pool.query('SELECT email FROM public.users WHERE id = $1', [userId]);
+      const uRes = await pool.query('SELECT email FROM users WHERE id = $1', [userId]);
       if (uRes.rows.length) {
         const byEmail = await pool.query(
           `SELECT id FROM tenancies WHERE tenant_email = $1 AND status = 'ACTIVE'
@@ -9969,7 +9969,7 @@ app.get('/api/tenant/verify-payment', authenticate, async (req: Request, res: Re
               u.full_name AS tenant_name
        FROM standalone_contributions sc
        JOIN standalone_vaults sv ON sv.id = sc.vault_id
-       JOIN public.users u              ON u.id  = sv.tenant_user_id
+       JOIN users u              ON u.id  = sv.tenant_user_id
        WHERE sc.paystack_ref = $1`,
       [reference]
     ).catch(() => ({ rows: [] as any[] }));
@@ -10047,7 +10047,7 @@ app.get('/api/tenant/verify-payment', authenticate, async (req: Request, res: Re
       const svRes = await pool.query(
         `SELECT sv.*, u.full_name AS tenant_name
          FROM standalone_vaults sv
-         JOIN public.users u ON u.id = sv.tenant_user_id
+         JOIN users u ON u.id = sv.tenant_user_id
          WHERE sv.id = $1`,
         [svId]
       );
@@ -10236,7 +10236,7 @@ app.get('/api/tenant/my-notices', authenticate, async (req: Request, res: Respon
     if (byId.rows.length) {
       tenancyId = byId.rows[0].id;
     } else {
-      const uRes = await pool.query('SELECT email FROM public.users WHERE id = $1', [userId]);
+      const uRes = await pool.query('SELECT email FROM users WHERE id = $1', [userId]);
       if (uRes.rows.length) {
         const byEmail = await pool.query(
           `SELECT id FROM tenancies WHERE tenant_email = $1 AND status = 'ACTIVE'
@@ -10286,7 +10286,7 @@ app.post('/api/tenant/pay-installment', authenticate, async (req: Request, res: 
       if (byId.rows.length) {
         tenancyId = byId.rows[0].id;
       } else {
-        const uRes = await pool.query('SELECT email FROM public.users WHERE id = $1', [userId]);
+        const uRes = await pool.query('SELECT email FROM users WHERE id = $1', [userId]);
         if (uRes.rows.length) {
           const byEmail = await pool.query(
             `SELECT id FROM tenancies WHERE tenant_email = $1 AND status = 'ACTIVE'
@@ -10336,7 +10336,7 @@ app.post('/api/tenant/pay-installment', authenticate, async (req: Request, res: 
               ru.landlord_bank_account_id
        FROM flex_pay_vaults fpv
        JOIN tenancies t ON t.id = fpv.tenancy_id
-       LEFT JOIN public.users u ON u.id = $2
+       LEFT JOIN users u ON u.id = $2
        LEFT JOIN projects p ON p.id = COALESCE(fpv.project_id, t.project_id)
        LEFT JOIN rental_units ru ON ru.id = fpv.unit_id
        WHERE fpv.id = $1`,
@@ -10442,7 +10442,7 @@ app.get('/api/tenant/receipt/:contributionId', authenticate, async (req: Request
          AND (
            t.tenant_user_id = $2
            OR fpv.tenant_user_id = $2
-           OR (SELECT role FROM public.users WHERE id=$2) = 'ADMIN'
+           OR (SELECT role FROM users WHERE id=$2) = 'ADMIN'
          )`,
       [contributionId, userId]
     );
@@ -10462,7 +10462,7 @@ app.get('/api/tenant/receipt/:contributionId', authenticate, async (req: Request
        FROM flex_contributions fc
        JOIN flex_pay_vaults fpv      ON fpv.id  = fc.vault_id
        LEFT JOIN tenancies t          ON t.id   = fpv.tenancy_id
-       LEFT JOIN public.users u              ON u.id   = fpv.tenant_user_id
+       LEFT JOIN users u              ON u.id   = fpv.tenant_user_id
        LEFT JOIN rental_units ru      ON ru.id  = COALESCE(fpv.unit_id, t.unit_id)
        LEFT JOIN projects p           ON p.id   = fpv.project_id
        LEFT JOIN projects p2          ON p2.id  = ru.project_id
@@ -10608,7 +10608,7 @@ app.post('/api/tenant/onboard', async (req: Request, res: Response): Promise<any
     // This ensures dashboard works immediately after onboarding even if user
     // registered before being assigned to a unit.
     const userLink = await client.query(
-      `SELECT id FROM public.users WHERE email = $1 AND role = 'TENANT' LIMIT 1`,
+      `SELECT id FROM users WHERE email = $1 AND role = 'TENANT' LIMIT 1`,
       [email.toLowerCase().trim()]
     );
     if (userLink.rows.length) {
@@ -11085,6 +11085,234 @@ app.get('/api/tenant/autopay-status', authenticate, async (req: Request, res: Re
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
 
+// ── GET /api/admin/founder-dashboard ─────────────────────────────────────────
+// ADMIN ONLY — Founder Command Center: users, vaults, revenue, activity feed,
+// signup growth, conversion funnel. All from existing tables.
+app.get('/api/admin/founder-dashboard', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId = (req as any).userId;
+  try {
+    const aRes = await pool.query(`SELECT role FROM public.users WHERE id=$1`, [userId]);
+    if (!aRes.rows.length || !['ADMIN','DEVELOPER','FOUNDER'].includes(aRes.rows[0].role)) {
+      return res.status(403).json({ error: 'ADMIN only.' });
+    }
+
+    const [
+      userStats, vaultStats, paymentStats, activityFeed,
+      signupGrowth, topLandlords, recentSignups,
+    ] = await Promise.all([
+
+      // 1. User counts by role
+      pool.query(`
+        SELECT
+          COUNT(*)                                                             AS total_users,
+          COUNT(*) FILTER (WHERE role='TENANT')                               AS tenants,
+          COUNT(*) FILTER (WHERE role='DEVELOPER' OR account_type='LANDLORD') AS landlords,
+          COUNT(*) FILTER (WHERE role='INVESTOR')                             AS investors,
+          COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '1 day')     AS signups_today,
+          COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '7 days')    AS signups_7d,
+          COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '30 days')   AS signups_30d
+        FROM users
+        WHERE role != 'ADMIN'
+      `),
+
+      // 2. Vault stats (linked + standalone)
+      pool.query(`
+        SELECT
+          (SELECT COUNT(*) FROM flex_pay_vaults WHERE status NOT IN ('TERMINATED','ARCHIVED'))  AS active_linked_vaults,
+          (SELECT COUNT(*) FROM standalone_vaults WHERE status NOT IN ('TERMINATED','ARCHIVED')) AS active_standalone_vaults,
+          (SELECT COALESCE(SUM(vault_balance),0) FROM flex_pay_vaults WHERE status='ACTIVE')     AS linked_vault_total,
+          (SELECT COALESCE(SUM(vault_balance),0) FROM standalone_vaults WHERE status='ACTIVE')   AS standalone_vault_total,
+          (SELECT COUNT(*) FROM flex_pay_vaults WHERE status='FUNDED_READY')                     AS pending_releases_linked,
+          (SELECT COUNT(*) FROM standalone_vaults WHERE status='FUNDED_READY')                   AS pending_releases_standalone
+      `),
+
+      // 3. Payment + revenue stats
+      pool.query(`
+        SELECT
+          (SELECT COALESCE(SUM(amount_ngn),0) FROM flex_contributions WHERE status='SUCCESS')        AS total_flex_contributions,
+          (SELECT COALESCE(SUM(amount_ngn),0) FROM standalone_contributions WHERE status='SUCCESS')  AS total_standalone_contributions,
+          (SELECT COALESCE(SUM(amount_ngn),0) FROM flex_contributions WHERE status='SUCCESS'
+            AND paid_at >= NOW() - INTERVAL '30 days')                                               AS contributions_30d,
+          (SELECT COUNT(*) FROM flex_contributions WHERE status='SUCCESS')                           AS flex_payment_count,
+          (SELECT COUNT(*) FROM standalone_contributions WHERE status='SUCCESS')                     AS standalone_payment_count,
+          (SELECT COALESCE(SUM(amount_released),0) FROM vault_payouts WHERE status='SUCCESS')        AS total_payouts,
+          (SELECT COALESCE(SUM(platform_fee),0) FROM vault_payouts WHERE status='SUCCESS')           AS platform_revenue
+      `),
+
+      // 4. Live activity feed — last 20 events across all major tables
+      pool.query(`
+        SELECT * FROM (
+          SELECT 'signup'       AS event_type,
+                 u.full_name    AS actor,
+                 u.role         AS role,
+                 NULL           AS amount,
+                 u.created_at   AS event_time,
+                 NULL           AS detail
+          FROM users u WHERE u.role != 'ADMIN'
+
+          UNION ALL
+
+          SELECT 'vault_created' AS event_type,
+                 u.full_name,
+                 'TENANT',
+                 NULL,
+                 sv.created_at,
+                 CONCAT('Target: ₦', sv.target_amount::text)
+          FROM standalone_vaults sv
+          JOIN users u ON u.id = sv.tenant_user_id
+
+          UNION ALL
+
+          SELECT 'contribution'  AS event_type,
+                 u.full_name,
+                 'TENANT',
+                 sc.amount_ngn,
+                 sc.paid_at,
+                 'Standalone vault contribution'
+          FROM standalone_contributions sc
+          JOIN standalone_vaults sv ON sv.id = sc.vault_id
+          JOIN users u ON u.id = sv.tenant_user_id
+          WHERE sc.status = 'SUCCESS'
+
+          UNION ALL
+
+          SELECT 'contribution'  AS event_type,
+                 COALESCE(t.tenant_name, u.full_name) AS actor,
+                 'TENANT',
+                 fc.amount_ngn,
+                 fc.paid_at,
+                 'Flex-Pay vault contribution'
+          FROM flex_contributions fc
+          JOIN flex_pay_vaults fpv ON fpv.id = fc.vault_id
+          LEFT JOIN tenancies t ON t.id = fpv.tenancy_id
+          LEFT JOIN users u ON u.id = fpv.tenant_user_id
+          WHERE fc.status = 'SUCCESS'
+
+          UNION ALL
+
+          SELECT 'payout'        AS event_type,
+                 u.full_name,
+                 'LANDLORD',
+                 vp.amount_released,
+                 vp.created_at,
+                 CONCAT('Payout released')
+          FROM vault_payouts vp
+          JOIN users u ON u.id = vp.landlord_id
+          WHERE vp.status = 'SUCCESS'
+        ) feed
+        ORDER BY event_time DESC NULLS LAST
+        LIMIT 25
+      `),
+
+      // 5. Signup growth — last 14 days
+      pool.query(`
+        SELECT
+          DATE(created_at)::text                              AS day,
+          COUNT(*)                                             AS total,
+          COUNT(*) FILTER (WHERE role='TENANT')               AS tenants,
+          COUNT(*) FILTER (WHERE role='DEVELOPER' OR account_type='LANDLORD') AS landlords
+        FROM users
+        WHERE created_at >= NOW() - INTERVAL '14 days' AND role != 'ADMIN'
+        GROUP BY DATE(created_at)
+        ORDER BY day ASC
+      `),
+
+      // 6. Top 5 landlords by tenant count
+      pool.query(`
+        SELECT u.full_name, u.email,
+               COUNT(DISTINCT t.id) AS tenant_count,
+               COUNT(DISTINCT ru.id) AS unit_count
+        FROM users u
+        LEFT JOIN projects p ON p.sponsor_id = u.id
+        LEFT JOIN rental_units ru ON ru.project_id = p.id
+        LEFT JOIN tenancies t ON t.unit_id = ru.id AND t.status = 'ACTIVE'
+        WHERE u.role = 'DEVELOPER' OR u.account_type = 'LANDLORD'
+        GROUP BY u.id, u.full_name, u.email
+        ORDER BY tenant_count DESC
+        LIMIT 5
+      `),
+
+      // 7. Most recent 10 signups
+      pool.query(`
+        SELECT full_name, email, role, account_type, created_at
+        FROM users
+        WHERE role != 'ADMIN'
+        ORDER BY created_at DESC
+        LIMIT 10
+      `),
+    ]);
+
+    const u  = userStats.rows[0];
+    const v  = vaultStats.rows[0];
+    const p  = paymentStats.rows[0];
+
+    const totalContributions =
+      parseFloat(p.total_flex_contributions || 0) +
+      parseFloat(p.total_standalone_contributions || 0);
+    const totalVaultBalance =
+      parseFloat(v.linked_vault_total || 0) +
+      parseFloat(v.standalone_vault_total || 0);
+    const totalPayments =
+      parseInt(p.flex_payment_count || 0) +
+      parseInt(p.standalone_payment_count || 0);
+
+    return res.json({
+      success: true,
+      generated_at: new Date().toISOString(),
+
+      users: {
+        total:         parseInt(u.total_users || 0),
+        tenants:       parseInt(u.tenants     || 0),
+        landlords:     parseInt(u.landlords   || 0),
+        investors:     parseInt(u.investors   || 0),
+        signups_today: parseInt(u.signups_today || 0),
+        signups_7d:    parseInt(u.signups_7d    || 0),
+        signups_30d:   parseInt(u.signups_30d   || 0),
+      },
+
+      vaults: {
+        active_linked:      parseInt(v.active_linked_vaults      || 0),
+        active_standalone:  parseInt(v.active_standalone_vaults  || 0),
+        total_active:       parseInt(v.active_linked_vaults || 0) + parseInt(v.active_standalone_vaults || 0),
+        balance_held:       totalVaultBalance,
+        pending_releases:   parseInt(v.pending_releases_linked || 0) + parseInt(v.pending_releases_standalone || 0),
+      },
+
+      finance: {
+        total_contributions: totalContributions,
+        contributions_30d:   parseFloat(p.contributions_30d  || 0),
+        total_payments:      totalPayments,
+        total_payouts:       parseFloat(p.total_payouts      || 0),
+        platform_revenue:    parseFloat(p.platform_revenue   || 0),
+      },
+
+      // Conversion funnel (users → vaults → contributions → funded)
+      funnel: {
+        registered:            parseInt(u.total_users || 0),
+        created_vault:         parseInt(v.active_linked_vaults || 0) + parseInt(v.active_standalone_vaults || 0),
+        made_contribution:     totalPayments > 0 ? Math.min(totalPayments, parseInt(u.tenants || 0)) : 0,
+        reached_100_pct:       parseInt(v.pending_releases_linked || 0) + parseInt(v.pending_releases_standalone || 0),
+      },
+
+      activity_feed: activityFeed.rows.map(e => ({
+        event_type: e.event_type,
+        actor:      e.actor,
+        role:       e.role,
+        amount:     e.amount ? parseFloat(e.amount) : null,
+        detail:     e.detail,
+        time:       e.event_time,
+      })),
+
+      signup_growth: signupGrowth.rows,
+      top_landlords: topLandlords.rows,
+      recent_signups: recentSignups.rows,
+    });
+  } catch (e: any) {
+    console.error('[FOUNDER-DASHBOARD]', e.message);
+    return res.status(500).json({ error: e.message });
+  }
+});
+
 // ── 404 catch-all — MUST be last route registration ──────────────────────────
 app.use((req: Request, res: Response) => {
   res.status(404).json({ error: "Not Found" });
@@ -11483,7 +11711,7 @@ async function resolveTenancy(userId: string): Promise<any | null> {
   if (byId.rows.length) return byId.rows[0];
 
   // Fallback: match by email
-  const uRes = await pool.query('SELECT email FROM public.users WHERE id = $1', [userId]);
+  const uRes = await pool.query('SELECT email FROM users WHERE id = $1', [userId]);
   if (!uRes.rows.length) return null;
 
   const byEmail = await pool.query(
@@ -11519,7 +11747,7 @@ app.get('/api/tenant/dashboard', authenticate, async (req: Request, res: Respons
     if (!tenancy) {
       // ── Independent Tenant: return onboarding state + standalone vault ─────
       const uInfo = await pool.query(
-        `SELECT email, full_name, phone, created_at FROM public.users WHERE id = $1`, [userId]
+        `SELECT email, full_name, phone, created_at FROM users WHERE id = $1`, [userId]
       );
       const u = uInfo.rows[0] || {};
       const svRes = await pool.query(
@@ -11902,7 +12130,7 @@ app.patch('/api/tenant/profile', authenticate, async (req: Request, res: Respons
     // Also update users table name if provided
     if (tenant_name) {
       await pool.query(
-        `UPDATE public.users SET full_name = $1 WHERE id = $2`,
+        `UPDATE users SET full_name = $1 WHERE id = $2`,
         [tenant_name, userId]
       ).catch(() => {});
     }
@@ -11933,7 +12161,7 @@ app.post('/api/feature-waitlist', async (req: Request, res: Response): Promise<a
       if (token) {
         const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString()) as any;
         userId = payload.id || payload.user_id || null;
-        if (userId) { const u = await pool.query(`SELECT email FROM public.users WHERE id=$1`, [userId]); email = u.rows[0]?.email || null; }
+        if (userId) { const u = await pool.query(`SELECT email FROM users WHERE id=$1`, [userId]); email = u.rows[0]?.email || null; }
       }
     } catch { /* non-fatal — anonymous entry */ }
     const existing = await pool.query(
@@ -11965,7 +12193,7 @@ app.get('/api/audit/unit/:unitId', authenticate, async (req: Request, res: Respo
     const own = await pool.query(
       `SELECT ru.id FROM rental_units ru
        JOIN projects p ON p.id = ru.project_id
-       WHERE ru.id = $1 AND (p.sponsor_id = $2 OR (SELECT role FROM public.users WHERE id=$2) = 'ADMIN')`,
+       WHERE ru.id = $1 AND (p.sponsor_id = $2 OR (SELECT role FROM users WHERE id=$2) = 'ADMIN')`,
       [unitId, userId]
     );
     if (!own.rows.length) return res.status(403).json({ error: 'Unit not found or access denied' });
@@ -11992,7 +12220,7 @@ app.get('/api/audit/project/:projectId', authenticate, async (req: Request, res:
   const event_type = req.query.event_type as string | undefined;
   try {
     const own = await pool.query(
-      `SELECT id FROM projects WHERE id=$1 AND (sponsor_id=$2 OR (SELECT role FROM public.users WHERE id=$2)='ADMIN')`,
+      `SELECT id FROM projects WHERE id=$1 AND (sponsor_id=$2 OR (SELECT role FROM users WHERE id=$2)='ADMIN')`,
       [projectId, userId]
     );
     if (!own.rows.length) return res.status(403).json({ error: 'Project not found or access denied' });
@@ -12029,7 +12257,7 @@ app.get('/api/audit/tenancy/:tenancyId', authenticate, async (req: Request, res:
        JOIN projects p ON p.id = ru.project_id
        WHERE t.id = $1
          AND (p.sponsor_id = $2 OR t.tenant_user_id = $2
-              OR (SELECT role FROM public.users WHERE id=$2) = 'ADMIN')`,
+              OR (SELECT role FROM users WHERE id=$2) = 'ADMIN')`,
       [tenancyId, userId]
     );
     if (!access.rows.length) return res.status(403).json({ error: 'Tenancy not found or access denied' });
@@ -12093,7 +12321,7 @@ app.post('/api/admin/trigger-payout/:vaultId', authenticate, async (req: Request
   const { dispute_note } = req.body;
   try {
     // ADMIN only
-    const uRes = await pool.query(`SELECT role FROM public.users WHERE id=$1`, [userId]);
+    const uRes = await pool.query(`SELECT role FROM users WHERE id=$1`, [userId]);
     if (!uRes.rows.length || uRes.rows[0].role !== 'ADMIN')
       return res.status(403).json({ error: 'ADMIN only.' });
 
@@ -12184,7 +12412,7 @@ app.post('/api/admin/dedup-tenancies', authenticate, async (req: Request, res: R
   const userId = (req as any).userId;
   try {
     // Verify caller is ADMIN
-    const userRes = await pool.query(`SELECT role FROM public.users WHERE id = $1`, [userId]);
+    const userRes = await pool.query(`SELECT role FROM users WHERE id = $1`, [userId]);
     if (!userRes.rows.length || userRes.rows[0].role !== 'ADMIN')
       return res.status(403).json({ error: 'ADMIN only.' });
 
@@ -12245,7 +12473,7 @@ app.post('/api/admin/standalone-vault/:vaultId/migrate', authenticate, async (re
   const { tenancy_id, unit_id } = req.body;
   try {
     // Verify ADMIN
-    const aRes = await pool.query(`SELECT role FROM public.users WHERE id=$1`, [adminId]);
+    const aRes = await pool.query(`SELECT role FROM users WHERE id=$1`, [adminId]);
     if (!aRes.rows.length || aRes.rows[0].role !== 'ADMIN') {
       return res.status(403).json({ error: 'ADMIN only.' });
     }
@@ -12255,7 +12483,7 @@ app.post('/api/admin/standalone-vault/:vaultId/migrate', authenticate, async (re
     const svRes = await pool.query(
       `SELECT sv.*, u.email AS tenant_email
        FROM standalone_vaults sv
-       JOIN public.users u ON u.id = sv.tenant_user_id
+       JOIN users u ON u.id = sv.tenant_user_id
        WHERE sv.id=$1 AND sv.status NOT IN ('MIGRATED','CLOSED')`,
       [vaultId]
     );
@@ -12352,7 +12580,7 @@ app.post('/api/admin/standalone-vault/:vaultId/release-escrow', authenticate, as
   const adminId  = (req as any).userId;
   const { vaultId } = req.params;
   try {
-    const aRes = await pool.query(`SELECT role FROM public.users WHERE id=$1`, [adminId]);
+    const aRes = await pool.query(`SELECT role FROM users WHERE id=$1`, [adminId]);
     if (!aRes.rows.length || aRes.rows[0].role !== 'ADMIN') {
       return res.status(403).json({ error: 'ADMIN only.' });
     }
@@ -12360,7 +12588,7 @@ app.post('/api/admin/standalone-vault/:vaultId/release-escrow', authenticate, as
     const svRes = await pool.query(
       `SELECT sv.*, u.email AS tenant_email, u.full_name AS tenant_name
        FROM standalone_vaults sv
-       JOIN public.users u ON u.id = sv.tenant_user_id
+       JOIN users u ON u.id = sv.tenant_user_id
        WHERE sv.id=$1`,
       [vaultId]
     );
@@ -12432,7 +12660,7 @@ app.get('/api/admin/standalone-vaults', authenticate, async (req: Request, res: 
   const adminId = (req as any).userId;
   const { status } = req.query as { status?: string };
   try {
-    const aRes = await pool.query(`SELECT role FROM public.users WHERE id=$1`, [adminId]);
+    const aRes = await pool.query(`SELECT role FROM users WHERE id=$1`, [adminId]);
     if (!aRes.rows.length || aRes.rows[0].role !== 'ADMIN') {
       return res.status(403).json({ error: 'ADMIN only.' });
     }
@@ -12450,7 +12678,7 @@ app.get('/api/admin/standalone-vaults', authenticate, async (req: Request, res: 
               (SELECT COUNT(*) FROM standalone_contributions sc
                WHERE sc.vault_id = sv.id AND sc.status='SUCCESS') AS contribution_count
        FROM standalone_vaults sv
-       JOIN public.users u ON u.id = sv.tenant_user_id
+       JOIN users u ON u.id = sv.tenant_user_id
        WHERE ${whereParts.join(' AND ')}
        ORDER BY sv.created_at DESC
        LIMIT 200`,
@@ -12487,233 +12715,6 @@ app.get('/api/admin/standalone-vaults', authenticate, async (req: Request, res: 
   }
 });
 
-// ── GET /api/admin/founder-dashboard ─────────────────────────────────────────
-// ADMIN ONLY — Founder Command Center: users, vaults, revenue, activity feed,
-// signup growth, conversion funnel. All from existing tables.
-app.get('/api/admin/founder-dashboard', authenticate, async (req: Request, res: Response): Promise<any> => {
-  const userId = (req as any).userId;
-  try {
-    const aRes = await pool.query(`SELECT role FROM public.users WHERE id=$1`, [userId]);
-    if (!aRes.rows.length || aRes.rows[0].role !== 'ADMIN') {
-      return res.status(403).json({ error: 'ADMIN only.' });
-    }
-
-    const [
-      userStats, vaultStats, paymentStats, activityFeed,
-      signupGrowth, topLandlords, recentSignups,
-    ] = await Promise.all([
-
-      // 1. User counts by role
-      pool.query(`
-        SELECT
-          COUNT(*)                                                             AS total_users,
-          COUNT(*) FILTER (WHERE role='TENANT')                               AS tenants,
-          COUNT(*) FILTER (WHERE role='DEVELOPER' OR account_type='LANDLORD') AS landlords,
-          COUNT(*) FILTER (WHERE role='INVESTOR')                             AS investors,
-          COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '1 day')     AS signups_today,
-          COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '7 days')    AS signups_7d,
-          COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '30 days')   AS signups_30d
-        FROM public.users
-        WHERE role != 'ADMIN'
-      `),
-
-      // 2. Vault stats (linked + standalone)
-      pool.query(`
-        SELECT
-          (SELECT COUNT(*) FROM flex_pay_vaults WHERE status NOT IN ('TERMINATED','ARCHIVED'))  AS active_linked_vaults,
-          (SELECT COUNT(*) FROM standalone_vaults WHERE status NOT IN ('TERMINATED','ARCHIVED')) AS active_standalone_vaults,
-          (SELECT COALESCE(SUM(vault_balance),0) FROM flex_pay_vaults WHERE status='ACTIVE')     AS linked_vault_total,
-          (SELECT COALESCE(SUM(vault_balance),0) FROM standalone_vaults WHERE status='ACTIVE')   AS standalone_vault_total,
-          (SELECT COUNT(*) FROM flex_pay_vaults WHERE status='FUNDED_READY')                     AS pending_releases_linked,
-          (SELECT COUNT(*) FROM standalone_vaults WHERE status='FUNDED_READY')                   AS pending_releases_standalone
-      `),
-
-      // 3. Payment + revenue stats
-      pool.query(`
-        SELECT
-          (SELECT COALESCE(SUM(amount_ngn),0) FROM flex_contributions WHERE status='SUCCESS')        AS total_flex_contributions,
-          (SELECT COALESCE(SUM(amount_ngn),0) FROM standalone_contributions WHERE status='SUCCESS')  AS total_standalone_contributions,
-          (SELECT COALESCE(SUM(amount_ngn),0) FROM flex_contributions WHERE status='SUCCESS'
-            AND paid_at >= NOW() - INTERVAL '30 days')                                               AS contributions_30d,
-          (SELECT COUNT(*) FROM flex_contributions WHERE status='SUCCESS')                           AS flex_payment_count,
-          (SELECT COUNT(*) FROM standalone_contributions WHERE status='SUCCESS')                     AS standalone_payment_count,
-          (SELECT COALESCE(SUM(amount_released),0) FROM vault_payouts WHERE status='SUCCESS')        AS total_payouts,
-          (SELECT COALESCE(SUM(platform_fee),0) FROM vault_payouts WHERE status='SUCCESS')           AS platform_revenue
-      `),
-
-      // 4. Live activity feed — last 20 events across all major tables
-      pool.query(`
-        SELECT * FROM (
-          SELECT 'signup'       AS event_type,
-                 u.full_name    AS actor,
-                 u.role         AS role,
-                 NULL           AS amount,
-                 u.created_at   AS event_time,
-                 NULL           AS detail
-          FROM public.users u WHERE u.role != 'ADMIN'
-
-          UNION ALL
-
-          SELECT 'vault_created' AS event_type,
-                 u.full_name,
-                 'TENANT',
-                 NULL,
-                 sv.created_at,
-                 CONCAT('Target: ₦', sv.target_amount::text)
-          FROM standalone_vaults sv
-          JOIN public.users u ON u.id = sv.tenant_user_id
-
-          UNION ALL
-
-          SELECT 'contribution'  AS event_type,
-                 u.full_name,
-                 'TENANT',
-                 sc.amount_ngn,
-                 sc.paid_at,
-                 'Standalone vault contribution'
-          FROM standalone_contributions sc
-          JOIN standalone_vaults sv ON sv.id = sc.vault_id
-          JOIN public.users u ON u.id = sv.tenant_user_id
-          WHERE sc.status = 'SUCCESS'
-
-          UNION ALL
-
-          SELECT 'contribution'  AS event_type,
-                 COALESCE(t.tenant_name, u.full_name) AS actor,
-                 'TENANT',
-                 fc.amount_ngn,
-                 fc.paid_at,
-                 'Flex-Pay vault contribution'
-          FROM flex_contributions fc
-          JOIN flex_pay_vaults fpv ON fpv.id = fc.vault_id
-          LEFT JOIN tenancies t ON t.id = fpv.tenancy_id
-          LEFT JOIN public.users u ON u.id = fpv.tenant_user_id
-          WHERE fc.status = 'SUCCESS'
-
-          UNION ALL
-
-          SELECT 'payout'        AS event_type,
-                 u.full_name,
-                 'LANDLORD',
-                 vp.amount_released,
-                 vp.created_at,
-                 CONCAT('Payout released')
-          FROM vault_payouts vp
-          JOIN public.users u ON u.id = vp.landlord_id
-          WHERE vp.status = 'SUCCESS'
-        ) feed
-        ORDER BY event_time DESC NULLS LAST
-        LIMIT 25
-      `),
-
-      // 5. Signup growth — last 14 days
-      pool.query(`
-        SELECT
-          DATE(created_at)::text                              AS day,
-          COUNT(*)                                             AS total,
-          COUNT(*) FILTER (WHERE role='TENANT')               AS tenants,
-          COUNT(*) FILTER (WHERE role='DEVELOPER' OR account_type='LANDLORD') AS landlords
-        FROM public.users
-        WHERE created_at >= NOW() - INTERVAL '14 days' AND role != 'ADMIN'
-        GROUP BY DATE(created_at)
-        ORDER BY day ASC
-      `),
-
-      // 6. Top 5 landlords by tenant count
-      pool.query(`
-        SELECT u.full_name, u.email,
-               COUNT(DISTINCT t.id) AS tenant_count,
-               COUNT(DISTINCT ru.id) AS unit_count
-        FROM public.users u
-        LEFT JOIN projects p ON p.sponsor_id = u.id
-        LEFT JOIN rental_units ru ON ru.project_id = p.id
-        LEFT JOIN tenancies t ON t.unit_id = ru.id AND t.status = 'ACTIVE'
-        WHERE u.role = 'DEVELOPER' OR u.account_type = 'LANDLORD'
-        GROUP BY u.id, u.full_name, u.email
-        ORDER BY tenant_count DESC
-        LIMIT 5
-      `),
-
-      // 7. Most recent 10 signups
-      pool.query(`
-        SELECT full_name, email, role, account_type, created_at
-        FROM public.users
-        WHERE role != 'ADMIN'
-        ORDER BY created_at DESC
-        LIMIT 10
-      `),
-    ]);
-
-    const u  = userStats.rows[0];
-    const v  = vaultStats.rows[0];
-    const p  = paymentStats.rows[0];
-
-    const totalContributions =
-      parseFloat(p.total_flex_contributions || 0) +
-      parseFloat(p.total_standalone_contributions || 0);
-    const totalVaultBalance =
-      parseFloat(v.linked_vault_total || 0) +
-      parseFloat(v.standalone_vault_total || 0);
-    const totalPayments =
-      parseInt(p.flex_payment_count || 0) +
-      parseInt(p.standalone_payment_count || 0);
-
-    return res.json({
-      success: true,
-      generated_at: new Date().toISOString(),
-
-      users: {
-        total:         parseInt(u.total_users || 0),
-        tenants:       parseInt(u.tenants     || 0),
-        landlords:     parseInt(u.landlords   || 0),
-        investors:     parseInt(u.investors   || 0),
-        signups_today: parseInt(u.signups_today || 0),
-        signups_7d:    parseInt(u.signups_7d    || 0),
-        signups_30d:   parseInt(u.signups_30d   || 0),
-      },
-
-      vaults: {
-        active_linked:      parseInt(v.active_linked_vaults      || 0),
-        active_standalone:  parseInt(v.active_standalone_vaults  || 0),
-        total_active:       parseInt(v.active_linked_vaults || 0) + parseInt(v.active_standalone_vaults || 0),
-        balance_held:       totalVaultBalance,
-        pending_releases:   parseInt(v.pending_releases_linked || 0) + parseInt(v.pending_releases_standalone || 0),
-      },
-
-      finance: {
-        total_contributions: totalContributions,
-        contributions_30d:   parseFloat(p.contributions_30d  || 0),
-        total_payments:      totalPayments,
-        total_payouts:       parseFloat(p.total_payouts      || 0),
-        platform_revenue:    parseFloat(p.platform_revenue   || 0),
-      },
-
-      // Conversion funnel (users → vaults → contributions → funded)
-      funnel: {
-        registered:            parseInt(u.total_users || 0),
-        created_vault:         parseInt(v.active_linked_vaults || 0) + parseInt(v.active_standalone_vaults || 0),
-        made_contribution:     totalPayments > 0 ? Math.min(totalPayments, parseInt(u.tenants || 0)) : 0,
-        reached_100_pct:       parseInt(v.pending_releases_linked || 0) + parseInt(v.pending_releases_standalone || 0),
-      },
-
-      activity_feed: activityFeed.rows.map(e => ({
-        event_type: e.event_type,
-        actor:      e.actor,
-        role:       e.role,
-        amount:     e.amount ? parseFloat(e.amount) : null,
-        detail:     e.detail,
-        time:       e.event_time,
-      })),
-
-      signup_growth: signupGrowth.rows,
-      top_landlords: topLandlords.rows,
-      recent_signups: recentSignups.rows,
-    });
-  } catch (e: any) {
-    console.error('[FOUNDER-DASHBOARD]', e.message);
-    return res.status(500).json({ error: e.message });
-  }
-});
 
 async function startServer() {
   try {
