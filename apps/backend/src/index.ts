@@ -11135,8 +11135,11 @@ app.get('/api/admin/founder-dashboard', authenticate, async (req: Request, res: 
             AND paid_at >= NOW() - INTERVAL '30 days')                                               AS contributions_30d,
           (SELECT COUNT(*) FROM flex_contributions WHERE status='SUCCESS')                           AS flex_payment_count,
           (SELECT COUNT(*) FROM standalone_contributions WHERE status='SUCCESS')                     AS standalone_payment_count,
-          (SELECT COALESCE(SUM(amount_released),0) FROM vault_payouts WHERE status='SUCCESS')        AS total_payouts,
-          (SELECT COALESCE(SUM(platform_fee),0) FROM vault_payouts WHERE status='SUCCESS')           AS platform_revenue
+          (SELECT COALESCE(SUM((payload->>'net_payout')::numeric),0)
+           FROM system_ledger
+           WHERE transaction_type IN ('LANDLORD_PAYOUT','FLEX_CASHOUT','AUTO_PAYOUT'))               AS total_payouts,
+          (SELECT COALESCE(SUM(amount_ngn),0) FROM platform_revenue
+           WHERE status='COMPLETED')                                                                  AS platform_revenue
       `),
 
       // 4. Live activity feed — last 20 events across all major tables
@@ -11190,15 +11193,14 @@ app.get('/api/admin/founder-dashboard', authenticate, async (req: Request, res: 
 
           UNION ALL
 
-          SELECT 'payout'        AS event_type,
-                 u.full_name,
-                 'LANDLORD',
-                 vp.amount_released,
-                 vp.created_at,
-                 CONCAT('Payout released')
-          FROM vault_payouts vp
-          JOIN public.users u ON u.id = vp.landlord_id
-          WHERE vp.status = 'SUCCESS'
+          SELECT 'payout'                                    AS event_type,
+                 COALESCE(sl.payload->>'landlord_name','Landlord') AS actor,
+                 'LANDLORD'                                        AS role,
+                 (sl.payload->>'net_payout')::numeric              AS amount,
+                 sl.created_at                                     AS event_time,
+                 'Payout released'                                 AS detail
+          FROM system_ledger sl
+          WHERE sl.transaction_type IN ('LANDLORD_PAYOUT','FLEX_CASHOUT','AUTO_PAYOUT')
         ) feed
         ORDER BY event_time DESC NULLS LAST
         LIMIT 25
