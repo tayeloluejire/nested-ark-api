@@ -30,36 +30,23 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   const router    = useRouter();
   const [open, setOpen] = useState(false);
 
-  // Refresh cookies on every admin page mount so middleware never
-  // sees stale cookies after navigation or browser refresh
   useEffect(() => {
-    const token = localStorage.getItem('token') || localStorage.getItem('ark_token');
-    const role  = localStorage.getItem('ark_role');
+    // Refresh cookies on every admin mount so middleware never sees stale state
+    const token = localStorage.getItem('token') || localStorage.getItem('ark_token') || '';
+    const role  = localStorage.getItem('ark_role') || '';
     if (token && role) {
       fetch('/api/set-auth-cookies', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ token, role }),
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        credentials: 'include', body: JSON.stringify({ token, role }),
       }).catch(() => {
         document.cookie = `ark_token=${token}; path=/; SameSite=Lax`;
         document.cookie = `ark_role=${role}; path=/; SameSite=Lax`;
       });
     }
-  }, []);
-
-  useEffect(() => {
-    // Founder logs in as DEVELOPER — allow ADMIN + DEVELOPER + FOUNDER on all /admin routes
-    const ALLOWED = ['ADMIN', 'DEVELOPER', 'FOUNDER'];
-    if (!isLoading && (!user || !ALLOWED.includes(user.role))) {
+    if (!isLoading && (!user || !['ADMIN', 'DEVELOPER', 'FOUNDER'].includes(user.role))) {
       router.replace('/login');
     }
   }, [user, isLoading, router]);
-
-  // Founder Command Center has its own layout — bypass admin sidebar
-  if (pathname.startsWith('/admin/founder')) {
-    return <>{children}</>;
-  }
 
   if (isLoading) return (
     <div className="min-h-screen bg-[#050505] flex items-center justify-center">
@@ -68,6 +55,11 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   );
 
   if (!user) return null;
+
+  // Founder Command Center has its own isolated layout — bypass admin sidebar
+  if (pathname.startsWith('/admin/founder')) {
+    return <>{children}</>;
+  }
 
   return (
     <div className="min-h-screen bg-[#050505] text-white flex">
