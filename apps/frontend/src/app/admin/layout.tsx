@@ -25,7 +25,7 @@ const navItems = [
 ];
 
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
-  const { user, logout, isLoading } = useAuth();
+  const { user, logout, loading: isLoading } = useAuth();
   const pathname  = usePathname();
   const router    = useRouter();
   const [open, setOpen] = useState(false);
@@ -49,10 +49,17 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   }, []);
 
   useEffect(() => {
-    if (!isLoading && (!user || user.role !== 'ADMIN')) {
+    // Founder logs in as DEVELOPER — allow ADMIN + DEVELOPER + FOUNDER on all /admin routes
+    const ALLOWED = ['ADMIN', 'DEVELOPER', 'FOUNDER'];
+    if (!isLoading && (!user || !ALLOWED.includes(user.role))) {
       router.replace('/login');
     }
   }, [user, isLoading, router]);
+
+  // Founder Command Center has its own layout — bypass admin sidebar
+  if (pathname.startsWith('/admin/founder')) {
+    return <>{children}</>;
+  }
 
   if (isLoading) return (
     <div className="min-h-screen bg-[#050505] flex items-center justify-center">
