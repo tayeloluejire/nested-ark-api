@@ -23,8 +23,10 @@ const KEY_META: Record<string, { unit: string; hint: string; min: number; max: n
   platform_supply_fee:    { unit: '%',      hint: 'Commission on supplier dispatches. Credited on material delivery confirmation.', min: 0, max: 10, step: 0.5 },
 };
 
+const ALLOWED_ROLES = ['ADMIN', 'DEVELOPER', 'FOUNDER'];
+
 export default function AdminMarketConfigPage() {
-  const { user, isLoading: authLoading } = useAuth();
+  const { user, loading: authLoading } = useAuth();
   const router = useRouter();
 
   const [config,  setConfig]  = useState<ConfigRow[]>([]);
@@ -35,7 +37,7 @@ export default function AdminMarketConfigPage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!authLoading && (!user || user.role !== 'ADMIN')) router.replace('/login');
+    if (!authLoading && (!user || !ALLOWED_ROLES.includes(user.role))) router.replace('/login');
   }, [user, authLoading, router]);
 
   const load = async () => {
@@ -51,7 +53,9 @@ export default function AdminMarketConfigPage() {
     } finally { setLoading(false); }
   };
 
-  useEffect(() => { if (user?.role === 'ADMIN') load(); }, [user]);
+  useEffect(() => {
+    if (user && ALLOWED_ROLES.includes(user.role)) load();
+  }, [user]); // eslint-disable-line
 
   const save = async (key: string) => {
     setSaving(s => ({ ...s, [key]: true }));
@@ -61,7 +65,7 @@ export default function AdminMarketConfigPage() {
       await api.put('/api/admin/market/config', { key, value: parseFloat(editing[key]) });
       setSaved(s => ({ ...s, [key]: true }));
       setTimeout(() => setSaved(s => ({ ...s, [key]: false })), 3000);
-      load(); // refresh
+      load();
     } catch (e: any) {
       setError(e?.response?.data?.error ?? 'Save failed');
     } finally {
@@ -95,7 +99,6 @@ export default function AdminMarketConfigPage() {
         </div>
       )}
 
-      {/* Current ROI banner */}
       <div className="mb-8 p-6 rounded-2xl border border-emerald-500/30 bg-emerald-500/5 flex items-center gap-4">
         <TrendingUp className="text-emerald-400 flex-shrink-0" size={28} />
         <div>
@@ -127,17 +130,14 @@ export default function AdminMarketConfigPage() {
                     <p className="text-[9px] font-mono text-zinc-600 mt-0.5">{row.key}</p>
                     {meta && <p className="text-[9px] text-zinc-500 mt-2 leading-relaxed max-w-lg">{meta.hint}</p>}
                     <p className="text-[8px] text-zinc-700 mt-2 font-mono">
-                      Last updated: {new Date(row.updated_at).toLocaleString()}
+                      Last updated: {row.updated_at ? new Date(row.updated_at).toLocaleString() : '—'}
                     </p>
                   </div>
-
                   <div className="flex items-center gap-3 flex-shrink-0">
                     <div className="relative">
                       <input
                         type="number"
-                        min={meta?.min ?? 0}
-                        max={meta?.max ?? 100}
-                        step={meta?.step ?? 0.1}
+                        min={meta?.min ?? 0} max={meta?.max ?? 100} step={meta?.step ?? 0.1}
                         value={editing[row.key] ?? row.value}
                         onChange={e => setEditing(v => ({ ...v, [row.key]: e.target.value }))}
                         className="w-28 bg-black border border-zinc-700 rounded-xl px-3 py-2.5 text-white font-mono text-sm outline-none focus:border-emerald-500 transition-colors pr-12"
@@ -146,42 +146,28 @@ export default function AdminMarketConfigPage() {
                         {meta?.unit ?? ''}
                       </span>
                     </div>
-
                     <button
                       onClick={() => save(row.key)}
                       disabled={saving[row.key] || !isDirty}
                       className={`flex items-center gap-1.5 px-4 py-2.5 rounded-xl font-black text-[10px] uppercase tracking-widest transition-all ${
-                        saved[row.key]
-                          ? 'bg-teal-500/20 text-teal-500 border border-teal-500/30'
-                          : isDirty
-                          ? 'bg-emerald-500 text-black hover:bg-white'
-                          : 'bg-zinc-800 text-zinc-600 cursor-not-allowed'
-                      }`}
-                    >
-                      {saving[row.key] ? (
-                        <Loader2 className="animate-spin" size={12} />
-                      ) : saved[row.key] ? (
-                        <><CheckCircle2 size={12} /> Saved</>
-                      ) : (
-                        <><Save size={12} /> Save</>
-                      )}
+                        saved[row.key]  ? 'bg-teal-500/20 text-teal-500 border border-teal-500/30' :
+                        isDirty         ? 'bg-emerald-500 text-black hover:bg-white' :
+                                          'bg-zinc-800 text-zinc-600 cursor-not-allowed'
+                      }`}>
+                      {saving[row.key] ? <Loader2 className="animate-spin" size={12} /> :
+                       saved[row.key]  ? <><CheckCircle2 size={12} /> Saved</> :
+                       <><Save size={12} /> Save</>}
                     </button>
                   </div>
                 </div>
-
-                {/* Visual slider */}
                 {meta && (
                   <div className="mt-4">
-                    <input
-                      type="range"
-                      min={meta.min} max={meta.max} step={meta.step}
+                    <input type="range" min={meta.min} max={meta.max} step={meta.step}
                       value={editing[row.key] ?? row.value}
                       onChange={e => setEditing(v => ({ ...v, [row.key]: e.target.value }))}
-                      className="w-full accent-emerald-500 h-1"
-                    />
+                      className="w-full accent-emerald-500 h-1" />
                     <div className="flex justify-between text-[8px] text-zinc-700 mt-1">
-                      <span>{meta.min}{meta.unit}</span>
-                      <span>{meta.max}{meta.unit}</span>
+                      <span>{meta.min}{meta.unit}</span><span>{meta.max}{meta.unit}</span>
                     </div>
                   </div>
                 )}
@@ -191,14 +177,13 @@ export default function AdminMarketConfigPage() {
         </div>
       )}
 
-      {/* Paystack settlement note */}
       <div className="mt-10 p-6 rounded-2xl border border-zinc-800 bg-zinc-900/20">
         <p className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest mb-2 flex items-center gap-2">
           <Settings size={10} className="text-teal-500" /> Paystack Settlement — Impressions &amp; Impacts Ltd
         </p>
         <p className="text-zinc-400 text-xs leading-relaxed">
-          All platform fees (escrow %, listing flat fee, investment placement %) are automatically split by Paystack and
-          credited to your <strong className="text-white">main Paystack balance</strong> (Account ID: 1656019).
+          All platform fees are automatically split by Paystack and credited to your{' '}
+          <strong className="text-white">main Paystack balance</strong> (Account ID: 1656019).
           Investor principal is held in the <strong className="text-white">Ark Escrow subaccount</strong> until
           tri-layer milestone release. Monitor live revenue in the{' '}
           <a href="/admin/revenue" className="text-teal-500 hover:text-white underline">Revenue Engine →</a>

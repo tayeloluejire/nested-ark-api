@@ -39,7 +39,7 @@ const CURRENCY_BREAKDOWN = [
 interface ConfigRow { key: string; value: string; label: string; updated_at: string; }
 
 export default function AdminRevenueEnginePage() {
-  const { user, isLoading: authLoading } = useAuth();
+  const { user, loading: authLoading } = useAuth();
   const router = useRouter();
 
   const [config,  setConfig]  = useState<ConfigRow[]>([]);
@@ -50,7 +50,7 @@ export default function AdminRevenueEnginePage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!authLoading && (!user || user.role !== 'ADMIN')) router.replace('/login');
+    if (!authLoading && (!user || !['ADMIN', 'DEVELOPER', 'FOUNDER'].includes(user.role))) router.replace('/login');
   }, [user, authLoading, router]);
 
   const load = async () => {
@@ -66,7 +66,7 @@ export default function AdminRevenueEnginePage() {
     finally  { setLoading(false); }
   };
 
-  useEffect(() => { if (user?.role === 'ADMIN') load(); }, [user]); // eslint-disable-line
+  useEffect(() => { if (user && ['ADMIN', 'DEVELOPER', 'FOUNDER'].includes(user.role)) load(); }, [user]); // eslint-disable-line
 
   const save = async (key: string) => {
     setSaving(s => ({ ...s, [key]: true }));
@@ -88,10 +88,10 @@ export default function AdminRevenueEnginePage() {
     const meta = KEY_META[key];
     if (!meta?.incomeBase) return '';
     const v = safeNum(val);
-    if (meta.unit === 'USD') return `≈ $${Math.roundsafeF(v * meta.incomeBase)}`;
+    if (meta.unit === 'USD') return `≈ $${safeF(Math.round(v * meta.incomeBase))}`;
     const rate   = v / 100;
     const factor = key === 'platform_investment_fee' ? 0.08 : key === 'platform_supply_fee' ? 0.05 : 0.15;
-    return `≈ $${Math.roundsafeF(meta.incomeBase * rate * factor)}/mo`;
+    return `≈ $${safeF(Math.round(meta.incomeBase * rate * factor))}/mo`;
   };
 
   const totalRevenue = Object.entries(editing).reduce((sum, [key, val]) => {
@@ -150,7 +150,7 @@ export default function AdminRevenueEnginePage() {
         <DollarSign className="text-amber-400 flex-shrink-0" size={24} />
         <div>
           <p className="text-[9px] text-amber-500 uppercase font-bold tracking-widest">Estimated Monthly Platform Revenue</p>
-          <p className="text-3xl font-black font-mono text-amber-400">${Math.roundsafeF(totalRevenue)}</p>
+          <p className="text-3xl font-black font-mono text-amber-400">${safeF(Math.round(totalRevenue))}</p>
           <p className="text-zinc-600 text-xs mt-1">Based on current fee config × $18.4M AUM</p>
         </div>
       </div>
@@ -177,7 +177,7 @@ export default function AdminRevenueEnginePage() {
                     {income && <p className="text-[9px] text-emerald-500 font-bold mt-2 font-mono">{income}</p>}
                     {meta?.incomeLabel && <p className="text-[8px] text-zinc-600 font-mono mt-0.5">{meta.incomeLabel}</p>}
                     <p className="text-[8px] text-zinc-700 mt-1 font-mono">
-                      Last updated: {row.updated_at ? new DatesafeF(row.updated_at) : '—'}
+                      Last updated: {row.updated_at ? new Date(row.updated_at).toLocaleString() : '—'}
                     </p>
                   </div>
                   <div className="flex items-center gap-3 flex-shrink-0">
