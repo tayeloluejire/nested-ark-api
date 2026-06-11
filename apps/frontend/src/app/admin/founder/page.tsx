@@ -131,10 +131,18 @@ export default function FounderDashboardPage() {
       return;
     }
 
-    // Ensure cookies always reflect current localStorage state
-    // (guards against middleware seeing stale/missing cookies)
-    document.cookie = `ark_token=${token}; path=/; SameSite=Lax`;
-    document.cookie = `ark_role=${role}; path=/; SameSite=Lax`;
+    // Always refresh cookies via server-side route so middleware
+    // never sees stale/missing cookies on refresh or navigation
+    fetch('/api/set-auth-cookies', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ token, role }),
+    }).catch(() => {
+      // Fallback: write client-side cookies if API route fails
+      document.cookie = `ark_token=${token}; path=/; SameSite=Lax`;
+      document.cookie = `ark_role=${role}; path=/; SameSite=Lax`;
+    });
 
     try {
       const res  = await fetch(`${API_BASE}/admin/founder-dashboard`, {

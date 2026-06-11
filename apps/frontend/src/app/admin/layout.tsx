@@ -25,16 +25,28 @@ const navItems = [
 ];
 
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
-  const { user, logout, loading: isLoading } = useAuth();
+  const { user, logout, isLoading } = useAuth();
   const pathname  = usePathname();
   const router    = useRouter();
   const [open, setOpen] = useState(false);
 
-  // Founder Command Center has its own isolated layout and auth guard.
-  // Bypass the admin sidebar entirely — /admin/founder renders standalone.
-  if (pathname.startsWith('/admin/founder')) {
-    return <>{children}</>;
-  }
+  // Refresh cookies on every admin page mount so middleware never
+  // sees stale cookies after navigation or browser refresh
+  useEffect(() => {
+    const token = localStorage.getItem('token') || localStorage.getItem('ark_token');
+    const role  = localStorage.getItem('ark_role');
+    if (token && role) {
+      fetch('/api/set-auth-cookies', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ token, role }),
+      }).catch(() => {
+        document.cookie = `ark_token=${token}; path=/; SameSite=Lax`;
+        document.cookie = `ark_role=${role}; path=/; SameSite=Lax`;
+      });
+    }
+  }, []);
 
   useEffect(() => {
     if (!isLoading && (!user || user.role !== 'ADMIN')) {
@@ -42,7 +54,13 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     }
   }, [user, isLoading, router]);
 
-  if (isLoading || !user) return null;
+  if (isLoading) return (
+    <div className="min-h-screen bg-[#050505] flex items-center justify-center">
+      <div className="w-5 h-5 border-2 border-teal-500 border-t-transparent rounded-full animate-spin" />
+    </div>
+  );
+
+  if (!user) return null;
 
   return (
     <div className="min-h-screen bg-[#050505] text-white flex">
