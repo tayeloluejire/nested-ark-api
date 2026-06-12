@@ -95,6 +95,75 @@ function useCurrency() {
   return { currency, country, fmt };
 }
 
+// ── JSON-LD Schema markup ────────────────────────────────────────────────────
+const SCHEMA_ORGANIZATION = {
+  '@context': 'https://schema.org', '@type': 'Organization',
+  name: 'Nested Ark', url: 'https://nested-ark-api.vercel.app',
+  logo: 'https://nested-ark-api.vercel.app/nested_ark_icon.png',
+  description: 'Nested Ark Rent Vault helps tenants save gradually for rent commitments while giving landlords confidence they will be paid on time.',
+  foundingDate: '2024', areaServed: ['Nigeria','Ghana','Kenya','United Kingdom'],
+  contactPoint: { '@type': 'ContactPoint', email: 'nestedark@gmail.com', contactType: 'customer service' },
+  sameAs: ['https://twitter.com/NestedArkOS'],
+};
+const SCHEMA_FINANCIAL_SERVICE = {
+  '@context': 'https://schema.org', '@type': 'FinancialService',
+  name: 'Nested Ark Rent Vault',
+  description: 'A rent savings and escrow platform helping tenants save gradually toward annual rent while giving landlords payment assurance.',
+  url: 'https://nested-ark-api.vercel.app',
+  areaServed: ['Nigeria','Ghana','Kenya','United Kingdom'],
+  currenciesAccepted: 'NGN GHS KES GBP USD',
+  offers: { '@type': 'Offer', name: 'Rent Vault', price: '0', priceCurrency: 'USD', availability: 'https://schema.org/InStock' },
+};
+const SCHEMA_FAQ = {
+  '@context': 'https://schema.org', '@type': 'FAQPage',
+  mainEntity: [
+    { '@type': 'Question', name: 'What is Nested Ark Rent Vault?',
+      acceptedAnswer: { '@type': 'Answer', text: 'Nested Ark Rent Vault is a savings and escrow platform that helps tenants save gradually toward their annual rent target. Contributions accumulate until the full rent amount is reached, then released to the landlord.' } },
+    { '@type': 'Question', name: 'How do I save for rent using Nested Ark?',
+      acceptedAnswer: { '@type': 'Answer', text: 'Register as a tenant, set your rent target amount, choose your contribution frequency — daily, weekly or monthly — and your contributions accumulate in a secure vault until your target is reached.' } },
+    { '@type': 'Question', name: 'Is Nested Ark available in Nigeria?',
+      acceptedAnswer: { '@type': 'Answer', text: 'Yes. Nested Ark fully supports Nigerian Naira (NGN) and is designed for the Nigerian rental market where annual rent payments are standard. Tenants save in installments toward their annual rent target.' } },
+    { '@type': 'Question', name: 'How does Nested Ark help landlords?',
+      acceptedAnswer: { '@type': 'Answer', text: 'Landlords get full visibility of tenant savings progress, automated payment assurance, automated legal notices, and receive funds directly when the vault target is reached.' } },
+    { '@type': 'Question', name: 'Is my money safe with Nested Ark?',
+      acceptedAnswer: { '@type': 'Answer', text: 'Yes. All contributions are held in Paystack escrow. Every transaction is SHA-256 hashed and recorded on an immutable ledger. Funds are only released when the verified rent target is met.' } },
+  ],
+};
+
+// ── Geo-aware hero messaging ──────────────────────────────────────────────────
+const GEO_HERO: Record<string, { h1: string; sub: string; cta: string; example: string }> = {
+  NG: {
+    h1:      "Never Struggle to Raise One Year's Rent Again",
+    sub:     "Save daily, weekly or monthly toward your annual rent. Track your progress. Pay your landlord on time — without borrowing.",
+    cta:     "Start Your Rent Vault — It's Free",
+    example: "Join tenants already preparing for rent the smarter way.",
+  },
+  GH: {
+    h1:      "Plan Ahead for Your Annual Rent With Confidence",
+    sub:     "Save gradually toward your rent target. No last-minute stress. No borrowing. Just consistent progress.",
+    cta:     "Open Your Rent Vault Free",
+    example: "Helping tenants across Accra, Kumasi and Ghana plan for rent.",
+  },
+  KE: {
+    h1:      "Build Your Rent Target Gradually and Pay On Time",
+    sub:     "Save toward your rent commitments daily or monthly. Track every shilling. Pay confidently when due.",
+    cta:     "Create Your Rent Vault Today",
+    example: "Helping tenants across Nairobi and Kenya meet rent commitments.",
+  },
+  GB: {
+    h1:      "Smart Rent Planning for Modern Tenants",
+    sub:     "Set a rent savings goal, contribute regularly, and never miss a payment. Your landlord gets confidence. You get peace of mind.",
+    cta:     "Start Your Rent Savings Plan",
+    example: "Helping tenants across the UK plan and meet rent commitments.",
+  },
+  DEFAULT: {
+    h1:      "Save for Rent. Pay with Confidence.",
+    sub:     "Nested Ark Rent Vault helps tenants save gradually toward rent commitments while giving landlords confidence they'll be paid on time.",
+    cta:     "Start Your Rent Vault Free",
+    example: "Trusted by tenants and landlords across Nigeria, Ghana, Kenya and the UK.",
+  },
+};
+
 // ── Animated counter ──────────────────────────────────────────────────────────
 function Counter({ target, prefix = '', suffix = '' }: { target: number; prefix?: string; suffix?: string }) {
   const [val, setVal] = useState(0);
@@ -349,25 +418,48 @@ export default function HomePage() {
 
         {/* ── HERO ──────────────────────────────────────────────────────── */}
         <section className="px-4 pt-6 space-y-4">
-          {/* Trust pill — geo-aware market signal */}
+
+          {/* What is Nested Ark — category definition for Google + humans */}
           <div className="flex items-center gap-2">
             <span className="w-1.5 h-1.5 rounded-full bg-teal-500 animate-pulse block" />
             <span className="text-[9px] font-black uppercase tracking-[0.28em] text-teal-400">
-              Nigeria · Ghana · Kenya · United Kingdom · 12+ Countries
+              Rent Vault Platform · Nigeria · Ghana · Kenya · UK
             </span>
           </div>
 
-          {/* H1 — Primary SEO heading, geo-aware */}
+          {/* H1 — Primary SEO heading, geo-aware, pain + solution */}
           <h1 className="text-[clamp(2rem,8vw,3.6rem)] font-black tracking-tighter leading-[0.9]">
             {geoHero.h1}
           </h1>
 
-          {/* H2 — Value proposition */}
+          {/* H2 — Value proposition: tenant + landlord both addressed */}
           <p className="text-zinc-400 text-sm leading-relaxed max-w-sm">
-            {geoHero.sub}
+            {geoHero.sub}{' '}
+            <span className="text-zinc-500">Landlords get confidence they&apos;ll be paid on time.</span>
           </p>
 
-          {/* Primary CTAs — conversion-optimised */}
+          {/* Category definition — helps Google and first-time visitors */}
+          <p className="text-[10px] text-zinc-600 border-l-2 border-teal-500/40 pl-3 leading-relaxed">
+            Nested Ark is a Rent Vault platform that helps tenants prepare for annual rent
+            while helping landlords receive payment with confidence.
+          </p>
+
+          {/* Journey steps — explains the product in 4 lines, drives signup */}
+          <div className="grid grid-cols-2 gap-2">
+            {[
+              { n:'01', t:'Set your rent target' },
+              { n:'02', t:'Save gradually'        },
+              { n:'03', t:'Track progress'        },
+              { n:'04', t:'Pay confidently'       },
+            ].map(s => (
+              <div key={s.n} className="flex items-center gap-2 px-3 py-2 rounded-xl border border-zinc-800 bg-zinc-900/40">
+                <span className="text-[8px] text-teal-500 font-black font-mono">{s.n}</span>
+                <span className="text-[10px] text-zinc-300 font-semibold">{s.t}</span>
+              </div>
+            ))}
+          </div>
+
+          {/* Primary CTAs — tenant + landlord both visible */}
           <div className="grid grid-cols-1 gap-3">
             <Link href="/register?intent=tenant"
               className="flex items-center justify-center gap-2 py-4 bg-teal-500 text-black rounded-2xl font-black text-xs uppercase tracking-wider hover:bg-teal-400 transition-all active:scale-95 shadow-lg shadow-teal-500/20">
@@ -376,7 +468,7 @@ export default function HomePage() {
             <div className="grid grid-cols-2 gap-3">
               <Link href="/register?role=landlord"
                 className="flex items-center justify-center gap-2 py-3 bg-zinc-900 border border-amber-500/30 text-amber-400 rounded-2xl font-black text-xs uppercase tracking-wider hover:bg-amber-500/10 transition-all active:scale-95">
-                <Building2 size={13} /> Landlord
+                <Building2 size={13} /> Invite Tenant
               </Link>
               <Link href="/login"
                 className="flex items-center justify-center gap-2 py-3 bg-zinc-900 border border-zinc-800 text-zinc-300 rounded-2xl font-black text-xs uppercase tracking-wider hover:border-zinc-600 transition-all active:scale-95">
@@ -385,8 +477,27 @@ export default function HomePage() {
             </div>
           </div>
 
+          {/* Social proof — real platform data */}
+          <div className="p-3 rounded-2xl border border-teal-500/20 bg-teal-500/5 space-y-2">
+            <p className="text-[8px] text-teal-400 uppercase font-black tracking-widest">Live Rent Vault · Real Progress</p>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-[10px] text-zinc-300 font-bold">Independent Savings Vault</p>
+                <p className="text-[9px] text-zinc-600 font-mono">Target: ₦1,000 · Saved: ₦101.53</p>
+              </div>
+              <div className="text-right flex-shrink-0">
+                <p className="text-lg font-black text-teal-400">10%</p>
+                <p className="text-[8px] text-zinc-600">Funded</p>
+              </div>
+            </div>
+            <div className="h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+              <div className="h-full bg-teal-500 rounded-full" style={{ width: '10%' }} />
+            </div>
+            <p className="text-[8px] text-zinc-700 font-mono">SHA-256 Verified · Paystack Secured</p>
+          </div>
+
           {/* Trust line */}
-          <p className="text-[9px] text-zinc-600 font-mono">{geoHero.example}</p>
+          <p className="text-[9px] text-zinc-600">{geoHero.example}</p>
 
           {/* Role scroll chips — all existing hrefs preserved */}
           <div className="snap-x-card -mx-4 px-4">
@@ -739,14 +850,21 @@ export default function HomePage() {
         <section className="px-4">
           <div className="rounded-3xl border border-zinc-800 bg-zinc-950 p-6 text-center space-y-5">
             <div className="space-y-2">
-              <p className="text-[9px] text-teal-500 uppercase font-bold tracking-[0.3em]">Start Today — It&apos;s Free</p>
+              <p className="text-[9px] text-teal-500 uppercase font-bold tracking-[0.3em]">Join Free — Start Today</p>
               <h2 className="text-2xl font-black tracking-tighter leading-tight">
                 Start Your Rent Vault Today
               </h2>
               <p className="text-[11px] text-zinc-500 leading-relaxed max-w-xs mx-auto">
-                Join free. Set your rent target. Start from any amount.
-                Whether you&apos;re in Lagos, Accra, Nairobi or London — we&apos;ve got you covered.
+                Join tenants already preparing for rent the smarter way.
               </p>
+              <div className="grid grid-cols-2 gap-2 text-left max-w-xs mx-auto">
+                {['Set your rent target','Save gradually','Track progress','Pay confidently'].map((s,i) => (
+                  <div key={s} className="flex items-center gap-1.5">
+                    <span className="text-[8px] text-teal-500 font-black font-mono">0{i+1}</span>
+                    <span className="text-[10px] text-zinc-400">{s}</span>
+                  </div>
+                ))}
+              </div>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <Link href="/register?role=landlord"
