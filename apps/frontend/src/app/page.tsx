@@ -20,7 +20,7 @@ import {
   Search, Home, Users, Lock, CheckCircle2,
   FileText, Bell, Wallet,
   RefreshCw, HardHat, Landmark, Layers, Gavel, Receipt,
-  ChevronDown, Radio, Zap, BarChart3, Shield,
+  ChevronDown, Radio, Zap, BarChart3, Shield, PiggyBank,
 } from 'lucide-react';
 
 // ── Numeric helpers ───────────────────────────────────────────────────────────
