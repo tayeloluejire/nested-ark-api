@@ -266,6 +266,12 @@ const RD: Record<RoleTab, {
 // ═════════════════════════════════════════════════════════════════════════════
 export default function HomePage() {
   const { currency, country, fmt: fmtNum } = useCurrency();
+  const [geoHero, setGeoHero] = useState(GEO_HERO.DEFAULT);
+
+  useEffect(() => {
+    if (country && GEO_HERO[country]) setGeoHero(GEO_HERO[country]);
+  }, [country]);
+
   const [stats, setStats]                 = useState<Stats | null>(null);
   const [searchInput, setSearchInput]     = useState('');
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
@@ -316,6 +322,12 @@ export default function HomePage() {
   const role    = RD[activeRole];
 
   return (
+    <>
+      {/* ── JSON-LD Schema Markup — Organization + FinancialService + FAQ ── */}
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(SCHEMA_ORGANIZATION) }} />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(SCHEMA_FINANCIAL_SERVICE) }} />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(SCHEMA_FAQ) }} />
+
     <div className="min-h-screen bg-[#050505] text-white overflow-x-hidden selection:bg-teal-500 selection:text-black">
       <Navbar />
 
@@ -337,31 +349,46 @@ export default function HomePage() {
 
         {/* ── HERO ──────────────────────────────────────────────────────── */}
         <section className="px-4 pt-6 space-y-4">
+          {/* Trust pill — geo-aware market signal */}
           <div className="flex items-center gap-2">
             <span className="w-1.5 h-1.5 rounded-full bg-teal-500 animate-pulse block" />
             <span className="text-[9px] font-black uppercase tracking-[0.28em] text-teal-400">
-              Global Infrastructure OS · 12+ Countries
+              Nigeria · Ghana · Kenya · United Kingdom · 12+ Countries
             </span>
           </div>
 
-          <h1 className="text-[clamp(2.6rem,10vw,4.2rem)] font-black uppercase tracking-tighter leading-[0.87]">
-            Own. Build.<br />
-            <span className="text-teal-400">Rent. Earn.</span><br />
-            <span className="text-zinc-700">One Protocol.</span>
+          {/* H1 — Primary SEO heading, geo-aware */}
+          <h1 className="text-[clamp(2rem,8vw,3.6rem)] font-black tracking-tighter leading-[0.9]">
+            {geoHero.h1}
           </h1>
 
-          <div className="grid grid-cols-2 gap-3">
-            <Link href="/login"
+          {/* H2 — Value proposition */}
+          <p className="text-zinc-400 text-sm leading-relaxed max-w-sm">
+            {geoHero.sub}
+          </p>
+
+          {/* Primary CTAs — conversion-optimised */}
+          <div className="grid grid-cols-1 gap-3">
+            <Link href="/register?intent=tenant"
               className="flex items-center justify-center gap-2 py-4 bg-teal-500 text-black rounded-2xl font-black text-xs uppercase tracking-wider hover:bg-teal-400 transition-all active:scale-95 shadow-lg shadow-teal-500/20">
-              <Users size={14} /> Sign In
+              <PiggyBank size={14} /> {geoHero.cta}
             </Link>
-            <Link href="/register"
-              className="flex items-center justify-center gap-2 py-4 bg-zinc-900 border border-zinc-800 text-white rounded-2xl font-black text-xs uppercase tracking-wider hover:border-zinc-600 transition-all active:scale-95">
-              <Zap size={14} /> Get Started
-            </Link>
+            <div className="grid grid-cols-2 gap-3">
+              <Link href="/register?role=landlord"
+                className="flex items-center justify-center gap-2 py-3 bg-zinc-900 border border-amber-500/30 text-amber-400 rounded-2xl font-black text-xs uppercase tracking-wider hover:bg-amber-500/10 transition-all active:scale-95">
+                <Building2 size={13} /> Landlord
+              </Link>
+              <Link href="/login"
+                className="flex items-center justify-center gap-2 py-3 bg-zinc-900 border border-zinc-800 text-zinc-300 rounded-2xl font-black text-xs uppercase tracking-wider hover:border-zinc-600 transition-all active:scale-95">
+                <Users size={13} /> Sign In
+              </Link>
+            </div>
           </div>
 
-          {/* Role scroll chips */}
+          {/* Trust line */}
+          <p className="text-[9px] text-zinc-600 font-mono">{geoHero.example}</p>
+
+          {/* Role scroll chips — all existing hrefs preserved */}
           <div className="snap-x-card -mx-4 px-4">
             {[
               { label:'🏠 Landlord',   href:'/register?role=landlord' },
@@ -712,12 +739,13 @@ export default function HomePage() {
         <section className="px-4">
           <div className="rounded-3xl border border-zinc-800 bg-zinc-950 p-6 text-center space-y-5">
             <div className="space-y-2">
-              <p className="text-[9px] text-teal-500 uppercase font-bold tracking-[0.3em]">The New Global Standard</p>
-              <h2 className="text-2xl font-black uppercase tracking-tighter leading-tight">
-                Infrastructure<br /><span className="text-teal-400">Needs a Protocol.</span>
+              <p className="text-[9px] text-teal-500 uppercase font-bold tracking-[0.3em]">Start Today — It&apos;s Free</p>
+              <h2 className="text-2xl font-black tracking-tighter leading-tight">
+                Start Your Rent Vault Today
               </h2>
               <p className="text-[11px] text-zinc-500 leading-relaxed max-w-xs mx-auto">
-                Roads, housing, energy, rental income — every physical asset now runs through one programmable layer.
+                Join free. Set your rent target. Start from any amount.
+                Whether you&apos;re in Lagos, Accra, Nairobi or London — we&apos;ve got you covered.
               </p>
             </div>
             <div className="grid grid-cols-2 gap-3">
@@ -739,7 +767,7 @@ export default function HomePage() {
               </Link>
               <Link href="/register?intent=tenant"
                 className="col-span-2 flex items-center justify-center gap-2 py-4 bg-green-500 text-black font-black text-xs uppercase tracking-wider rounded-xl hover:bg-green-400 transition-all active:scale-95">
-                <Wallet size={13} /> Save Toward a Home — Tenant Vault
+                <PiggyBank size={13} /> Save for Rent — Open Rent Vault Free
               </Link>
             </div>
             <div className="flex flex-wrap justify-center gap-4 pt-1 text-[8px] text-zinc-700">
@@ -761,5 +789,6 @@ export default function HomePage() {
 
       <Footer />
     </div>
+    </>
   );
 }

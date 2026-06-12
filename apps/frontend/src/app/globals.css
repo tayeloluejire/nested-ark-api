@@ -143,3 +143,41 @@
   .active\:scale-95:active { transform: scale(0.95); }
   .active\:scale-90:active { transform: scale(0.90); }
 }
+
+/* ── Core Web Vitals: layout shift prevention ───────────────────────────── */
+img, video {
+  max-width: 100%;
+  height: auto;
+}
+
+/* Prevent CLS from unstyled content */
+[data-hydrating] { visibility: hidden; }
+
+/* ── Print styles: receipts + ledger entries ────────────────────────────── */
+@media print {
+  body { background: #fff !important; color: #000 !important; }
+  .no-print { display: none !important; }
+  a[href]:after { content: " (" attr(href) ")"; font-size: 10px; color: #666; }
+}
+
+/* ── Focus ring for accessibility (WCAG AA) ─────────────────────────────── */
+*:focus-visible {
+  outline: 2px solid var(--teal-500);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* ── Reduce motion for accessibility ────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ── Content visibility for below-fold performance ──────────────────────── */
+.content-auto {
+  content-visibility: auto;
+  contain-intrinsic-size: 0 500px;
+}
