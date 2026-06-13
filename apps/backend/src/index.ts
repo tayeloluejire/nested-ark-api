@@ -11281,6 +11281,36 @@ app.get('/api/admin/founder-dashboard', authenticate, async (req: Request, res: 
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
 
+
+// ── GET /api/public/stats — unauthenticated platform stats for homepage ────────
+// Returns live user/vault counts as social proof. No sensitive data exposed.
+app.get('/api/public/stats', async (req: Request, res: Response): Promise<any> => {
+  try {
+    const result = await pool.query(`
+      SELECT
+        (SELECT COUNT(*) FROM public.users WHERE role NOT IN ('ADMIN','DEVELOPER'))      AS users,
+        (SELECT COUNT(*) FROM flex_pay_vaults WHERE status NOT IN ('TERMINATED','ARCHIVED','CLOSED')) AS vaults,
+        (SELECT COUNT(*) FROM public.users WHERE role = 'TENANT')                        AS tenants,
+        (SELECT COUNT(*) FROM standalone_vaults WHERE status NOT IN ('TERMINATED','CLOSED'))          AS standalone_vaults,
+        (SELECT COALESCE(SUM(amount_ngn),0) FROM flex_contributions WHERE status='SUCCESS')           AS total_flex,
+        (SELECT COALESCE(SUM(amount_ngn),0) FROM standalone_contributions WHERE status='SUCCESS')     AS total_standalone
+    `);
+    const r = result.rows[0];
+    const totalVaults = parseInt(r.vaults) + parseInt(r.standalone_vaults);
+    const totalSaved  = parseFloat(r.total_flex) + parseFloat(r.total_standalone);
+    // Cache header — revalidate every 5 minutes
+    res.set('Cache-Control', 'public, s-maxage=300, stale-while-revalidate=60');
+    return res.json({
+      users:        parseInt(r.users),
+      vaults:       totalVaults,
+      tenants:      parseInt(r.tenants),
+      total_saved:  Math.round(totalSaved),
+    });
+  } catch (e: any) {
+    return res.status(500).json({ error: e.message });
+  }
+});
+
 // ── 404 catch-all — MUST be last route registration ──────────────────────────
 app.use((req: Request, res: Response) => {
   res.status(404).json({ error: "Not Found" });

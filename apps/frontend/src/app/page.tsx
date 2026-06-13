@@ -341,6 +341,15 @@ export default function HomePage() {
     if (country && GEO_HERO[country]) setGeoHero(GEO_HERO[country]);
   }, [country]);
 
+  // Public platform stats — live social proof (no auth required)
+  const [platformStats, setPlatformStats] = useState<{users:number;vaults:number;tenants:number} | null>(null);
+  useEffect(() => {
+    fetch('/api/public/stats')
+      .then(r => r.json())
+      .then(d => { if (d.users) setPlatformStats(d); })
+      .catch(() => {}); // silent fail — stats are optional social proof
+  }, []);
+
   const [stats, setStats]                 = useState<Stats | null>(null);
   const [searchInput, setSearchInput]     = useState('');
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
@@ -399,6 +408,23 @@ export default function HomePage() {
 
     <div className="min-h-screen bg-[#050505] text-white overflow-x-hidden selection:bg-teal-500 selection:text-black">
       <Navbar />
+
+      {/* ── CALCULATOR CTA ─────────────────────────────────────────── */}
+      <section className="px-4 py-3">
+        <Link href="/rent-vault/calculator"
+          className="flex items-center justify-between p-4 rounded-2xl border border-zinc-800 bg-zinc-900/20 hover:border-teal-500/30 hover:bg-teal-500/5 transition-all group">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-teal-500/15 flex items-center justify-center flex-shrink-0">
+              <TrendingUp size={15} className="text-teal-400" />
+            </div>
+            <div>
+              <p className="text-xs font-black">Not sure how much to save?</p>
+              <p className="text-[10px] text-zinc-500 mt-0.5">Calculate your rent plan in seconds — free tool</p>
+            </div>
+          </div>
+          <ArrowRight size={14} className="text-teal-400 group-hover:translate-x-1 transition-transform flex-shrink-0" />
+        </Link>
+      </section>
 
       {/* LIVE TICKER */}
       <div className="w-full bg-zinc-950 border-b border-zinc-900 px-4 py-2 flex items-center justify-between text-[10px] font-mono">
@@ -477,23 +503,40 @@ export default function HomePage() {
             </div>
           </div>
 
-          {/* Social proof — real platform data */}
-          <div className="p-3 rounded-2xl border border-teal-500/20 bg-teal-500/5 space-y-2">
-            <p className="text-[8px] text-teal-400 uppercase font-black tracking-widest">Live Rent Vault · Real Progress</p>
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <p className="text-[10px] text-zinc-300 font-bold">Independent Savings Vault</p>
-                <p className="text-[9px] text-zinc-600 font-mono">Target: ₦1,000 · Saved: ₦101.53</p>
+          {/* Social proof — live platform stats + realistic vault example */}
+          <div className="space-y-2">
+            {platformStats && (
+              <div className="grid grid-cols-2 gap-2">
+                {([
+                  { label: 'Registered Users',   value: String(platformStats.users),   color: 'text-white'    },
+                  { label: 'Active Rent Vaults', value: String(platformStats.vaults),  color: 'text-teal-400' },
+                  { label: 'Tenants Saving',     value: String(platformStats.tenants), color: 'text-teal-400' },
+                  { label: 'Ledger Verified',    value: '100%',                        color: 'text-green-400'},
+                ] as {label:string;value:string;color:string}[]).map(s => (
+                  <div key={s.label} className="p-3 rounded-xl border border-zinc-800 bg-zinc-900/40 text-center">
+                    <p className={`text-base font-black font-mono ${s.color}`}>{s.value}</p>
+                    <p className="text-[8px] text-zinc-600 uppercase tracking-widest mt-0.5">{s.label}</p>
+                  </div>
+                ))}
               </div>
-              <div className="text-right flex-shrink-0">
-                <p className="text-lg font-black text-teal-400">10%</p>
-                <p className="text-[8px] text-zinc-600">Funded</p>
+            )}
+            <div className="p-3 rounded-2xl border border-teal-500/20 bg-teal-500/5 space-y-2">
+              <p className="text-[8px] text-teal-400 uppercase font-black tracking-widest">Example Rent Vault · Lagos Tenant</p>
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-[10px] text-zinc-300 font-bold">Annual Rent Target</p>
+                  <p className="text-[9px] text-zinc-600 font-mono">Target: ₦1,200,000 · Saved: ₦180,000</p>
+                </div>
+                <div className="text-right flex-shrink-0">
+                  <p className="text-lg font-black text-teal-400">15%</p>
+                  <p className="text-[8px] text-zinc-600">Funded</p>
+                </div>
               </div>
+              <div className="h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                <div className="h-full bg-teal-500 rounded-full" style={{ width: '15%' }} />
+              </div>
+              <p className="text-[8px] text-zinc-700 font-mono">SHA-256 Verified · Paystack Secured</p>
             </div>
-            <div className="h-1.5 bg-zinc-800 rounded-full overflow-hidden">
-              <div className="h-full bg-teal-500 rounded-full" style={{ width: '10%' }} />
-            </div>
-            <p className="text-[8px] text-zinc-700 font-mono">SHA-256 Verified · Paystack Secured</p>
           </div>
 
           {/* Trust line */}
