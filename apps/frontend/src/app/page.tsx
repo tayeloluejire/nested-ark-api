@@ -343,6 +343,20 @@ export default function HomePage() {
 
   // Public platform stats — live social proof (no auth required)
   const [platformStats, setPlatformStats] = useState<{users:number;vaults:number;tenants:number} | null>(null);
+  const [heroSlide,     setHeroSlide]     = useState(0); // 0 = tenant, 1 = landlord
+  const [heroVisible,   setHeroVisible]   = useState(true);
+
+  // Alternate between tenant and landlord hero every 5 seconds
+  useEffect(() => {
+    const t = setInterval(() => {
+      setHeroVisible(false);
+      setTimeout(() => {
+        setHeroSlide(s => (s + 1) % 4);
+        setHeroVisible(true);
+      }, 300); // fade out 300ms, then swap content and fade back in
+    }, 5000);
+    return () => clearInterval(t);
+  }, []);
   useEffect(() => {
     fetch('/api/public/stats')
       .then(r => r.json())
@@ -453,48 +467,214 @@ export default function HomePage() {
             </span>
           </div>
 
-          {/* H1 — Primary SEO heading, geo-aware, pain + solution */}
-          <h1 className="text-[clamp(2rem,8vw,3.6rem)] font-black tracking-tighter leading-[0.9]">
-            {geoHero.h1}
-          </h1>
+          {/* H1 in DOM for SEO — Slide 1 content is the primary keyword target */}
+          <h1 className="sr-only">{geoHero.h1}</h1>
 
-          {/* H2 — Value proposition: tenant + landlord both addressed */}
-          <p className="text-zinc-400 text-sm leading-relaxed max-w-sm">
-            {geoHero.sub}{' '}
-            <span className="text-zinc-500">Landlords get confidence they&apos;ll be paid on time.</span>
-          </p>
-
-          {/* Category definition — helps Google and first-time visitors */}
-          <p className="text-[10px] text-zinc-600 border-l-2 border-teal-500/40 pl-3 leading-relaxed">
-            Nested Ark is a Rent Vault platform that helps tenants prepare for annual rent
-            while helping landlords receive payment with confidence.
-          </p>
-
-          {/* Journey steps — explains the product in 4 lines, drives signup */}
-          <div className="grid grid-cols-2 gap-2">
-            {[
-              { n:'01', t:'Set your rent target' },
-              { n:'02', t:'Save gradually'        },
-              { n:'03', t:'Track progress'        },
-              { n:'04', t:'Pay confidently'       },
-            ].map(s => (
-              <div key={s.n} className="flex items-center gap-2 px-3 py-2 rounded-xl border border-zinc-800 bg-zinc-900/40">
-                <span className="text-[8px] text-teal-500 font-black font-mono">{s.n}</span>
-                <span className="text-[10px] text-zinc-300 font-semibold">{s.t}</span>
+          {/* ── 4-slide rotating hero ──────────────────────────────── */}
+          <div
+            onMouseEnter={() => setHeroPaused(true)}
+            onMouseLeave={() => setHeroPaused(false)}
+            onTouchStart={() => setHeroPaused(true)}
+            onTouchEnd={() => setTimeout(() => setHeroPaused(false), 3000)}
+          >
+            {/* Slide indicator dots + audience badge */}
+            <div className="flex items-center gap-2 mb-3">
+              <span className={`text-[9px] px-2.5 py-1 rounded-full font-black uppercase tracking-widest border transition-all ${
+                heroSlide === 0 ? 'bg-teal-500/15 border-teal-500/20 text-teal-400'
+              : heroSlide === 1 ? 'bg-amber-500/15 border-amber-500/20 text-amber-400'
+              : heroSlide === 2 ? 'bg-purple-500/15 border-purple-500/20 text-purple-400'
+              :                   'bg-blue-500/15 border-blue-500/20 text-blue-400'
+              }`}>
+                {heroSlide === 0 ? '🏠 For Tenants'
+               : heroSlide === 1 ? '🏢 For Landlords'
+               : heroSlide === 2 ? '🤝 For Everyone'
+               :                   '🌍 For Diaspora'}
+              </span>
+              <div className="flex gap-1 ml-auto">
+                {[0,1,2,3].map(i => (
+                  <button key={i} onClick={() => { setHeroPaused(true); setHeroVisible(false); setTimeout(() => { setHeroSlide(i); setHeroVisible(true); }, 350); }}
+                    className={`rounded-full transition-all ${
+                      i === heroSlide ? 'w-4 h-1.5 bg-teal-500' : 'w-1.5 h-1.5 bg-zinc-700 hover:bg-zinc-500'
+                    }`} aria-label={`Slide ${i+1}`} />
+                ))}
               </div>
-            ))}
+            </div>
+
+            {/* Slide content with fade + lift transition */}
+            <div style={{
+              opacity: heroVisible ? 1 : 0,
+              transform: heroVisible ? 'translateY(0)' : 'translateY(8px)',
+              transition: 'opacity 0.35s ease, transform 0.35s ease',
+              minHeight: '220px',
+            }}>
+
+              {/* ── Slide 1: TENANT ───────────────────────────────── */}
+              {heroSlide === 0 && (
+                <div className="space-y-3">
+                  <p className="text-[clamp(1.7rem,7vw,3.2rem)] font-black tracking-tighter leading-[0.9]">
+                    {geoHero.h1}
+                  </p>
+                  <p className="text-zinc-400 text-sm leading-relaxed max-w-sm">
+                    {geoHero.sub}
+                  </p>
+                  <p className="text-[10px] text-zinc-600 border-l-2 border-teal-500/40 pl-3 leading-relaxed">
+                    Nested Ark is a Rent Vault platform that helps tenants prepare for
+                    annual rent while helping landlords receive payment with confidence.
+                  </p>
+                  <div className="grid grid-cols-2 gap-2">
+                    {[
+                      { n:'01', t:'Set your rent target' },
+                      { n:'02', t:'Save gradually'        },
+                      { n:'03', t:'Track progress'        },
+                      { n:'04', t:'Pay confidently'       },
+                    ].map(s => (
+                      <div key={s.n} className="flex items-center gap-2 px-3 py-2 rounded-xl border border-zinc-800 bg-zinc-900/40">
+                        <span className="text-[8px] text-teal-500 font-black font-mono">{s.n}</span>
+                        <span className="text-[10px] text-zinc-300 font-semibold">{s.t}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* ── Slide 2: LANDLORD ─────────────────────────────── */}
+              {heroSlide === 1 && (
+                <div className="space-y-3">
+                  <p className="text-[clamp(1.7rem,7vw,3.2rem)] font-black tracking-tighter leading-[0.9]">
+                    Stop Chasing Rent.<br />
+                    <span className="text-amber-400">Start Predicting Cashflow.</span>
+                  </p>
+                  <p className="text-zinc-400 text-sm leading-relaxed max-w-sm">
+                    Invite tenants to their own Rent Vaults. Automated reminders, payment
+                    tracking and lump-sum rent collection — built in from day one.
+                  </p>
+                  <p className="text-[10px] text-zinc-600 border-l-2 border-amber-500/40 pl-3 leading-relaxed">
+                    Your tenants save gradually. You get full visibility, automated notices,
+                    and payment delivered — without chasing.
+                  </p>
+                  <div className="grid grid-cols-2 gap-2">
+                    {[
+                      { n:'01', t:'Invite via WhatsApp'   },
+                      { n:'02', t:'Track tenant savings'  },
+                      { n:'03', t:'Auto rent reminders'   },
+                      { n:'04', t:'Receive payment'       },
+                    ].map(s => (
+                      <div key={s.n} className="flex items-center gap-2 px-3 py-2 rounded-xl border border-amber-500/10 bg-amber-500/5">
+                        <span className="text-[8px] text-amber-500 font-black font-mono">{s.n}</span>
+                        <span className="text-[10px] text-zinc-300 font-semibold">{s.t}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* ── Slide 3: ECOSYSTEM ────────────────────────────── */}
+              {heroSlide === 2 && (
+                <div className="space-y-3">
+                  <p className="text-[clamp(1.7rem,7vw,3.2rem)] font-black tracking-tighter leading-[0.9]">
+                    Where Tenants Save<br />
+                    <span className="text-purple-400">and Landlords Get Paid.</span>
+                  </p>
+                  <p className="text-zinc-400 text-sm leading-relaxed max-w-sm">
+                    A shared ecosystem that helps tenants prepare for annual rent while
+                    giving landlords confidence, visibility, and on-time payment.
+                  </p>
+                  <p className="text-[10px] text-zinc-600 border-l-2 border-purple-500/40 pl-3 leading-relaxed">
+                    One platform. Two sides. Every rent transaction secured by Paystack
+                    escrow and SHA-256 ledger.
+                  </p>
+                  <div className="grid grid-cols-2 gap-2">
+                    {[
+                      { n:'🏠', t:'Tenant saves daily'    },
+                      { n:'🏢', t:'Landlord tracks live'  },
+                      { n:'🔒', t:'Escrow holds funds'    },
+                      { n:'✅', t:'Payment releases'      },
+                    ].map(s => (
+                      <div key={s.t} className="flex items-center gap-2 px-3 py-2 rounded-xl border border-purple-500/10 bg-purple-500/5">
+                        <span className="text-sm">{s.n}</span>
+                        <span className="text-[10px] text-zinc-300 font-semibold">{s.t}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* ── Slide 4: DIASPORA ─────────────────────────────── */}
+              {heroSlide === 3 && (
+                <div className="space-y-3">
+                  <p className="text-[clamp(1.7rem,7vw,3.2rem)] font-black tracking-tighter leading-[0.9]">
+                    Help Family Pay Rent<br />
+                    <span className="text-blue-400">From Anywhere.</span>
+                  </p>
+                  <p className="text-zinc-400 text-sm leading-relaxed max-w-sm">
+                    Fund rent goals securely from the UK, US, Canada, Europe or anywhere
+                    in the world. Every contribution tracked. Every naira accounted for.
+                  </p>
+                  <p className="text-[10px] text-zinc-600 border-l-2 border-blue-500/40 pl-3 leading-relaxed">
+                    Support family rent vaults across Nigeria, Ghana and Kenya from
+                    wherever you are. SHA-256 verified. Court-admissible receipts.
+                  </p>
+                  <div className="grid grid-cols-2 gap-2">
+                    {[
+                      { n:'01', t:'Fund from abroad'      },
+                      { n:'02', t:'Multi-currency'        },
+                      { n:'03', t:'Track remotely'        },
+                      { n:'04', t:'Family stays housed'   },
+                    ].map(s => (
+                      <div key={s.n} className="flex items-center gap-2 px-3 py-2 rounded-xl border border-blue-500/10 bg-blue-500/5">
+                        <span className="text-[8px] text-blue-400 font-black font-mono">{s.n}</span>
+                        <span className="text-[10px] text-zinc-300 font-semibold">{s.t}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+            </div>
           </div>
 
-          {/* Primary CTAs — tenant + landlord both visible */}
-          <div className="grid grid-cols-1 gap-3">
-            <Link href="/register?intent=tenant"
-              className="flex items-center justify-center gap-2 py-4 bg-teal-500 text-black rounded-2xl font-black text-xs uppercase tracking-wider hover:bg-teal-400 transition-all active:scale-95 shadow-lg shadow-teal-500/20">
-              <PiggyBank size={14} /> {geoHero.cta}
-            </Link>
-            <div className="grid grid-cols-2 gap-3">
+          {/* Primary CTAs — respond to active slide */}
+          <div className="grid grid-cols-1 gap-3"
+            style={{ opacity: heroVisible ? 1 : 0, transition: 'opacity 0.35s ease' }}>
+
+            {/* Primary CTA — changes per slide */}
+            {heroSlide === 0 && (
+              <Link href="/register?intent=tenant"
+                className="flex items-center justify-center gap-2 py-4 bg-teal-500 text-black rounded-2xl font-black text-xs uppercase tracking-wider hover:bg-teal-400 transition-all active:scale-95 shadow-lg shadow-teal-500/20">
+                <PiggyBank size={14} /> {geoHero.cta}
+              </Link>
+            )}
+            {heroSlide === 1 && (
               <Link href="/register?role=landlord"
-                className="flex items-center justify-center gap-2 py-3 bg-zinc-900 border border-amber-500/30 text-amber-400 rounded-2xl font-black text-xs uppercase tracking-wider hover:bg-amber-500/10 transition-all active:scale-95">
-                <Building2 size={13} /> Invite Tenant
+                className="flex items-center justify-center gap-2 py-4 bg-amber-500 text-black rounded-2xl font-black text-xs uppercase tracking-wider hover:bg-amber-400 transition-all active:scale-95 shadow-lg shadow-amber-500/20">
+                <Building2 size={14} /> List My Property — Free
+              </Link>
+            )}
+            {heroSlide === 2 && (
+              <Link href="/register"
+                className="flex items-center justify-center gap-2 py-4 bg-purple-500 text-black rounded-2xl font-black text-xs uppercase tracking-wider hover:bg-purple-400 transition-all active:scale-95 shadow-lg shadow-purple-500/20">
+                <Zap size={14} /> Get Started — Free
+              </Link>
+            )}
+            {heroSlide === 3 && (
+              <Link href="/register?role=diaspora"
+                className="flex items-center justify-center gap-2 py-4 bg-blue-500 text-black rounded-2xl font-black text-xs uppercase tracking-wider hover:bg-blue-400 transition-all active:scale-95 shadow-lg shadow-blue-500/20">
+                <Globe size={14} /> Support a Rent Vault
+              </Link>
+            )}
+
+            {/* Secondary CTAs — always visible */}
+            <div className="grid grid-cols-2 gap-3">
+              <Link href={heroSlide === 1 ? '/register?intent=tenant' : '/register?role=landlord'}
+                className={`flex items-center justify-center gap-2 py-3 bg-zinc-900 rounded-2xl font-black text-xs uppercase tracking-wider transition-all active:scale-95 border ${
+                  heroSlide === 1
+                    ? 'border-teal-500/30 text-teal-400 hover:bg-teal-500/10'
+                    : 'border-amber-500/30 text-amber-400 hover:bg-amber-500/10'
+                }`}>
+                {heroSlide === 1
+                  ? <><PiggyBank size={13} /> I&apos;m a Tenant</>
+                  : <><Building2 size={13} /> I&apos;m a Landlord</>
+                }
               </Link>
               <Link href="/login"
                 className="flex items-center justify-center gap-2 py-3 bg-zinc-900 border border-zinc-800 text-zinc-300 rounded-2xl font-black text-xs uppercase tracking-wider hover:border-zinc-600 transition-all active:scale-95">
