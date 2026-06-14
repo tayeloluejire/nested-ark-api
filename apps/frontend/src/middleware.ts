@@ -24,6 +24,8 @@ const PUBLIC_PATHS = new Set([
   '/payment-callback',
   '/marketplace',
   '/founder/login',
+  '/no-chop-your-rent',
+  '/rent-vault/calculator',
 ]);
 
 // ─────────────────────────────────────────────────────────────
