@@ -4,7 +4,7 @@
  * apps/frontend/src/app/no-chop-your-rent/page.tsx
  *
  * NO CHOP YOUR RENT™ — Standalone viral acquisition page
- * URL: nestedark.com/no-chop-your-rent
+ * URL: nested-ark-api.vercel.app/no-chop-your-rent
  *
  * Funnel: Social Share → Calculate → Wow Moment → Affordability Check
  *         → Viral Share → Start My Rent Vault → /register?intent=tenant
@@ -31,7 +31,7 @@ const SCHEMA = {
   name: 'NO CHOP YOUR RENT™ — Free Rent Savings Calculator',
   description:
     'Calculate exactly how much to save daily, weekly or monthly to meet your annual rent without borrowing. Free. No login. Nigeria, Ghana, Kenya, UK.',
-  url: 'https://nestedark.com/no-chop-your-rent',
+  url: 'https://nested-ark-api.vercel.app/no-chop-your-rent',
   applicationCategory: 'FinanceApplication',
   operatingSystem: 'All',
   offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },
@@ -187,11 +187,11 @@ export default function NoChopYourRentPage() {
 
   // ── Share helpers ─────────────────────────────────────────────────────────
   const shareText = target > 0
-    ? `NO CHOP YOUR RENT™ 🏠\n\nMy annual rent is ${fmt(target, sym)}\nI only need to save:\n\n${fmt(daily, sym)} daily\nor ${fmt(monthly, sym)} monthly\n\nto have my rent ready — no borrowing, no panic.\n\nCalculate yours FREE 👇\nhttps://nestedark.com/no-chop-your-rent`
-    : 'Calculate your rent savings plan FREE at https://nestedark.com/no-chop-your-rent — NO CHOP YOUR RENT™';
+    ? `NO CHOP YOUR RENT™ 🏠\n\nMy annual rent is ${fmt(target, sym)}\nI only need to save:\n\n${fmt(daily, sym)} daily\nor ${fmt(monthly, sym)} monthly\n\nto have my rent ready — no borrowing, no panic.\n\nCalculate yours FREE 👇\nhttps://nested-ark-api.vercel.app/no-chop-your-rent`
+    : 'Calculate your rent savings plan FREE at https://nested-ark-api.vercel.app/no-chop-your-rent — NO CHOP YOUR RENT™';
 
   const whatsappUrl = `https://wa.me/?text=${encodeURIComponent(shareText)}`;
-  const facebookUrl = `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent('https://nestedark.com/no-chop-your-rent')}&quote=${encodeURIComponent(shareText)}`;
+  const facebookUrl = `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent('https://nested-ark-api.vercel.app/no-chop-your-rent')}&quote=${encodeURIComponent(shareText)}`;
   const twitterUrl  = `https://twitter.com/intent/tweet?text=${encodeURIComponent(shareText.slice(0, 240))}`;
 
   const handleCopy = useCallback(() => {
@@ -517,7 +517,7 @@ export default function NoChopYourRentPage() {
                   <p className="text-teal-400 font-black">{fmt(daily, sym)} daily</p>
                   <p className="text-zinc-500 text-[9px]">or {fmt(monthly, sym)} monthly</p>
                   <p className="text-zinc-400 mt-1">to have my rent ready — no borrowing, no panic.</p>
-                  <p className="text-zinc-600 text-[9px] mt-2">nestedark.com/no-chop-your-rent</p>
+                  <p className="text-zinc-600 text-[9px] mt-2">nested-ark-api.vercel.app/no-chop-your-rent</p>
                 </div>
 
                 {/* Share buttons */}
