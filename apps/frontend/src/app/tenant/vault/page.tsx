@@ -75,9 +75,9 @@ interface VaultApiResponse {
 interface InitForm {
   rent_amount: string; frequency: string;
   landlord_name: string; landlord_email: string;
-  landlord_bank_name: string; landlord_account_number: string; landlord_account_name: string;
+  landlord_bank_name: string; landlord_bank_code: string; landlord_account_number: string; landlord_account_name: string;
   payout_preference: 'TENANT' | 'LANDLORD' | 'ASK';
-  tenant_bank_name: string; tenant_account_number: string; tenant_account_name: string;
+  tenant_bank_name: string; tenant_bank_code: string; tenant_account_number: string; tenant_account_name: string;
   due_date: string;
 }
 
@@ -183,14 +183,165 @@ function FeeBreakdown({ rentAmount, frequency }: { rentAmount: number; frequency
   );
 }
 
+// ── Bank Account Picker ────────────────────────────────────────────────────
+// Priority 1: live Paystack bank dropdown (no free-text bank names)
+// Priority 2: instant account-name verification as soon as account number entered
+// Priority 3: confirmation card showing verified recipient details
+interface BankAccountValue {
+  bank_name: string; bank_code: string;
+  account_number: string; account_name: string;
+}
+function BankAccountPicker({
+  value, onChange, label,
+}: {
+  value: BankAccountValue;
+  onChange: (v: BankAccountValue) => void;
+  label: string;
+}) {
+  const [banks,    setBanks]    = useState<{ name: string; code: string }[]>([]);
+  const [loading,  setLoading]  = useState(false);
+  const [verifying, setVerifying] = useState(false);
+  const [verified, setVerified] = useState(false);
+  const [verifyError, setVerifyError] = useState('');
+
+  const inp = "w-full bg-black border border-zinc-800 rounded-xl px-4 py-3 text-sm text-white focus:border-teal-500 outline-none transition-colors";
+  const lbl = "block text-[9px] text-zinc-400 uppercase font-bold tracking-widest mb-1.5";
+
+  // Load bank list once
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const token = getToken();
+        const res = await fetch(`${API_BASE}/paystack/banks`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const data = await res.json();
+        if (mounted && data.success) {
+          setBanks((data.banks || []).map((b: any) => ({ name: b.name, code: b.code })).sort((a: any, b: any) => a.name.localeCompare(b.name)));
+        }
+      } catch { /* silent — falls back to free text if bank list unavailable */ }
+    })();
+    return () => { mounted = false; };
+  }, []);
+
+  // Re-verify whenever bank_code or account_number changes (debounced)
+  useEffect(() => {
+    setVerified(false);
+    setVerifyError('');
+    if (!value.bank_code || !value.account_number || value.account_number.length < 10) return;
+
+    const timer = setTimeout(async () => {
+      setVerifying(true);
+      try {
+        const token = getToken();
+        const res = await fetch(`${API_BASE}/paystack/resolve-account`, {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ account_number: value.account_number, bank_code: value.bank_code }),
+        });
+        const data = await res.json();
+        if (data.success && data.account_name) {
+          onChange({ ...value, account_name: data.account_name });
+          setVerified(true);
+        } else {
+          setVerifyError(data.error || 'Account not found. Please check the account number and bank.');
+        }
+      } catch {
+        setVerifyError('Could not verify account right now. You can continue, but double-check the details.');
+      } finally {
+        setVerifying(false);
+      }
+    }, 600);
+
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value.bank_code, value.account_number]);
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className={lbl}>{label} Bank *</label>
+          {banks.length > 0 ? (
+            <select
+              className={inp + " cursor-pointer"}
+              value={value.bank_code}
+              onChange={e => {
+                const bank = banks.find(b => b.code === e.target.value);
+                onChange({ ...value, bank_code: e.target.value, bank_name: bank?.name || '', account_name: '' });
+              }}
+            >
+              <option value="">Select bank…</option>
+              {banks.map(b => <option key={b.code} value={b.code}>{b.name}</option>)}
+            </select>
+          ) : (
+            // Fallback if bank list fails to load — free text, still functional
+            <input className={inp} placeholder="e.g. Guaranty Trust Bank" value={value.bank_name}
+              onChange={e => onChange({ ...value, bank_name: e.target.value, account_name: '' })}/>
+          )}
+        </div>
+        <div>
+          <label className={lbl}>Account Number *</label>
+          <input className={inp} placeholder="0123456789" maxLength={10} inputMode="numeric"
+            value={value.account_number}
+            onChange={e => onChange({ ...value, account_number: e.target.value.replace(/\D/g, ''), account_name: '' })}/>
+        </div>
+      </div>
+
+      {/* Verification status */}
+      {verifying && (
+        <div className="flex items-center gap-2 p-3 rounded-xl border border-zinc-800 bg-zinc-900/40 text-[10px] text-zinc-400">
+          <span className="animate-spin">⏳</span> Verifying account details…
+        </div>
+      )}
+
+      {!verifying && verified && value.account_name && (
+        <div className="p-4 rounded-xl border border-green-500/25 bg-green-500/5 space-y-2">
+          <p className="text-[9px] text-green-400 uppercase font-black tracking-widest flex items-center gap-1.5">
+            ✅ Account Verified
+          </p>
+          <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
+            <span className="text-white font-black">{value.account_name}</span>
+            <span className="text-zinc-400">{value.bank_name}</span>
+            <span className="text-zinc-500">****{value.account_number.slice(-4)}</span>
+          </div>
+        </div>
+      )}
+
+      {!verifying && verifyError && (
+        <div className="p-3 rounded-xl border border-amber-500/25 bg-amber-500/5 text-[10px] text-amber-400">
+          ⚠️ {verifyError}
+        </div>
+      )}
+
+      {/* Account name — auto-filled on verification, editable as fallback */}
+      <div>
+        <label className={lbl}>Account Name {verified ? '(Verified ✅)' : '*'}</label>
+        <input
+          className={inp + (verified ? ' border-green-500/30' : '')}
+          placeholder="As on bank account"
+          value={value.account_name}
+          readOnly={verified}
+          onChange={e => onChange({ ...value, account_name: e.target.value })}
+        />
+        {!verified && !verifyError && value.account_number.length >= 10 && (
+          <p className="text-[9px] text-zinc-600 mt-1.5">Account name will auto-fill once verified.</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
 // ── Init Vault Form — 2-step: form → confirm ──────────────────────────────────
 function InitVaultForm({ onSuccess }: { onSuccess: () => void }) {
   const [form, setForm] = useState<InitForm>({
     rent_amount: '', frequency: 'MONTHLY',
     landlord_name: '', landlord_email: '',
-    landlord_bank_name: '', landlord_account_number: '', landlord_account_name: '',
+    landlord_bank_name: '', landlord_bank_code: '', landlord_account_number: '', landlord_account_name: '',
     payout_preference: 'ASK',
-    tenant_bank_name: '', tenant_account_number: '', tenant_account_name: '',
+    tenant_bank_name: '', tenant_bank_code: '', tenant_account_number: '', tenant_account_name: '',
     due_date: '',
   });
   const [step,    setStep]    = useState<'form' | 'confirm'>('form');
@@ -240,10 +391,12 @@ function InitVaultForm({ onSuccess }: { onSuccess: () => void }) {
           landlord_name:           form.landlord_name           || undefined,
           landlord_email:          form.landlord_email          || undefined,
           landlord_bank_name:      form.landlord_bank_name      || undefined,
+          landlord_bank_code:      form.landlord_bank_code      || undefined,
           landlord_account_number: form.landlord_account_number || undefined,
           landlord_account_name:   form.landlord_account_name   || undefined,
           payout_preference:       form.payout_preference,
           tenant_bank_name:        form.tenant_bank_name        || undefined,
+          tenant_bank_code:        form.tenant_bank_code        || undefined,
           tenant_account_number:   form.tenant_account_number   || undefined,
           tenant_account_name:     form.tenant_account_name     || undefined,
           due_date:                form.due_date                || undefined,
@@ -377,9 +530,9 @@ function InitVaultForm({ onSuccess }: { onSuccess: () => void }) {
         <label className={lbl}>When Your Vault Reaches 100%, What Should Happen?</label>
         <div className="space-y-2">
           {[
-            { key: 'TENANT'   as const, icon: '🏦', title: 'Send to My Account',   sub: 'Withdraw the full amount to my own bank account. I will pay my landlord myself.' },
-            { key: 'LANDLORD' as const, icon: '🏠', title: 'Pay My Landlord Directly', sub: 'Release funds directly to the landlord bank account I provide below.' },
-            { key: 'ASK'      as const, icon: '🤔', title: 'Ask Me When Target Is Reached', sub: "I'm not sure yet — let me decide when my vault is fully funded." },
+            { key: 'LANDLORD' as const, icon: '🏠', title: 'Pay My Landlord',   sub: 'Release funds directly to the landlord bank account I provide below.' },
+            { key: 'TENANT'   as const, icon: '🏦', title: 'Send To My Account', sub: 'Withdraw the full amount to my own bank account. I will pay my landlord myself.' },
+            { key: 'ASK'      as const, icon: '🤔', title: 'Decide Later',       sub: "I'm not sure yet — let me decide when my vault is fully funded." },
           ].map(opt => (
             <button
               key={opt.key}
@@ -415,20 +568,18 @@ function InitVaultForm({ onSuccess }: { onSuccess: () => void }) {
       {form.payout_preference === 'TENANT' && (
         <div className="p-4 rounded-xl border border-teal-500/20 bg-teal-500/5 space-y-4">
           <p className="text-[9px] text-teal-400 uppercase font-black tracking-widest">Your Bank Account (Withdrawal Destination)</p>
-          <div className="grid grid-cols-3 gap-4">
-            <div>
-              <label className={lbl}>Bank Name *</label>
-              <input className={inp} placeholder="GTBank" value={form.tenant_bank_name} onChange={set('tenant_bank_name')}/>
-            </div>
-            <div>
-              <label className={lbl}>Account Number *</label>
-              <input className={inp} placeholder="0123456789" value={form.tenant_account_number} onChange={set('tenant_account_number')}/>
-            </div>
-            <div>
-              <label className={lbl}>Account Name *</label>
-              <input className={inp} placeholder="As on bank" value={form.tenant_account_name} onChange={set('tenant_account_name')}/>
-            </div>
-          </div>
+          <BankAccountPicker
+            label="Your"
+            value={{
+              bank_name: form.tenant_bank_name, bank_code: form.tenant_bank_code,
+              account_number: form.tenant_account_number, account_name: form.tenant_account_name,
+            }}
+            onChange={v => setForm(f => ({
+              ...f,
+              tenant_bank_name: v.bank_name, tenant_bank_code: v.bank_code,
+              tenant_account_number: v.account_number, tenant_account_name: v.account_name,
+            }))}
+          />
         </div>
       )}
 
@@ -449,20 +600,18 @@ function InitVaultForm({ onSuccess }: { onSuccess: () => void }) {
               <input className={inp} type="email" placeholder="landlord@email.com" value={form.landlord_email} onChange={set('landlord_email')}/>
             </div>
           </div>
-          <div className="grid grid-cols-3 gap-4">
-            <div>
-              <label className={lbl}>Bank Name *</label>
-              <input className={inp} placeholder="GTBank" value={form.landlord_bank_name} onChange={set('landlord_bank_name')}/>
-            </div>
-            <div>
-              <label className={lbl}>Account Number *</label>
-              <input className={inp} placeholder="0123456789" value={form.landlord_account_number} onChange={set('landlord_account_number')}/>
-            </div>
-            <div>
-              <label className={lbl}>Account Name *</label>
-              <input className={inp} placeholder="As on bank" value={form.landlord_account_name} onChange={set('landlord_account_name')}/>
-            </div>
-          </div>
+          <BankAccountPicker
+            label="Landlord's"
+            value={{
+              bank_name: form.landlord_bank_name, bank_code: form.landlord_bank_code,
+              account_number: form.landlord_account_number, account_name: form.landlord_account_name,
+            }}
+            onChange={v => setForm(f => ({
+              ...f,
+              landlord_bank_name: v.bank_name, landlord_bank_code: v.bank_code,
+              landlord_account_number: v.account_number, landlord_account_name: v.account_name,
+            }))}
+          />
         </div>
       ) : (
         <>
@@ -484,20 +633,18 @@ function InitVaultForm({ onSuccess }: { onSuccess: () => void }) {
                   <input className={inp} type="email" placeholder="landlord@email.com" value={form.landlord_email} onChange={set('landlord_email')}/>
                 </div>
               </div>
-              <div className="grid grid-cols-3 gap-4">
-                <div>
-                  <label className={lbl}>Bank Name</label>
-                  <input className={inp} placeholder="GTBank" value={form.landlord_bank_name} onChange={set('landlord_bank_name')}/>
-                </div>
-                <div>
-                  <label className={lbl}>Account Number</label>
-                  <input className={inp} placeholder="0123456789" value={form.landlord_account_number} onChange={set('landlord_account_number')}/>
-                </div>
-                <div>
-                  <label className={lbl}>Account Name</label>
-                  <input className={inp} placeholder="As on bank" value={form.landlord_account_name} onChange={set('landlord_account_name')}/>
-                </div>
-              </div>
+              <BankAccountPicker
+                label="Landlord's"
+                value={{
+                  bank_name: form.landlord_bank_name, bank_code: form.landlord_bank_code,
+                  account_number: form.landlord_account_number, account_name: form.landlord_account_name,
+                }}
+                onChange={v => setForm(f => ({
+                  ...f,
+                  landlord_bank_name: v.bank_name, landlord_bank_code: v.bank_code,
+                  landlord_account_number: v.account_number, landlord_account_name: v.account_name,
+                }))}
+              />
             </div>
           )}
         </>
@@ -521,19 +668,14 @@ function InitVaultForm({ onSuccess }: { onSuccess: () => void }) {
 // ── Payout Choice Prompt — shown when payout_preference === ASK and vault is full ─
 function PayoutChoicePrompt({ vaultId }: { vaultId: string }) {
   const [choice,  setChoice]  = useState<'TENANT' | 'LANDLORD' | null>(null);
-  const [bank,    setBank]    = useState('');
-  const [acct,    setAcct]    = useState('');
-  const [name,    setName]    = useState('');
+  const [bank,    setBank]    = useState({ bank_name: '', bank_code: '', account_number: '', account_name: '' });
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState('');
   const [done,    setDone]    = useState(false);
 
-  const inp = "w-full bg-black border border-zinc-800 rounded-xl px-4 py-3 text-sm text-white focus:border-teal-500 outline-none transition-colors";
-  const lbl = "block text-[9px] text-zinc-400 uppercase font-bold tracking-widest mb-1.5";
-
   const handleSubmit = async () => {
     if (!choice) return setError('Please choose where your funds should go.');
-    if (!bank || !acct || !name) return setError('Please fill in all bank account details.');
+    if (!bank.bank_name || !bank.account_number || !bank.account_name) return setError('Please fill in all bank account details.');
     setError(''); setLoading(true);
     try {
       const token = getToken();
@@ -542,7 +684,8 @@ function PayoutChoicePrompt({ vaultId }: { vaultId: string }) {
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({
           payout_choice: choice,
-          bank_name: bank, account_number: acct, account_name: name,
+          bank_name: bank.bank_name, account_number: bank.account_number,
+          account_name: bank.account_name, bank_code: bank.bank_code,
         }),
       });
       const data = await res.json();
@@ -563,39 +706,37 @@ function PayoutChoicePrompt({ vaultId }: { vaultId: string }) {
 
   return (
     <div className="p-5 rounded-2xl border border-amber-500/20 bg-amber-500/5 space-y-4">
-      <p className="text-[9px] text-amber-400 uppercase font-black tracking-widest">
-        Your Vault Is Full — Where Should the Funds Go?
-      </p>
+      {!choice && (
+        <p className="text-[9px] text-amber-400 uppercase font-black tracking-widest text-center">
+          Choose What Happens Next
+        </p>
+      )}
 
-      <div className="grid grid-cols-2 gap-2">
+      <div className="grid grid-cols-1 gap-3">
         {[
-          { key: 'TENANT'   as const, icon: '🏦', title: 'Send to My Account' },
           { key: 'LANDLORD' as const, icon: '🏠', title: 'Pay My Landlord' },
+          { key: 'TENANT'   as const, icon: '🏦', title: 'Send To My Account' },
         ].map(opt => (
           <button key={opt.key} type="button" onClick={() => setChoice(opt.key)}
-            className={`p-3 rounded-xl border text-center transition-all ${
-              choice === opt.key ? 'border-teal-500/50 bg-teal-500/10 text-teal-400' : 'border-zinc-800 bg-zinc-900/30 text-zinc-400 hover:border-zinc-700'
+            className={`p-5 rounded-2xl border text-center transition-all ${
+              choice === opt.key ? 'border-teal-500/50 bg-teal-500/10 text-teal-400' : 'border-zinc-800 bg-zinc-900/30 text-zinc-300 hover:border-zinc-700'
             }`}>
-            <div className="text-lg mb-1">{opt.icon}</div>
-            <p className="text-[10px] font-black uppercase tracking-tight">{opt.title}</p>
+            <div className="text-2xl mb-1.5">{opt.icon}</div>
+            <p className="text-sm font-black uppercase tracking-tight">{opt.title}</p>
           </button>
         ))}
       </div>
 
       {choice && (
-        <div className="grid grid-cols-3 gap-3">
-          <div>
-            <label className={lbl}>{choice === 'TENANT' ? 'Your Bank' : 'Landlord Bank'}</label>
-            <input className={inp} placeholder="GTBank" value={bank} onChange={e => setBank(e.target.value)}/>
-          </div>
-          <div>
-            <label className={lbl}>Account Number</label>
-            <input className={inp} placeholder="0123456789" value={acct} onChange={e => setAcct(e.target.value)}/>
-          </div>
-          <div>
-            <label className={lbl}>Account Name</label>
-            <input className={inp} placeholder="As on bank" value={name} onChange={e => setName(e.target.value)}/>
-          </div>
+        <div className="space-y-3 pt-1">
+          <p className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest">
+            {choice === 'TENANT' ? 'Your Bank Details' : "Landlord's Bank Details"}
+          </p>
+          <BankAccountPicker
+            label={choice === 'TENANT' ? 'Your' : "Landlord's"}
+            value={bank}
+            onChange={setBank}
+          />
         </div>
       )}
 
@@ -604,10 +745,130 @@ function PayoutChoicePrompt({ vaultId }: { vaultId: string }) {
       )}
 
       <button onClick={handleSubmit} disabled={loading || !choice}
-        className={`w-full py-3.5 rounded-xl font-black text-[10px] uppercase tracking-widest transition-all ${
+        className={`w-full py-4 rounded-xl font-black text-sm uppercase tracking-widest transition-all ${
           loading || !choice ? 'bg-zinc-800 text-zinc-600 cursor-not-allowed' : 'bg-teal-500 text-black hover:bg-teal-400'}`}>
         {loading ? '⏳ Saving…' : 'Confirm Payout Destination'}
       </button>
+    </div>
+  );
+}
+
+// ── Payout Success Certificate ────────────────────────────────────────────────
+// Priority 4: "🏠 RENT SUCCESSFULLY PAID" certificate for CLOSED vaults.
+function PayoutSuccessCertificate({ vaultId }: { vaultId: string }) {
+  const [receipt, setReceipt] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [error,   setError]   = useState('');
+
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const token = getToken();
+        const res = await fetch(`${API_BASE}/tenant/standalone-vault/${vaultId}/receipt`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const data = await res.json();
+        if (!mounted) return;
+        if (res.ok && data.success) setReceipt(data.receipt);
+        else setError(data.error || 'Receipt not yet available.');
+      } catch {
+        if (mounted) setError('Could not load receipt.');
+      } finally {
+        if (mounted) setLoading(false);
+      }
+    })();
+    return () => { mounted = false; };
+  }, [vaultId]);
+
+  const handlePrint = () => window.print();
+
+  const handleShare = async () => {
+    if (!receipt) return;
+    const text = `🏠 RENT SUCCESSFULLY PAID\n\nAmount: ${fmt(receipt.amount)}\nRecipient: ${receipt.recipient_name}\nDate: ${new Date(receipt.date).toLocaleDateString('en-NG', { year: 'numeric', month: 'long', day: 'numeric' })}\nReference: ${receipt.reference}\n\nLedger Verified ✅\nPaystack Verified ✅\n\nvia Nested Ark — NO CHOP YOUR RENT™`;
+    if (navigator.share) {
+      try { await navigator.share({ text }); } catch { /* user cancelled */ }
+    } else if (navigator.clipboard) {
+      await navigator.clipboard.writeText(text);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="p-5 rounded-2xl border border-zinc-800 bg-zinc-900/20 text-center text-[10px] text-zinc-500">
+        ⏳ Loading receipt…
+      </div>
+    );
+  }
+
+  if (error || !receipt) {
+    return (
+      <div className="p-5 rounded-2xl border border-zinc-800 bg-zinc-900/20 text-center text-[10px] text-zinc-500">
+        {error || 'Receipt not available.'}
+      </div>
+    );
+  }
+
+  return (
+    <div className="p-6 rounded-2xl border border-teal-500/30 bg-gradient-to-b from-teal-500/10 to-transparent space-y-4">
+      <div className="text-center space-y-1">
+        <div className="text-3xl">🏠</div>
+        <p className="text-teal-400 font-black text-base uppercase tracking-tight">Rent Successfully Paid</p>
+      </div>
+
+      <div className="space-y-2.5 text-sm">
+        <div className="flex justify-between items-center pb-2 border-b border-zinc-800">
+          <span className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest">Amount</span>
+          <span className="text-xl font-black font-mono text-white">{fmt(receipt.amount)}</span>
+        </div>
+        <div className="flex justify-between items-center">
+          <span className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest">Recipient</span>
+          <span className="text-white font-bold">{receipt.recipient_name}</span>
+        </div>
+        <div className="flex justify-between items-center">
+          <span className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest">Destination</span>
+          <span className="text-zinc-300">{receipt.destination}</span>
+        </div>
+        <div className="flex justify-between items-center">
+          <span className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest">Bank</span>
+          <span className="text-zinc-300">{receipt.bank_name} · {receipt.account_number_masked}</span>
+        </div>
+        <div className="flex justify-between items-center">
+          <span className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest">Date</span>
+          <span className="text-zinc-300">
+            {new Date(receipt.date).toLocaleDateString('en-NG', { year: 'numeric', month: 'long', day: 'numeric' })}
+          </span>
+        </div>
+        <div className="flex justify-between items-center">
+          <span className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest">Reference</span>
+          <span className="text-zinc-400 font-mono text-[11px]">{receipt.reference}</span>
+        </div>
+      </div>
+
+      <div className="flex items-center justify-center gap-4 pt-2">
+        {receipt.ledger_verified && (
+          <span className="text-[9px] text-green-400 font-black flex items-center gap-1">✅ Ledger Verified</span>
+        )}
+        {receipt.paystack_verified && (
+          <span className="text-[9px] text-green-400 font-black flex items-center gap-1">✅ Paystack Verified</span>
+        )}
+      </div>
+
+      <div className="grid grid-cols-2 gap-2 pt-1">
+        <button onClick={handlePrint}
+          className="py-3 rounded-xl border border-zinc-700 text-zinc-300 font-black text-[10px] uppercase tracking-widest hover:border-zinc-500 transition-all">
+          📄 Download / Print
+        </button>
+        <button onClick={handleShare}
+          className="py-3 rounded-xl border border-teal-500/30 bg-teal-500/10 text-teal-400 font-black text-[10px] uppercase tracking-widest hover:bg-teal-500/20 transition-all">
+          📤 Share
+        </button>
+      </div>
+
+      <Link href="/ledger"
+        className="block text-center text-[10px] text-zinc-500 hover:text-teal-400 transition-colors pt-1">
+        View on Ledger →
+      </Link>
     </div>
   );
 }
@@ -620,32 +881,38 @@ function StandaloneVaultDisplay({ vault, onPay }: { vault: StandaloneVault; onPa
   return (
     <div className="space-y-4">
       {vault.status === 'FUNDED_READY' && (
-        <div className="flex items-center gap-3 p-4 rounded-2xl border border-teal-500/30 bg-teal-500/5">
-          <span className="text-xl">🎯</span>
-          <div>
-            <p className="text-teal-400 font-black text-sm">Vault Fully Funded!</p>
-            {vault.payout_preference === 'TENANT' && (
-              <p className="text-zinc-500 text-[10px] mt-0.5">
-                Funds will be withdrawn to your account ({vault.tenant_bank_name} · {vault.tenant_account_number}) within 24 hours.
-              </p>
-            )}
-            {vault.payout_preference === 'LANDLORD' && (
-              <p className="text-zinc-500 text-[10px] mt-0.5">
-                Funds will be released directly to your landlord ({vault.landlord_bank_name} · {vault.landlord_account_number}) within 24 hours.
-              </p>
-            )}
-            {(vault.payout_preference === 'ASK' || !vault.payout_preference) && (
-              <p className="text-zinc-500 text-[10px] mt-0.5">
-                Choose where your funds go below — to your account or directly to your landlord.
-              </p>
-            )}
-          </div>
+        <div className="p-6 rounded-2xl border border-teal-500/30 bg-teal-500/5 text-center space-y-2">
+          <div className="text-3xl">🎉</div>
+          <p className="text-teal-400 font-black text-lg uppercase tracking-tight">Congratulations!</p>
+          <p className="text-zinc-300 text-sm">Your Rent Target has been achieved.</p>
+          <p className="text-2xl font-black font-mono text-white mt-1">
+            {fmt(vault.rent_amount ?? vault.target_amount)}
+          </p>
+
+          {vault.payout_preference === 'TENANT' && (
+            <p className="text-zinc-500 text-[10px] mt-2">
+              Funds will be withdrawn to your account ({vault.tenant_bank_name} · {vault.tenant_account_number}) within 24 hours.
+            </p>
+          )}
+          {vault.payout_preference === 'LANDLORD' && (
+            <p className="text-zinc-500 text-[10px] mt-2">
+              Funds will be released directly to your landlord ({vault.landlord_bank_name} · {vault.landlord_account_number}) within 24 hours.
+            </p>
+          )}
+          {(vault.payout_preference === 'ASK' || !vault.payout_preference) && (
+            <p className="text-zinc-400 text-[11px] mt-2 font-bold">Choose what happens next:</p>
+          )}
         </div>
       )}
 
       {/* Payout choice prompt — shown when preference is ASK and vault is fully funded */}
       {vault.status === 'FUNDED_READY' && (vault.payout_preference === 'ASK' || !vault.payout_preference) && (
         <PayoutChoicePrompt vaultId={vault.id}/>
+      )}
+
+      {/* Payout success certificate — shown once vault has been disbursed */}
+      {vault.status === 'CLOSED' && (
+        <PayoutSuccessCertificate vaultId={vault.id}/>
       )}
 
       <div className="p-6 rounded-2xl border bg-zinc-900/20" style={{ borderColor: `${col}30` }}>
