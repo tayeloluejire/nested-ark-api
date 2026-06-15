@@ -1224,6 +1224,25 @@ const ensureTablesExist = async () => {
       ALTER TABLE standalone_vaults ADD COLUMN IF NOT EXISTS rent_amount         DECIMAL(15,2);
       ALTER TABLE standalone_vaults ADD COLUMN IF NOT EXISTS platform_fee_amount DECIMAL(15,2);
 
+      -- ── Payout preference (Option C: Smart Choice) ──────────────────────────
+      -- TENANT   = withdraw to tenant's own bank account at 100% completion
+      -- LANDLORD = release directly to landlord bank account (even if landlord
+      --            never joins Nested Ark — uses landlord_* fields above)
+      -- ASK      = tenant decides at completion time (default)
+      ALTER TABLE standalone_vaults ADD COLUMN IF NOT EXISTS payout_preference     VARCHAR(20) NOT NULL DEFAULT 'ASK';
+      ALTER TABLE standalone_vaults ADD COLUMN IF NOT EXISTS tenant_bank_name      VARCHAR(100);
+      ALTER TABLE standalone_vaults ADD COLUMN IF NOT EXISTS tenant_account_number VARCHAR(20);
+      ALTER TABLE standalone_vaults ADD COLUMN IF NOT EXISTS tenant_account_name   VARCHAR(255);
+      ALTER TABLE standalone_vaults ADD COLUMN IF NOT EXISTS tenant_bank_code      VARCHAR(20);
+      ALTER TABLE standalone_vaults ADD COLUMN IF NOT EXISTS due_date              DATE;
+      -- Cached Paystack transfer recipient codes — created lazily at release time
+      ALTER TABLE standalone_vaults ADD COLUMN IF NOT EXISTS tenant_recipient_code   VARCHAR(100);
+      ALTER TABLE standalone_vaults ADD COLUMN IF NOT EXISTS landlord_recipient_code VARCHAR(100);
+      -- Payout cron tracking — mirrors flex_pay_vaults pattern
+      ALTER TABLE standalone_vaults ADD COLUMN IF NOT EXISTS payout_attempt_count  INTEGER     DEFAULT 0;
+      ALTER TABLE standalone_vaults ADD COLUMN IF NOT EXISTS payout_failed_at      TIMESTAMPTZ DEFAULT NULL;
+      ALTER TABLE standalone_vaults ADD COLUMN IF NOT EXISTS payout_failure_reason TEXT        DEFAULT NULL;
+
       -- flex_contributions: released tracking prevents double-payout
       ALTER TABLE flex_contributions ADD COLUMN IF NOT EXISTS released    BOOLEAN     DEFAULT FALSE;
       ALTER TABLE flex_contributions ADD COLUMN IF NOT EXISTS released_at TIMESTAMPTZ DEFAULT NULL;
@@ -9586,7 +9605,39 @@ app.post('/api/tenant/standalone-vault/init', authenticate, async (req: Request,
       landlord_name, landlord_email,
       landlord_bank_name, landlord_account_number, landlord_account_name,
       target_amount: raw_target, installment_amount: raw_installment,
+      payout_preference = 'ASK',
+      tenant_bank_name, tenant_account_number, tenant_account_name, tenant_bank_code,
+      due_date,
     } = req.body;
+
+    const VALID_PAYOUT_PREFS = ['TENANT', 'LANDLORD', 'ASK'];
+    const finalPayoutPref = VALID_PAYOUT_PREFS.includes((payout_preference || '').toUpperCase())
+      ? (payout_preference as string).toUpperCase()
+      : 'ASK';
+
+    if (finalPayoutPref === 'LANDLORD') {
+      if (!landlord_bank_name || !landlord_account_number || !landlord_account_name) {
+        return res.status(400).json({
+          error: 'payout_preference=LANDLORD requires landlord_bank_name, landlord_account_number and landlord_account_name.',
+        });
+      }
+    }
+    if (finalPayoutPref === 'TENANT') {
+      if (!tenant_bank_name || !tenant_account_number || !tenant_account_name) {
+        return res.status(400).json({
+          error: 'payout_preference=TENANT requires tenant_bank_name, tenant_account_number and tenant_account_name.',
+        });
+      }
+    }
+
+    let finalDueDate: string | null = null;
+    if (due_date) {
+      const d = new Date(due_date);
+      if (isNaN(d.getTime())) {
+        return res.status(400).json({ error: 'due_date is not a valid date.' });
+      }
+      finalDueDate = d.toISOString().slice(0, 10);
+    }
 
     const VAULT_FEE_PCT = 0.02;
     const PERIODS_MAP: Record<string, number> = {
@@ -9632,8 +9683,11 @@ app.post('/api/tenant/standalone-vault/init', authenticate, async (req: Request,
          (tenant_user_id, target_amount, installment_amount, frequency,
           rent_amount, platform_fee_amount,
           landlord_name, landlord_email, landlord_bank_name,
-          landlord_account_number, landlord_account_name, status, currency)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'ACTIVE','NGN')
+          landlord_account_number, landlord_account_name,
+          payout_preference, tenant_bank_name, tenant_account_number,
+          tenant_account_name, tenant_bank_code, due_date,
+          status, currency)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'ACTIVE','NGN')
        RETURNING *`,
       [
         userId, finalTarget, finalInstallment, freq,
@@ -9643,6 +9697,12 @@ app.post('/api/tenant/standalone-vault/init', authenticate, async (req: Request,
         landlord_bank_name      || null,
         landlord_account_number || null,
         landlord_account_name   || null,
+        finalPayoutPref,
+        tenant_bank_name        || null,
+        tenant_account_number   || null,
+        tenant_account_name     || null,
+        tenant_bank_code         || null,
+        finalDueDate,
       ]
     );
     const sv = r.rows[0];
@@ -9669,6 +9729,8 @@ app.post('/api/tenant/standalone-vault/init', authenticate, async (req: Request,
       periods:             periods,
       status:              sv.status,
       currency:            sv.currency,
+      payout_preference:   sv.payout_preference,
+      due_date:            sv.due_date,
       landlord_supplied:   !!(landlord_name || landlord_email || landlord_bank_name),
       fee_explanation:     'Nested Ark Rent Success Fee (2%) covers: automated rent planning, smart vault, AutoPay, contribution tracking, secure escrow, and payment history.',
       message:             `Vault initialized. Save ₦${finalInstallment.toLocaleString()} ${freq.toLowerCase()} to reach your ₦${computedRentAmount.toLocaleString()} rent target.`,
@@ -9731,11 +9793,101 @@ app.get('/api/tenant/standalone-vault', authenticate, async (req: Request, res: 
         landlord_email:       sv.landlord_email       || null,
         landlord_bank_name:   sv.landlord_bank_name   || null,
         landlord_account_name: sv.landlord_account_name || null,
+        landlord_account_number: sv.landlord_account_number || null,
+        payout_preference:    sv.payout_preference    || 'ASK',
+        tenant_bank_name:     sv.tenant_bank_name      || null,
+        tenant_account_number: sv.tenant_account_number || null,
+        tenant_account_name:  sv.tenant_account_name   || null,
+        due_date:             sv.due_date              || null,
         linked_tenancy_id:    sv.linked_tenancy_id    || null,
         migrated_vault_id:    sv.migrated_vault_id    || null,
         created_at:           sv.created_at,
       },
       contributions: contribs.rows,
+    });
+  } catch (e: any) {
+    return res.status(500).json({ error: e.message });
+  }
+});
+
+// ── POST /api/tenant/standalone-vault/:id/payout-choice ──────────────────────
+// For vaults created with payout_preference='ASK'. Once a vault reaches
+// FUNDED_READY, the tenant calls this to decide where the funds go:
+// TENANT (their own bank account) or LANDLORD (direct release, even if the
+// landlord never joins Nested Ark). The PAYOUT-CRON picks up the chosen
+// preference on its next cycle and disburses accordingly.
+app.post('/api/tenant/standalone-vault/:id/payout-choice', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId  = (req as any).userId;
+  const { id }  = req.params;
+  const { payout_choice, bank_name, account_number, account_name, bank_code } = req.body;
+
+  try {
+    const VALID_CHOICES = ['TENANT', 'LANDLORD'];
+    const choice = (payout_choice || '').toUpperCase();
+    if (!VALID_CHOICES.includes(choice)) {
+      return res.status(400).json({ error: "payout_choice must be 'TENANT' or 'LANDLORD'." });
+    }
+    if (!bank_name || !account_number || !account_name) {
+      return res.status(400).json({ error: 'bank_name, account_number and account_name are required.' });
+    }
+
+    const svRes = await pool.query(
+      `SELECT * FROM standalone_vaults WHERE id=$1 AND tenant_user_id=$2`,
+      [id, userId]
+    );
+    if (!svRes.rows.length) return res.status(404).json({ error: 'Standalone vault not found.' });
+    const sv = svRes.rows[0];
+
+    if (sv.status !== 'FUNDED_READY') {
+      return res.status(400).json({
+        error:  `Vault status is '${sv.status}'. Payout choice can only be made once the vault reaches FUNDED_READY (100%).`,
+        status: sv.status,
+      });
+    }
+
+    let updateQuery: string;
+    let updateParams: any[];
+
+    if (choice === 'TENANT') {
+      updateQuery = `
+        UPDATE standalone_vaults
+        SET payout_preference = 'TENANT',
+            tenant_bank_name = $1, tenant_account_number = $2, tenant_account_name = $3,
+            tenant_bank_code = $4, tenant_recipient_code = NULL, updated_at = NOW()
+        WHERE id = $5 RETURNING *`;
+      updateParams = [bank_name, account_number, account_name, bank_code || null, id];
+    } else {
+      updateQuery = `
+        UPDATE standalone_vaults
+        SET payout_preference = 'LANDLORD',
+            landlord_bank_name = $1, landlord_account_number = $2, landlord_account_name = $3,
+            landlord_recipient_code = NULL, updated_at = NOW()
+        WHERE id = $4 RETURNING *`;
+      updateParams = [bank_name, account_number, account_name, id];
+    }
+
+    const updated = await pool.query(updateQuery, updateParams);
+
+    const h = crypto.createHash('sha256')
+      .update(`sv-payout-choice-${id}-${choice}-${Date.now()}`).digest('hex');
+    pool.query(
+      `INSERT INTO system_ledger (transaction_type, payload, immutable_hash)
+       VALUES ('STANDALONE_VAULT_PAYOUT_CHOICE',$1,$2)`,
+      [JSON.stringify({
+        vault_id: id, tenant_user_id: userId, payout_choice: choice,
+        bank_name, account_number, account_name,
+      }), h]
+    ).catch(() => {});
+
+    console.log(`[STANDALONE-VAULT] Payout choice set: vault=${id} choice=${choice} → ${account_name} (${bank_name} ${account_number})`);
+
+    return res.json({
+      success: true,
+      vault_id: id,
+      payout_preference: updated.rows[0].payout_preference,
+      message: choice === 'TENANT'
+        ? `Funds will be transferred to your account (${bank_name} · ${account_number}) within 24 hours.`
+        : `Funds will be released directly to your landlord (${bank_name} · ${account_number}) within 24 hours.`,
     });
   } catch (e: any) {
     return res.status(500).json({ error: e.message });
@@ -11576,6 +11728,253 @@ const startPendingPayoutCron = (pool: any) => {
   console.log('[CRON] Pending payout retry scheduler active — every 30 minutes');
 };
 
+// ── Standalone Vault Payout Cron ─────────────────────────────────────────────
+// Runs every 30 minutes. Finds FUNDED_READY standalone_vaults where the tenant
+// has a payout_preference of TENANT or LANDLORD and a bank account on file.
+// Unlike the linked-tenancy cron above, this does NOT require landlord
+// onboarding — LANDLORD payouts go to the bank details the tenant supplied,
+// even if that landlord has never created a Nested Ark account.
+// Vaults with payout_preference='ASK' are left untouched until the tenant
+// calls POST /api/tenant/standalone-vault/:id/payout-choice.
+const startStandaloneVaultPayoutCron = (pool: any) => {
+  const THIRTY_MINS             = 30 * 60 * 1000;
+  const PAYSTACK_TRANSFER_FLOOR = 5000; // ₦50.00 in kobo
+  const MAX_PAYOUT_ATTEMPTS     = 15;
+
+  const retryStandaloneVaultPayouts = async () => {
+    if (!PAYSTACK_SECRET) return;
+    try {
+      // Pre-check Paystack balance
+      let paystackBalance = 0;
+      try {
+        const balRes  = await fetch(`${PAYSTACK_BASE}/balance`, {
+          headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` },
+        });
+        const balData = await balRes.json() as any;
+        const ngn = (balData.data || []).find((b: any) => b.currency === 'NGN');
+        paystackBalance = ngn ? ngn.balance : 0;
+        if (paystackBalance < PAYSTACK_TRANSFER_FLOOR) {
+          console.warn(`[SV-PAYOUT-CRON] ⏸ Paystack NGN balance ₦${(paystackBalance/100).toFixed(2)} — below ₦50 minimum. Skipping cycle.`);
+          return;
+        }
+      } catch (balErr: any) {
+        console.warn('[SV-PAYOUT-CRON] Could not fetch Paystack balance — proceeding anyway:', balErr.message);
+      }
+
+      const vaults = await pool.query(
+        `SELECT sv.*, u.email AS tenant_email, u.full_name AS tenant_name,
+                COALESCE((
+                  SELECT SUM(sc.amount_ngn) FROM standalone_contributions sc
+                  WHERE sc.vault_id = sv.id AND sc.status = 'SUCCESS'
+                ), 0) AS actual_total
+         FROM standalone_vaults sv
+         JOIN public.users u ON u.id = sv.tenant_user_id
+         WHERE sv.status = 'FUNDED_READY'
+           AND sv.vault_balance >= sv.target_amount
+           AND sv.payout_preference IN ('TENANT','LANDLORD')
+           AND COALESCE(sv.payout_attempt_count, 0) < $1
+           AND NOT EXISTS (
+             SELECT 1 FROM system_ledger sl
+             WHERE sl.transaction_type           = 'STANDALONE_VAULT_PAYOUT'
+               AND sl.payload->>'vault_id'        = sv.id::text
+               AND sl.payload->>'transfer_status' = 'INITIATED'
+               AND sl.created_at > NOW() - INTERVAL '25 hours'
+           )
+         LIMIT 20`,
+        [MAX_PAYOUT_ATTEMPTS]
+      );
+
+      if (!vaults.rows.length) return;
+      console.log(`[SV-PAYOUT-CRON] ${vaults.rows.length} pending standalone vault payout(s) found`);
+
+      for (const sv of vaults.rows) {
+        try {
+          const isTenant = sv.payout_preference === 'TENANT';
+          const bankName      = isTenant ? sv.tenant_bank_name      : sv.landlord_bank_name;
+          const accountNumber = isTenant ? sv.tenant_account_number : sv.landlord_account_number;
+          const accountName   = isTenant ? sv.tenant_account_name   : sv.landlord_account_name;
+          const bankCode      = isTenant ? sv.tenant_bank_code      : null;
+          let recipientCode   = isTenant ? sv.tenant_recipient_code : sv.landlord_recipient_code;
+
+          if (!bankName || !accountNumber || !accountName) {
+            console.log(`[SV-PAYOUT-CRON] ⏸ Vault ${sv.id} (${sv.payout_preference}) missing bank details — skipping`);
+            continue;
+          }
+
+          // ── Lazily create Paystack transfer recipient if not cached ───────
+          if (!recipientCode) {
+            try {
+              let resolvedBankCode = bankCode;
+              // Resolve bank code from bank name if not stored (landlord-direct path)
+              if (!resolvedBankCode) {
+                const bankListRes = await fetch(`${PAYSTACK_BASE}/bank?currency=NGN`, {
+                  headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` },
+                });
+                const bankList = await bankListRes.json() as any;
+                const match = (bankList.data || []).find((b: any) =>
+                  b.name?.toLowerCase().includes((bankName || '').toLowerCase()) ||
+                  (bankName || '').toLowerCase().includes(b.name?.toLowerCase())
+                );
+                resolvedBankCode = match?.code || null;
+              }
+              if (!resolvedBankCode) {
+                console.warn(`[SV-PAYOUT-CRON] ⚠ Vault ${sv.id}: could not resolve bank_code for "${bankName}" — skipping`);
+                await pool.query(
+                  `UPDATE standalone_vaults SET payout_failure_reason=$1, payout_failed_at=NOW(),
+                   payout_attempt_count = COALESCE(payout_attempt_count,0)+1 WHERE id=$2`,
+                  [`Could not resolve bank_code for "${bankName}"`, sv.id]
+                );
+                continue;
+              }
+
+              const prRes = await fetch(`${PAYSTACK_BASE}/transferrecipient`, {
+                method:  'POST',
+                headers: { Authorization: `Bearer ${PAYSTACK_SECRET}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  type: 'nuban', name: accountName, account_number: accountNumber,
+                  bank_code: resolvedBankCode, currency: 'NGN',
+                }),
+              });
+              const prData = await prRes.json() as any;
+              if (prData.status && prData.data?.recipient_code) {
+                recipientCode = prData.data.recipient_code;
+                const col = isTenant ? 'tenant_recipient_code' : 'landlord_recipient_code';
+                await pool.query(`UPDATE standalone_vaults SET ${col}=$1 WHERE id=$2`, [recipientCode, sv.id]);
+              } else {
+                console.warn(`[SV-PAYOUT-CRON] ⚠ Vault ${sv.id}: recipient creation failed — ${prData.message}`);
+                await pool.query(
+                  `UPDATE standalone_vaults SET payout_failure_reason=$1, payout_failed_at=NOW(),
+                   payout_attempt_count = COALESCE(payout_attempt_count,0)+1 WHERE id=$2`,
+                  [`Recipient creation failed: ${prData.message || 'unknown error'}`, sv.id]
+                );
+                continue;
+              }
+            } catch (rcErr: any) {
+              console.warn(`[SV-PAYOUT-CRON] Vault ${sv.id}: recipient creation error — ${rcErr.message}`);
+              continue;
+            }
+          }
+
+          // ── Compute payout: 2% Rent Success Fee already included in target_amount,
+          // so the full vault_balance is the net payout to the recipient. ─────────
+          const rawTotal  = parseFloat(sv.actual_total) > 0 ? parseFloat(sv.actual_total) : parseFloat(sv.vault_balance) || 0;
+          const netAmount = parseFloat(sv.rent_amount) > 0 ? parseFloat(sv.rent_amount) : rawTotal; // disburse rent portion only
+          const netKobo   = Math.round(netAmount * 100);
+
+          if (netKobo < PAYSTACK_TRANSFER_FLOOR) {
+            console.warn(`[SV-PAYOUT-CRON] ⚠ Vault ${sv.id}: net ₦${netAmount} below ₦50 minimum — skipping`);
+            await pool.query(
+              `UPDATE standalone_vaults SET payout_failure_reason=$1, payout_failed_at=NOW(),
+               payout_attempt_count = COALESCE(payout_attempt_count,0)+1 WHERE id=$2`,
+              [`Net payout ₦${netAmount} below Paystack ₦50 minimum`, sv.id]
+            );
+            continue;
+          }
+
+          const payRef      = `SV-${sv.payout_preference}-${crypto.randomUUID().split('-')[0].toUpperCase()}-${Date.now()}`;
+          const destination = isTenant ? 'tenant own account' : 'landlord (direct, no Nested Ark account required)';
+
+          console.log(`[SV-PAYOUT-CRON] Releasing vault=${sv.id} → ${destination}: ${accountName} (${bankName} ${accountNumber}) ₦${netAmount}`);
+
+          const tRes  = await fetch(`${PAYSTACK_BASE}/transfer`, {
+            method:  'POST',
+            headers: { Authorization: `Bearer ${PAYSTACK_SECRET}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              source:    'balance',
+              amount:    netKobo,
+              recipient: recipientCode,
+              reason:    `Nested Ark NO CHOP YOUR RENT — vault release (${accountName})`,
+              reference: payRef,
+              currency:  sv.currency || 'NGN',
+            }),
+          });
+          const tData = await tRes.json() as any;
+
+          const ph = crypto.createHash('sha256')
+            .update(`sv-payout-${payRef}-${sv.id}-${netKobo}-${Date.now()}`).digest('hex');
+
+          await pool.query(
+            `INSERT INTO system_ledger
+               (transaction_type, event_type, entity_type, entity_id, actor_id, description, payload, immutable_hash)
+             VALUES ('STANDALONE_VAULT_PAYOUT', $1, $2, $3, $4, $5, $6, $7)`,
+            [
+              tData.status ? 'PAYOUT_INITIATED' : 'PAYOUT_FAILED',
+              'STANDALONE_VAULT',
+              sv.id,
+              sv.tenant_user_id,
+              `Standalone vault released: ₦${netAmount} to ${destination} — ${accountName} (${bankName}).`,
+              JSON.stringify({
+                reference:       payRef,
+                amount_ngn:      netAmount,
+                gross_total:     rawTotal,
+                vault_id:        sv.id,
+                payout_preference: sv.payout_preference,
+                bank_name:       bankName,
+                account_name:    accountName,
+                account_number:  accountNumber,
+                recipient_code:  recipientCode,
+                transfer_code:   tData.data?.transfer_code,
+                transfer_status: tData.status ? 'INITIATED' : 'FAILED',
+                source:          'SV_PAYOUT_CRON',
+                paystack_error:  tData.status ? null : tData.message,
+              }),
+              ph,
+            ]
+          );
+
+          if (tData.status) {
+            await pool.query(
+              `UPDATE standalone_vaults
+               SET status='CLOSED', updated_at=NOW(),
+                   payout_failed_at=NULL, payout_failure_reason=NULL, payout_attempt_count=0
+               WHERE id=$1`,
+              [sv.id]
+            );
+            console.log(`[SV-PAYOUT-CRON] ✅ vault=${sv.id} → ${accountName} (${bankName} ${accountNumber}) ₦${netAmount} | ref=${payRef}`);
+            await logAudit({
+              event_type:  'STANDALONE_VAULT_RELEASED',
+              actor_id:    sv.tenant_user_id,
+              actor_role:  'SYSTEM',
+              unit_id:     null,
+              description: `Standalone vault released: ₦${netAmount} to ${destination} — ${accountName} (${bankName}).`,
+              metadata:    { reference: payRef, vault_id: sv.id, net_payout: netAmount, payout_preference: sv.payout_preference, recipient_code: recipientCode, source: 'SV_PAYOUT_CRON' },
+            });
+          } else {
+            await pool.query(
+              `UPDATE standalone_vaults
+               SET payout_failed_at=NOW(), payout_failure_reason=$1,
+                   payout_attempt_count = COALESCE(payout_attempt_count,0)+1
+               WHERE id=$2`,
+              [tData.message || 'Paystack transfer rejected', sv.id]
+            );
+            const attempts = (sv.payout_attempt_count || 0) + 1;
+            console.warn(`[SV-PAYOUT-CRON] ⚠ Failed vault=${sv.id} (attempt ${attempts}/${MAX_PAYOUT_ATTEMPTS}): ${tData.message}`);
+            if (attempts >= MAX_PAYOUT_ATTEMPTS) {
+              console.error(`[SV-PAYOUT-CRON] 🛑 vault ${sv.id} reached max retry limit. Manual intervention required.`);
+            }
+            await logAudit({
+              event_type:  'STANDALONE_VAULT_PAYOUT_FAILED',
+              actor_id:    sv.tenant_user_id,
+              actor_role:  'SYSTEM',
+              unit_id:     null,
+              description: `Standalone vault payout FAILED (attempt ${attempts}/${MAX_PAYOUT_ATTEMPTS}) — ${tData.message || 'Unknown error'}`,
+              metadata:    { reference: payRef, vault_id: sv.id, error: tData.message, attempt: attempts, max_attempts: MAX_PAYOUT_ATTEMPTS },
+            });
+          }
+        } catch (vaultErr: any) {
+          console.warn(`[SV-PAYOUT-CRON] Vault ${sv.id} error:`, vaultErr.message);
+        }
+      }
+    } catch (cronErr: any) {
+      console.warn('[SV-PAYOUT-CRON] Cron error:', cronErr.message);
+    }
+  };
+
+  setTimeout(retryStandaloneVaultPayouts, 90 * 1000); // 90s after boot, staggered after main cron
+  setInterval(retryStandaloneVaultPayouts, THIRTY_MINS);
+  console.log('[CRON] Standalone vault payout scheduler active — every 30 minutes');
+};
+
 
 // ── GET /api/rental/units/:id/advertise-status — landlord checks listing state ─
 app.get('/api/rental/units/:id/advertise-status', authenticate, async (req: Request, res: Response): Promise<any> => {
@@ -11752,6 +12151,7 @@ app.get('/api/tenant/dashboard', authenticate, async (req: Request, res: Respons
         `SELECT sv.id, sv.vault_balance, sv.target_amount, sv.installment_amount,
                 sv.frequency, sv.status, sv.funded_periods, sv.currency,
                 sv.landlord_name, sv.landlord_email,
+                sv.payout_preference, sv.due_date, sv.linked_tenancy_id,
                 COALESCE((SELECT SUM(sc.amount_ngn) FROM standalone_contributions sc
                           WHERE sc.vault_id = sv.id AND sc.status='SUCCESS'), 0) AS total_contributed,
                 (SELECT COUNT(*) FROM standalone_contributions sc
@@ -11791,6 +12191,8 @@ app.get('/api/tenant/dashboard', authenticate, async (req: Request, res: Respons
           contribution_count: parseInt(sv.contribution_count)   || 0,
           landlord_name:      sv.landlord_name  || null,
           landlord_email:     sv.landlord_email || null,
+          payout_preference:  sv.payout_preference || 'ASK',
+          due_date:           sv.due_date || null,
         } : null,
         next_due_date:       null,
         active_notice_count: 0,
@@ -12703,6 +13105,13 @@ app.get('/api/admin/standalone-vaults', authenticate, async (req: Request, res: 
         landlord_email:      sv.landlord_email || null,
         landlord_bank_name:  sv.landlord_bank_name || null,
         landlord_account_number: sv.landlord_account_number || null,
+        payout_preference:   sv.payout_preference || 'ASK',
+        tenant_bank_name:    sv.tenant_bank_name || null,
+        tenant_account_number: sv.tenant_account_number || null,
+        tenant_account_name: sv.tenant_account_name || null,
+        due_date:            sv.due_date || null,
+        payout_attempt_count: sv.payout_attempt_count || 0,
+        payout_failure_reason: sv.payout_failure_reason || null,
         linked_tenancy_id:   sv.linked_tenancy_id  || null,
         migrated_vault_id:   sv.migrated_vault_id  || null,
         created_at:          sv.created_at,
@@ -12750,6 +13159,11 @@ async function startServer() {
     // Catches FUNDED_READY vaults where landlord had no bank account at webhook
     // time, or where Paystack balance was ₦0 (T+1 clearing). Retries automatically.
     startPendingPayoutCron(pool);
+
+    // Start standalone vault payout cron (every 30 mins, staggered 90s after boot)
+    // Disburses NO CHOP YOUR RENT standalone vaults to tenant's own account or
+    // directly to landlord — no landlord onboarding required.
+    startStandaloneVaultPayoutCron(pool);
 
     app.listen(PORT, "0.0.0.0", () => {
       console.log("[BOOT] All modules initialized successfully");
