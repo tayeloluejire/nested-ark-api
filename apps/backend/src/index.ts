@@ -9894,7 +9894,72 @@ app.post('/api/tenant/standalone-vault/:id/payout-choice', authenticate, async (
   }
 });
 
-// ── POST /api/tenant/standalone-vault/pay ────────────────────────────────────
+// ── GET /api/tenant/standalone-vault/:id/receipt ─────────────────────────────
+// "RENT SUCCESSFULLY PAID" certificate — pulls the most recent successful
+// STANDALONE_VAULT_PAYOUT ledger entry for this vault. Powers the completion
+// screen and downloadable receipt (Priority 4).
+app.get('/api/tenant/standalone-vault/:id/receipt', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId = (req as any).userId;
+  const { id }  = req.params;
+  try {
+    const svRes = await pool.query(
+      `SELECT sv.*, u.full_name AS tenant_name, u.email AS tenant_email
+       FROM standalone_vaults sv
+       JOIN public.users u ON u.id = sv.tenant_user_id
+       WHERE sv.id=$1 AND sv.tenant_user_id=$2`,
+      [id, userId]
+    );
+    if (!svRes.rows.length) return res.status(404).json({ error: 'Standalone vault not found.' });
+    const sv = svRes.rows[0];
+
+    const ledgerRes = await pool.query(
+      `SELECT * FROM system_ledger
+       WHERE transaction_type = 'STANDALONE_VAULT_PAYOUT'
+         AND payload->>'vault_id' = $1
+         AND payload->>'transfer_status' = 'INITIATED'
+       ORDER BY created_at DESC LIMIT 1`,
+      [id]
+    );
+
+    if (!ledgerRes.rows.length) {
+      return res.status(404).json({
+        error: 'No completed payout found for this vault yet.',
+        status: sv.status,
+      });
+    }
+
+    const ledger  = ledgerRes.rows[0];
+    const payload = ledger.payload || {};
+
+    return res.json({
+      success: true,
+      receipt: {
+        vault_id:        id,
+        reference:       payload.reference,
+        amount:          parseFloat(payload.amount_ngn) || 0,
+        currency:        sv.currency || 'NGN',
+        recipient_name:  payload.account_name,
+        bank_name:       payload.bank_name,
+        account_number_masked: payload.account_number
+          ? `****${String(payload.account_number).slice(-4)}`
+          : null,
+        payout_preference: payload.payout_preference,
+        destination: payload.payout_preference === 'TENANT' ? 'Your Account' : 'Landlord Account',
+        date: ledger.created_at,
+        ledger_hash: ledger.immutable_hash,
+        ledger_verified: true,
+        paystack_verified: payload.transfer_status === 'INITIATED',
+        tenant_name: sv.tenant_name,
+        tenant_email: sv.tenant_email,
+        rent_amount: parseFloat(sv.rent_amount) || parseFloat(payload.amount_ngn) || 0,
+      },
+    });
+  } catch (e: any) {
+    return res.status(500).json({ error: e.message });
+  }
+});
+
+
 // Initiates a Paystack charge into the tenant's standalone vault (escrow hold).
 // Platform covers Paystack fee (bearer:account). 2% platform fee at vault release.
 // Vault must exist — call /init first if not. Optional: pass `amount` to override
