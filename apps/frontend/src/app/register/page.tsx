@@ -35,7 +35,7 @@ export const dynamic = 'force-dynamic';
  *          (background task on first load), not from register.
  */
 
-import { useState, useEffect, Suspense } from 'react';
+import { useState, useEffect, useRef, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
@@ -174,6 +174,14 @@ function RegisterContent() {
   const router       = useRouter();
   const { register, loading: authLoading } = useAuth();
 
+  // ── Scroll-to-form ref — fires on every role select ──────────────────────
+  const formRef = useRef<HTMLDivElement>(null);
+  const scrollToForm = () => {
+    setTimeout(() => {
+      formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 60); // 60ms lets the selected-role highlight render first
+  };
+
   // ── URL context ───────────────────────────────────────────────────────────
   const inviteToken = searchParams.get('token')   ?? '';
   const inviteUnit  = searchParams.get('unit')    ?? '';
@@ -234,6 +242,7 @@ function RegisterContent() {
     if (isIndependentTenant || forceRole === 'TENANT') {
       const t = ROLES.find(r => r.id === 'TENANT') ?? null;
       setSelectedRole(t);
+      scrollToForm(); // jump straight to form — no scroll needed from NCYR calculator CTA
     }
   }, [isIndependentTenant, forceRole]);
 
@@ -577,7 +586,7 @@ function RegisterContent() {
                 <button
                   key={role.id}
                   type="button"
-                  onClick={() => setSelectedRole(role)}
+                  onClick={() => { setSelectedRole(role); scrollToForm(); }}
                   className={`w-full p-4 rounded-xl border text-left transition-all ${
                     selectedRole?.id === role.id
                       ? 'border-teal-500/60 bg-teal-500/10'
@@ -586,11 +595,13 @@ function RegisterContent() {
                 >
                   <div className="flex items-center justify-between">
                     <p className="font-black text-sm">{role.label}</p>
-                    {selectedRole?.id === role.id && (
-                      <span className="text-[9px] px-2 py-0.5 bg-teal-500/20 text-teal-400 rounded font-mono uppercase tracking-widest">
-                        Selected
-                      </span>
-                    )}
+                    {selectedRole?.id === role.id
+                      ? (
+                        <span className="text-[9px] px-2 py-0.5 bg-teal-500/20 text-teal-400 rounded font-mono uppercase tracking-widest flex items-center gap-1">
+                          Selected ↓
+                        </span>
+                      ) : null
+                    }
                   </div>
                   <p className="text-[9px] text-teal-500 uppercase font-bold tracking-widest mt-0.5">
                     {role.sub}
@@ -629,7 +640,7 @@ function RegisterContent() {
         )}
 
         {/* ── Core fields ───────────────────────────────────────────────── */}
-        <div className="space-y-4 border-t border-zinc-900/60 pt-4">
+        <div ref={formRef} className="space-y-4 border-t border-zinc-900/60 pt-4">
           <p className="text-[10px] text-zinc-500 uppercase font-black tracking-widest">
             Primary Identification
           </p>
