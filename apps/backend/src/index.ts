@@ -1243,6 +1243,13 @@ const ensureTablesExist = async () => {
       ALTER TABLE standalone_vaults ADD COLUMN IF NOT EXISTS payout_failed_at      TIMESTAMPTZ DEFAULT NULL;
       ALTER TABLE standalone_vaults ADD COLUMN IF NOT EXISTS payout_failure_reason TEXT        DEFAULT NULL;
 
+      -- ── Standalone vault fee retention tracking ──────────────────────────────
+      -- At vault release: rent_amount transferred to landlord (100% of rent)
+      --                   platform_fee_amount retained in main Paystack balance (2%)
+      -- These columns record when and how much was retained for reconciliation.
+      ALTER TABLE standalone_vaults ADD COLUMN IF NOT EXISTS platform_fee_retained       DECIMAL(15,2) DEFAULT NULL;
+      ALTER TABLE standalone_vaults ADD COLUMN IF NOT EXISTS platform_fee_retained_at    TIMESTAMPTZ   DEFAULT NULL;
+
       -- flex_contributions: released tracking prevents double-payout
       ALTER TABLE flex_contributions ADD COLUMN IF NOT EXISTS released    BOOLEAN     DEFAULT FALSE;
       ALTER TABLE flex_contributions ADD COLUMN IF NOT EXISTS released_at TIMESTAMPTZ DEFAULT NULL;
@@ -9732,8 +9739,9 @@ app.post('/api/tenant/standalone-vault/init', authenticate, async (req: Request,
       payout_preference:   sv.payout_preference,
       due_date:            sv.due_date,
       landlord_supplied:   !!(landlord_name || landlord_email || landlord_bank_name),
-      fee_explanation:     'Nested Ark Rent Success Fee (2%) covers: automated rent planning, smart vault, AutoPay, contribution tracking, secure escrow, and payment history.',
-      message:             `Vault initialized. Save ₦${finalInstallment.toLocaleString()} ${freq.toLowerCase()} to reach your ₦${computedRentAmount.toLocaleString()} rent target.`,
+      fee_model:           'TENANT_PAYS_2PCT_ADDITIVE',
+      fee_explanation:     `The 2% Nested Ark Rent Success Fee (₦${platformFeeAmount.toLocaleString()}) is included in your savings target. Your landlord receives 100% of the rent amount (₦${computedRentAmount.toLocaleString()}) in full. You save the rent plus the service fee.`,
+      message:             `Vault initialized. Save ₦${finalInstallment.toLocaleString()} ${freq.toLowerCase()} to reach your ₦${finalTarget.toLocaleString()} target. Your landlord will receive ₦${computedRentAmount.toLocaleString()} (100% rent).`,
     });
   } catch (e: any) {
     return res.status(500).json({ error: e.message });
@@ -10000,12 +10008,31 @@ app.post('/api/tenant/standalone-vault/pay', authenticate, async (req: Request, 
     const FRONTEND = process.env.FRONTEND_URL || 'https://nested-ark-ic5n6890k-nested-ark.vercel.app';
     const ref      = `ARK-SV-${sv.id.slice(0, 8)}-${Date.now()}`;
 
+    // ── ESCROW-HOLD MODE — mirrors flex_pay_vault installment architecture ────
+    // Independent tenant contributions accumulate in the Nested Ark main Paystack
+    // balance as escrow. NO subaccount split at contribution time — intentional.
+    // Paystack subaccounts settle T+1 to a bank account which would immediately
+    // disburse before the vault is 100% funded.
+    //
+    // FEE MODEL (additive — landlord gets 100% of rent):
+    //   • Tenant saves: rent_amount + platform_fee_amount (2%) = target_amount
+    //   • 2% is ADDED ON TOP — landlord receives 100% of rent_amount
+    //   • At release: rent_amount → landlord, platform_fee_amount → retained in platform
+    //   • Both logged via STANDALONE_VAULT_PAYOUT + PLATFORM_FEE_RETAINED ledger entries
+    //
+    // bearer: 'account' — platform absorbs Paystack fee so tenant pays EXACT installment.
+    // Do NOT add subaccount or transaction_charge here.
+    const platformFeeAmount = parseFloat(sv.platform_fee_amount) || Math.round(parseFloat(sv.rent_amount || sv.target_amount) * 0.02 * 100) / 100;
+    const rentAmount        = parseFloat(sv.rent_amount) || Math.round(parseFloat(sv.target_amount) / 1.02 * 100) / 100;
+
+    console.log(`[STANDALONE-VAULT] ESCROW_HOLD — vault=${sv.id} tenant=${userId} contribution=₦${baseAmountNaira} target=₦${sv.target_amount} rent=₦${rentAmount} fee=₦${platformFeeAmount} (additive: landlord gets 100%) payout=${sv.payout_preference}`);
+
     const psPayload: Record<string, any> = {
       email:        sv.user_email,
       amount:       amountKobo,
       reference:    ref,
       currency:     'NGN',
-      bearer:       'account',
+      bearer:       'account',   // Platform covers Paystack fee — tenant pays exact installment
       callback_url: `${FRONTEND}/tenant/pay/success?reference=${ref}`,
       metadata: {
         payment_type:        'STANDALONE_INSTALLMENT',
@@ -10013,16 +10040,23 @@ app.post('/api/tenant/standalone-vault/pay', authenticate, async (req: Request, 
         tenant_user_id:      userId,
         tenant_name:         sv.full_name || sv.user_email,
         base_naira_amount:   baseAmountNaira,
-        processing_fee_ngn:  0,
-        split_mode:          'ESCROW_HOLD',
+        processing_fee_ngn:  0,           // platform absorbs Paystack fee
+        split_mode:          'ESCROW_HOLD_ADDITIVE_FEE', // rent+2% held; landlord gets 100% rent on release
+        cashout_mode:        'LUMP_SUM',
+        rent_amount:         rentAmount,
+        platform_fee_amount: platformFeeAmount,
+        fee_model:           'TENANT_PAYS_2PCT_ADDITIVE', // 2% added on top, NOT deducted from landlord
+        payout_preference:   sv.payout_preference || 'ASK',
         custom_fields: [
-          { display_name: 'Vault ID', variable_name: 'vault_id',    value: sv.id },
-          { display_name: 'Tenant',   variable_name: 'tenant_name', value: sv.full_name || sv.user_email },
+          { display_name: 'Vault ID',       variable_name: 'vault_id',          value: sv.id },
+          { display_name: 'Tenant',         variable_name: 'tenant_name',        value: sv.full_name || sv.user_email },
+          { display_name: 'Payout Pref',   variable_name: 'payout_preference',  value: sv.payout_preference || 'ASK' },
+          { display_name: 'Split Mode',     variable_name: 'split_mode',         value: 'ESCROW_HOLD' },
         ],
       },
     };
-
-    console.log(`[STANDALONE-VAULT] Payment init — vault=${sv.id} tenant=${userId} amount=₦${baseAmountNaira}`);
+    // NOTE: No subaccount injection here — escrow hold until 100% funded.
+    // startStandaloneVaultPayoutCron handles 98/2 release.
 
     const psRes  = await fetch('https://api.paystack.co/transaction/initialize', {
       method:  'POST',
@@ -11892,6 +11926,7 @@ const startStandaloneVaultPayoutCron = (pool: any) => {
                 continue;
               }
 
+              // ── Create Paystack transfer recipient ──────────────────────────
               const prRes = await fetch(`${PAYSTACK_BASE}/transferrecipient`, {
                 method:  'POST',
                 headers: { Authorization: `Bearer ${PAYSTACK_SECRET}`, 'Content-Type': 'application/json' },
@@ -11905,6 +11940,10 @@ const startStandaloneVaultPayoutCron = (pool: any) => {
                 recipientCode = prData.data.recipient_code;
                 const col = isTenant ? 'tenant_recipient_code' : 'landlord_recipient_code';
                 await pool.query(`UPDATE standalone_vaults SET ${col}=$1 WHERE id=$2`, [recipientCode, sv.id]);
+                // NOTE: No Paystack subaccount needed here.
+                // We transfer 100% of rent_amount directly to recipient.
+                // Platform fee is retained implicitly (tenant saved rent + 2%).
+                // Fee retention is recorded via PLATFORM_FEE_RETAINED ledger entry.
               } else {
                 console.warn(`[SV-PAYOUT-CRON] ⚠ Vault ${sv.id}: recipient creation failed — ${prData.message}`);
                 await pool.query(
@@ -11920,18 +11959,33 @@ const startStandaloneVaultPayoutCron = (pool: any) => {
             }
           }
 
-          // ── Compute payout: 2% Rent Success Fee already included in target_amount,
-          // so the full vault_balance is the net payout to the recipient. ─────────
-          const rawTotal  = parseFloat(sv.actual_total) > 0 ? parseFloat(sv.actual_total) : parseFloat(sv.vault_balance) || 0;
-          const netAmount = parseFloat(sv.rent_amount) > 0 ? parseFloat(sv.rent_amount) : rawTotal; // disburse rent portion only
-          const netKobo   = Math.round(netAmount * 100);
+          // ── Split at release — 100% rent to landlord, 2% platform fee retained ──
+          //
+          // CONFIRMED ARCHITECTURE (per product spec):
+          //   • Tenant saves: rent_amount + platform_fee_amount (2%) = target_amount
+          //   • On completion: landlord receives 100% of rent_amount (NOT 98%)
+          //   • Platform retains platform_fee_amount (2%) in main Paystack balance
+          //   • The 2% is NOT deducted from the landlord — it is ADDED by the tenant
+          //   • Explicit PLATFORM_FEE_RETAINED ledger entry records the retention
+          //
+          // Transfer amount = rent_amount (what landlord is owed in full)
+          // Retained        = platform_fee_amount (sits in main Paystack balance, logged)
+
+          const rawTotal         = parseFloat(sv.actual_total) > 0 ? parseFloat(sv.actual_total) : parseFloat(sv.vault_balance) || 0;
+          const rentToTransfer   = parseFloat(sv.rent_amount) > 0
+            ? parseFloat(sv.rent_amount)
+            : Math.round(rawTotal / 1.02 * 100) / 100; // back-calculate if rent_amount missing
+          const platformFeeRetained = parseFloat(sv.platform_fee_amount) > 0
+            ? parseFloat(sv.platform_fee_amount)
+            : Math.round(rentToTransfer * 0.02 * 100) / 100;
+          const netKobo = Math.round(rentToTransfer * 100);
 
           if (netKobo < PAYSTACK_TRANSFER_FLOOR) {
-            console.warn(`[SV-PAYOUT-CRON] ⚠ Vault ${sv.id}: net ₦${netAmount} below ₦50 minimum — skipping`);
+            console.warn(`[SV-PAYOUT-CRON] ⚠ Vault ${sv.id}: rent_amount ₦${rentToTransfer} below ₦50 minimum — skipping`);
             await pool.query(
               `UPDATE standalone_vaults SET payout_failure_reason=$1, payout_failed_at=NOW(),
                payout_attempt_count = COALESCE(payout_attempt_count,0)+1 WHERE id=$2`,
-              [`Net payout ₦${netAmount} below Paystack ₦50 minimum`, sv.id]
+              [`Rent amount ₦${rentToTransfer} below Paystack ₦50 minimum`, sv.id]
             );
             continue;
           }
@@ -11939,16 +11993,20 @@ const startStandaloneVaultPayoutCron = (pool: any) => {
           const payRef      = `SV-${sv.payout_preference}-${crypto.randomUUID().split('-')[0].toUpperCase()}-${Date.now()}`;
           const destination = isTenant ? 'tenant own account' : 'landlord (direct, no Nested Ark account required)';
 
-          console.log(`[SV-PAYOUT-CRON] Releasing vault=${sv.id} → ${destination}: ${accountName} (${bankName} ${accountNumber}) ₦${netAmount}`);
+          console.log(
+            `[SV-PAYOUT-CRON] Releasing vault=${sv.id} → ${destination}: ${accountName} (${bankName} ${accountNumber}) ` +
+            `rent=₦${rentToTransfer} fee_retained=₦${platformFeeRetained} total_saved=₦${rawTotal}`
+          );
 
+          // Transfer 100% of rent to landlord/tenant destination
           const tRes  = await fetch(`${PAYSTACK_BASE}/transfer`, {
             method:  'POST',
             headers: { Authorization: `Bearer ${PAYSTACK_SECRET}`, 'Content-Type': 'application/json' },
             body: JSON.stringify({
               source:    'balance',
-              amount:    netKobo,
+              amount:    netKobo,             // 100% of rent — landlord receives full amount
               recipient: recipientCode,
-              reason:    `Nested Ark NO CHOP YOUR RENT — vault release (${accountName})`,
+              reason:    `Nested Ark Rent Vault release — ${accountName} (NO CHOP YOUR RENT™)`,
               reference: payRef,
               currency:  sv.currency || 'NGN',
             }),
@@ -11967,42 +12025,80 @@ const startStandaloneVaultPayoutCron = (pool: any) => {
               'STANDALONE_VAULT',
               sv.id,
               sv.tenant_user_id,
-              `Standalone vault released: ₦${netAmount} to ${destination} — ${accountName} (${bankName}).`,
+              `Standalone vault released: ₦${rentToTransfer} (100% rent) to ${destination} — ${accountName} (${bankName}). Platform fee ₦${platformFeeRetained} retained.`,
               JSON.stringify({
-                reference:       payRef,
-                amount_ngn:      netAmount,
-                gross_total:     rawTotal,
-                vault_id:        sv.id,
-                payout_preference: sv.payout_preference,
-                bank_name:       bankName,
-                account_name:    accountName,
-                account_number:  accountNumber,
-                recipient_code:  recipientCode,
-                transfer_code:   tData.data?.transfer_code,
-                transfer_status: tData.status ? 'INITIATED' : 'FAILED',
-                source:          'SV_PAYOUT_CRON',
-                paystack_error:  tData.status ? null : tData.message,
+                reference:             payRef,
+                rent_amount_ngn:       rentToTransfer,       // 100% of rent transferred
+                platform_fee_retained: platformFeeRetained,  // 2% retained in platform balance
+                gross_total_saved:     rawTotal,             // full tenant savings (rent + fee)
+                vault_id:              sv.id,
+                payout_preference:     sv.payout_preference,
+                bank_name:             bankName,
+                account_name:          accountName,
+                account_number:        accountNumber,
+                recipient_code:        recipientCode,
+                transfer_code:         tData.data?.transfer_code,
+                transfer_status:       tData.status ? 'INITIATED' : 'FAILED',
+                source:                'SV_PAYOUT_CRON',
+                paystack_error:        tData.status ? null : tData.message,
+                fee_model:             'TENANT_PAYS_2PCT_ADDITIVE', // tenant saved rent+2%, landlord gets 100% rent
               }),
               ph,
             ]
           );
 
           if (tData.status) {
+            // Record platform fee retention with its own ledger entry for reconciliation
+            const feeHash = crypto.createHash('sha256')
+              .update(`sv-fee-retained-${sv.id}-${platformFeeRetained}-${payRef}`).digest('hex');
+            pool.query(
+              `INSERT INTO system_ledger
+                 (transaction_type, event_type, entity_type, entity_id, actor_id, description, payload, immutable_hash)
+               VALUES ('PLATFORM_FEE_RETAINED', 'FEE_COLLECTION', 'STANDALONE_VAULT', $1, $2, $3, $4, $5)`,
+              [
+                sv.id,
+                sv.tenant_user_id,
+                `Platform Rent Success Fee retained: ₦${platformFeeRetained} (2% of ₦${rentToTransfer} rent) — vault ${sv.id}`,
+                JSON.stringify({
+                  vault_id:              sv.id,
+                  rent_amount:           rentToTransfer,
+                  fee_pct:               2,
+                  fee_amount:            platformFeeRetained,
+                  payout_reference:      payRef,
+                  fee_model:             'TENANT_PAYS_2PCT_ADDITIVE',
+                }),
+                feeHash,
+              ]
+            ).catch(() => {});
+
             await pool.query(
               `UPDATE standalone_vaults
                SET status='CLOSED', updated_at=NOW(),
+                   platform_fee_retained=$1, platform_fee_retained_at=NOW(),
                    payout_failed_at=NULL, payout_failure_reason=NULL, payout_attempt_count=0
-               WHERE id=$1`,
-              [sv.id]
+               WHERE id=$2`,
+              [platformFeeRetained, sv.id]
             );
-            console.log(`[SV-PAYOUT-CRON] ✅ vault=${sv.id} → ${accountName} (${bankName} ${accountNumber}) ₦${netAmount} | ref=${payRef}`);
+            console.log(
+              `[SV-PAYOUT-CRON] ✅ vault=${sv.id} → ${accountName} (${bankName} ${accountNumber}) ` +
+              `rent=₦${rentToTransfer} fee_retained=₦${platformFeeRetained} | ref=${payRef}`
+            );
             await logAudit({
               event_type:  'STANDALONE_VAULT_RELEASED',
               actor_id:    sv.tenant_user_id,
               actor_role:  'SYSTEM',
               unit_id:     null,
-              description: `Standalone vault released: ₦${netAmount} to ${destination} — ${accountName} (${bankName}).`,
-              metadata:    { reference: payRef, vault_id: sv.id, net_payout: netAmount, payout_preference: sv.payout_preference, recipient_code: recipientCode, source: 'SV_PAYOUT_CRON' },
+              description: `Standalone vault released: ₦${rentToTransfer} (100% rent) to ${destination} — ${accountName} (${bankName}). Fee ₦${platformFeeRetained} retained.`,
+              metadata: {
+                reference:         payRef,
+                rent_transferred:  rentToTransfer,
+                fee_retained:      platformFeeRetained,
+                total_saved:       rawTotal,
+                payout_preference: sv.payout_preference,
+                recipient_code:    recipientCode,
+                source:            'SV_PAYOUT_CRON',
+                fee_model:         'TENANT_PAYS_2PCT_ADDITIVE',
+              },
             });
           } else {
             await pool.query(
