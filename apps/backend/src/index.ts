@@ -24,12 +24,14 @@ const corsOptions: cors.CorsOptions = {
     // Allow requests with no origin (mobile apps, curl, Postman, server-to-server)
     if (!origin) return callback(null, true);
 
-    const isLocal   = origin.includes('localhost') || origin.includes('127.0.0.1');
-    const isVercel  = origin.endsWith('.vercel.app');
-    const isRender  = origin.endsWith('.onrender.com');
+    const isLocal    = origin.includes('localhost') || origin.includes('127.0.0.1');
+    const isVercel   = origin.endsWith('.vercel.app');
+    const isRender   = origin.endsWith('.onrender.com');
+    const isNestedArk = origin === 'https://nestedark.com' ||
+                        origin === 'https://www.nestedark.com';
     const isExplicit = allowedOrigins.includes(origin);
 
-    if (isLocal || isVercel || isRender || isExplicit) {
+    if (isLocal || isVercel || isRender || isNestedArk || isExplicit) {
       callback(null, true);
     } else {
       callback(new Error(`CORS: origin ${origin} not allowed by Nested Ark Security`));
@@ -1369,7 +1371,7 @@ app.post("/api/auth/register", async (req: Request, res: Response): Promise<any>
         [uuidv4(), userId, verificationToken, expiresAt]
       );
 
-      const verifyUrl = `${process.env.FRONTEND_URL || "https://nested-ark-ic5n6890k-nested-ark.vercel.app"}/verify-email?token=${verificationToken}`;
+      const verifyUrl = `${process.env.FRONTEND_URL || "https://nestedark.com"}/verify-email?token=${verificationToken}`;
 
       const nodemailer = require("nodemailer");
       const transporter = nodemailer.createTransport({
@@ -1417,7 +1419,7 @@ app.post("/api/auth/register", async (req: Request, res: Response): Promise<any>
       const firstName   = full_name?.split(' ')[0] || 'there';
       const isTenant    = (role || '').toUpperCase() === 'TENANT';
       const isLandlord  = ['DEVELOPER','LANDLORD'].includes((role || '').toUpperCase());
-      const frontendUrl = process.env.NEXT_PUBLIC_FRONTEND_URL || process.env.FRONTEND_URL || 'https://nested-ark-api.vercel.app';
+      const frontendUrl = process.env.FRONTEND_URL || 'https://nestedark.com';
 
       const nodemailer2 = require('nodemailer');
       const welcomeTransporter = nodemailer2.createTransport({
@@ -1636,7 +1638,7 @@ app.post("/api/auth/forgot-password", async (req: Request, res: Response): Promi
     );
 
     // Build the reset link — raw token goes in URL, hash stays in DB
-    const frontendUrl = process.env.FRONTEND_URL || "https://nested-ark-ic5n6890k-nested-ark.vercel.app";
+    const frontendUrl = process.env.FRONTEND_URL || "https://nestedark.com";
     const resetLink   = `${frontendUrl}/reset-password/${rawToken}`;
 
     const nodemailer = require("nodemailer");
@@ -4246,7 +4248,7 @@ app.post("/api/payments/webhook",
                   if (!tRes.rows.length || !tRes.rows[0].tenant_email) return;
                   const { tenant_name, tenant_email, unit_name, project_title } = tRes.rows[0];
                   const firstName = (tenant_name || 'Tenant').split(' ')[0];
-                  const frontendUrl = process.env.NEXT_PUBLIC_FRONTEND_URL || process.env.FRONTEND_URL || 'https://nested-ark-api.vercel.app';
+                  const frontendUrl = process.env.FRONTEND_URL || 'https://nestedark.com';
                   const milestoneEmoji = hitMilestone === 100 ? '✅' : hitMilestone === 75 ? '🔥' : hitMilestone === 50 ? '🚀' : '🎉';
                   const milestoneMsg = hitMilestone === 100
                     ? 'Your vault is fully funded! Disbursement to your landlord will proceed automatically.'
@@ -4603,7 +4605,7 @@ app.post("/api/payments/webhook",
             if (!uRes.rows.length || !uRes.rows[0].email) return;
             const { full_name, email: tenantEmail } = uRes.rows[0];
             const firstName  = (full_name || 'Tenant').split(' ')[0];
-            const frontendUrl = process.env.NEXT_PUBLIC_FRONTEND_URL || process.env.FRONTEND_URL || 'https://nested-ark-api.vercel.app';
+            const frontendUrl = process.env.FRONTEND_URL || 'https://nestedark.com';
             const milestoneEmoji = hitMilestone === 100 ? '✅' : hitMilestone === 75 ? '🔥' : hitMilestone === 50 ? '🚀' : '🎉';
             const milestoneMsg = hitMilestone === 100
               ? 'Your independent savings vault is fully funded! Disbursement will proceed when your landlord is onboarded.'
@@ -4875,7 +4877,7 @@ app.post("/api/payments/initialize", authenticate, async (req: Request, res: Res
       reference,
       currency: 'NGN',
       bearer:   'account', // Platform (main account) covers the Paystack transaction fee
-      callback_url: `${process.env.FRONTEND_URL || 'https://nested-ark-ic5n6890k-nested-ark.vercel.app'}/payment-success?ref=${reference}`,
+      callback_url: `${process.env.FRONTEND_URL || 'https://nestedark.com'}/payment-success?ref=${reference}`,
       metadata: {
         product:       'nestedark',
         project_id:    projectId,
@@ -7148,7 +7150,7 @@ app.post('/api/rental/onboard-tenant', authenticate, async (req: Request, res: R
     });
 
     // 9 — Build invite link → PUBLIC page, no auth required
-    const FRONTEND = process.env.FRONTEND_URL || 'https://nested-ark-ic5n6890k-nested-ark.vercel.app';
+    const FRONTEND = process.env.FRONTEND_URL || 'https://nestedark.com';
     const invite_link = `${FRONTEND}/tenant/invite?token=${tenancy.id}&unit=${unit_id}`;
 
     return res.status(201).json({
@@ -7359,7 +7361,7 @@ app.post('/api/rental/marketplace/advertise', authenticate, async (req: Request,
     const email   = userRes.rows[0]?.email;
 
     const ref = `ARK-ADVERT-${unit_id.slice(0,8).toUpperCase()}-${Date.now()}`;
-    const FRONTEND = process.env.FRONTEND_URL || 'https://nested-ark-ic5n6890k-nested-ark.vercel.app';
+    const FRONTEND = process.env.FRONTEND_URL || 'https://nestedark.com';
 
     const psRes = await fetch('https://api.paystack.co/transaction/initialize', {
       method: 'POST',
@@ -7578,7 +7580,7 @@ app.post('/api/rental/payments/initialize', async (req: Request, res: Response):
       amount: amountKobo,
       reference,
       currency: t.currency || 'NGN',
-      callback_url: `${process.env.FRONTEND_URL || 'https://nested-ark-ic5n6890k-nested-ark.vercel.app'}/tenant/pay/success?reference=${reference}`,
+      callback_url: `${process.env.FRONTEND_URL || 'https://nestedark.com'}/tenant/pay/success?reference=${reference}`,
       metadata: {
         product:         'nestedark',
         payment_type:    'RENT',
@@ -9333,7 +9335,7 @@ app.post('/api/flex-pay/contribute', authenticate, async (req: Request, res: Res
         const contributionId = contribRes.rows[0]?.id ?? vault_id;
         const receiptNumber  = `ARK-RCT-${new Date().getFullYear()}-${contributionId.slice(0,8).toUpperCase()}`;
         const paidAtStr      = new Date().toLocaleDateString('en-GB', { day:'2-digit', month:'long', year:'numeric', hour12:false });
-        const frontendUrl    = process.env.FRONTEND_URL || 'https://nested-ark-ic5n6890k-nested-ark.vercel.app';
+        const frontendUrl    = process.env.FRONTEND_URL || 'https://nestedark.com';
 
         const receiptHtml = buildReceiptHTML({
           receiptNumber,
@@ -10005,7 +10007,7 @@ app.post('/api/tenant/standalone-vault/pay', authenticate, async (req: Request, 
       return res.status(400).json({ error: 'Amount exceeds single-transaction limit.' });
     }
 
-    const FRONTEND = process.env.FRONTEND_URL || 'https://nested-ark-ic5n6890k-nested-ark.vercel.app';
+    const FRONTEND = process.env.FRONTEND_URL || 'https://nestedark.com';
     const ref      = `ARK-SV-${sv.id.slice(0, 8)}-${Date.now()}`;
 
     // ── ESCROW-HOLD MODE — mirrors flex_pay_vault installment architecture ────
@@ -10613,7 +10615,7 @@ app.post('/api/tenant/pay-installment', authenticate, async (req: Request, res: 
 
     const email      = v.user_email || v.tenant_email;
     const ref        = `ARK-VAULT-${resolvedVaultId.slice(0, 8)}-${Date.now()}`;
-    const FRONTEND   = process.env.FRONTEND_URL || 'https://nested-ark-ic5n6890k-nested-ark.vercel.app';
+    const FRONTEND   = process.env.FRONTEND_URL || 'https://nestedark.com';
 
     // ── ESCROW MODE: Installment payments do NOT split to landlord immediately ──
     // Architecture: tenant installments accumulate in Ark platform Paystack balance.
@@ -10769,14 +10771,14 @@ app.get("/api/rental/invite-link/:unitId", async (req: Request, res: Response): 
       [unitId]
     );
     const unit = unitRes.rows[0];
-    const frontendUrl = process.env.FRONTEND_URL || 'https://nested-ark-ic5n6890k-nested-ark.vercel.app';
+    const frontendUrl = process.env.FRONTEND_URL || 'https://nestedark.com';
     const onboardUrl  = `${frontendUrl}/onboard/${unitId}`;
     const unitLabel   = unit ? `${unit.unit_name} at ${unit.project_title}` : 'a property managed by Nested Ark';
     const rentLabel   = unit ? ` | Rent: ${unit.currency || 'NGN'} ${Number(unit.rent_amount).toLocaleString()}` : '';
     const message     = `*Nested Ark — Tenant Onboarding* 🏠\n\nYou have been invited to set up your digital tenancy for *${unitLabel}*${rentLabel}.\n\nClick the link below to verify your profile and choose your payment schedule (Weekly / Monthly / Quarterly).\n\nLink: ${onboardUrl}\n\n_Secured by Nested Ark Infrastructure OS_`;
     return res.json({ url: onboardUrl, whatsapp_link: `https://wa.me/?text=${encodeURIComponent(message)}`, unit_name: unit?.unit_name ?? '', project_title: unit?.project_title ?? '' });
   } catch {
-    const frontendUrl = process.env.FRONTEND_URL || 'https://nested-ark-ic5n6890k-nested-ark.vercel.app';
+    const frontendUrl = process.env.FRONTEND_URL || 'https://nestedark.com';
     const onboardUrl  = `${frontendUrl}/onboard/${unitId}`;
     const message     = `*Nested Ark Infrastructure Invite* 🏠\n\nYou have been invited to onboard as a tenant. Click to set up your profile.\n\nLink: ${onboardUrl}`;
     return res.json({ url: onboardUrl, whatsapp_link: `https://wa.me/?text=${encodeURIComponent(message)}` });
@@ -10886,7 +10888,7 @@ app.post('/api/tenant/onboard', async (req: Request, res: Response): Promise<any
     await client.query('COMMIT');
 
     // ── Dual-channel welcome (non-blocking) ────────────────────────────────
-    const frontendUrl = process.env.FRONTEND_URL || 'https://nested-ark-ic5n6890k-nested-ark.vercel.app';
+    const frontendUrl = process.env.FRONTEND_URL || 'https://nestedark.com';
     setImmediate(async () => {
       try {
         const emailHtml = arkEmail(
@@ -13356,10 +13358,11 @@ Geo-Awareness: Active 🌍
 Market Ticker: Live 📡
 Revenue Engine: Active 💰
 Rental Engine: Active 🏠
-Payment Model: DUAL ENGINE — Full rent: instant 98/2 split; Vault installments: escrow hold → lump sum release
-Paystack Fee: PASSED TO CUSTOMER (bearer: customer — configured via Paystack Dashboard)
-Platform Fee: 2% at vault release (installments) | 2% at checkout (full rent)
-Escrow Engine: ACTIVE — vault contributions held in platform until 100% funded
+Payment Model: DUAL ENGINE — Full rent: instant 98/2 split via subaccount; Vault installments: escrow hold → 100% rent to landlord + 2% fee retained at release
+Paystack Fee: PASSED TO CUSTOMER (bearer: account — platform absorbs Paystack processing fee on vault installments)
+Platform Fee: 2% additive at vault release — tenant saves rent + 2%, landlord receives 100% of rent | 2% at checkout (full rent)
+Escrow Engine: ACTIVE — vault contributions held in main Paystack balance until 100% funded
+Frontend: ${process.env.FRONTEND_URL || 'https://nestedark.com'} 🌐
 Data Persistence: ENABLED ✅
 
 ============================================
