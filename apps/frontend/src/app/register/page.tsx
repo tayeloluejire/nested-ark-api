@@ -355,6 +355,14 @@ function RegisterContent() {
           unit_id:    inviteUnit,
         });
         setSuccessMsg('Tenancy activated! Heading to your dashboard…');
+        // Flag for dashboard: trigger WelcomeScreen on first load post-registration
+        try {
+          sessionStorage.setItem('nested_ark_just_registered', JSON.stringify({
+            name: form.full_name.trim().split(' ')[0] || 'there',
+            role: 'TENANT',
+            ts:   Date.now(),
+          }));
+        } catch { /* sessionStorage unavailable — WelcomeScreen simply won't show */ }
         setTimeout(() => router.push('/tenant/dashboard'), 1200);
         return;
       }
@@ -445,6 +453,14 @@ function RegisterContent() {
       }
 
       setSuccessMsg('Account created! Setting up your workspace…');
+      // Flag for dashboard: trigger WelcomeScreen on first load post-registration
+      try {
+        sessionStorage.setItem('nested_ark_just_registered', JSON.stringify({
+          name: form.full_name.trim().split(' ')[0] || 'there',
+          role: activeRoleId,
+          ts:   Date.now(),
+        }));
+      } catch { /* sessionStorage unavailable — WelcomeScreen simply won't show */ }
       const dest = activeRoleId === 'TENANT' ? '/tenant/dashboard' : '/dashboard';
       setTimeout(() => router.push(dest), 1200);
 

@@ -156,6 +156,39 @@ const ROLE_CONFIG: Record<string, {
 
 const STORAGE_KEY = 'nested_ark_welcome_dismissed';
 
+// ── useJustRegistered ─────────────────────────────────────────────────────────
+// Reads the `nested_ark_just_registered` sessionStorage flag set by
+// register/page.tsx on successful signup. Returns { name, role } if the user
+// arrived here within the last 5 minutes via registration, else null.
+// Consumes (clears) the flag on read so it only ever fires once per signup —
+// refreshing the dashboard afterwards will NOT re-trigger the welcome screen.
+//
+// Usage in any dashboard page:
+//   const justRegistered = useJustRegistered();
+//   {justRegistered && (
+//     <WelcomeScreen name={justRegistered.name} role={justRegistered.role}
+//       onDismiss={() => {}} />
+//   )}
+export function useJustRegistered(): { name: string; role: string } | null {
+  const [data, setData] = useState<{ name: string; role: string } | null>(null);
+
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem('nested_ark_just_registered');
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      const isFresh = parsed?.ts && (Date.now() - parsed.ts) < 5 * 60 * 1000; // 5 min window
+      if (isFresh && parsed.name && parsed.role) {
+        setData({ name: parsed.name, role: parsed.role });
+      }
+      // Consume immediately — prevents re-trigger on refresh/back-navigation
+      sessionStorage.removeItem('nested_ark_just_registered');
+    } catch { /* sessionStorage unavailable — silently no-op */ }
+  }, []);
+
+  return data;
+}
+
 export default function WelcomeScreen({ name, role, onDismiss }: WelcomeScreenProps) {
   const [visible, setVisible] = useState(false);
 
