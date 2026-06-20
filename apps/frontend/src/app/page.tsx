@@ -98,8 +98,8 @@ function useCurrency() {
 // ── JSON-LD Schema markup ────────────────────────────────────────────────────
 const SCHEMA_ORGANIZATION = {
   '@context': 'https://schema.org', '@type': 'Organization',
-  name: 'Nested Ark', url: 'https://nested-ark-api.vercel.app',
-  logo: 'https://nested-ark-api.vercel.app/nested_ark_icon.png',
+  name: 'Nested Ark', url: 'https://nestedark.com',
+  logo: 'https://nestedark.com/nested_ark_icon.png',
   description: 'Nested Ark Rent Vault helps tenants save gradually for rent commitments while giving landlords confidence they will be paid on time.',
   foundingDate: '2024', areaServed: ['Nigeria','Ghana','Kenya','United Kingdom'],
   contactPoint: { '@type': 'ContactPoint', email: 'nestedark@gmail.com', contactType: 'customer service' },
@@ -109,7 +109,7 @@ const SCHEMA_FINANCIAL_SERVICE = {
   '@context': 'https://schema.org', '@type': 'FinancialService',
   name: 'Nested Ark Rent Vault',
   description: 'A rent savings and escrow platform helping tenants save gradually toward annual rent while giving landlords payment assurance.',
-  url: 'https://nested-ark-api.vercel.app',
+  url: 'https://nestedark.com',
   areaServed: ['Nigeria','Ghana','Kenya','United Kingdom'],
   currenciesAccepted: 'NGN GHS KES GBP USD',
   offers: { '@type': 'Offer', name: 'Rent Vault', price: '0', priceCurrency: 'USD', availability: 'https://schema.org/InStock' },
@@ -345,9 +345,11 @@ export default function HomePage() {
   const [platformStats, setPlatformStats] = useState<{users:number;vaults:number;tenants:number} | null>(null);
   const [heroSlide,     setHeroSlide]     = useState(0); // 0 = tenant, 1 = landlord
   const [heroVisible,   setHeroVisible]   = useState(true);
+  const [heroPaused,    setHeroPaused]    = useState(false);
 
   // Alternate between tenant and landlord hero every 5 seconds
   useEffect(() => {
+    if (heroPaused) return; // user is interacting — don't auto-advance
     const t = setInterval(() => {
       setHeroVisible(false);
       setTimeout(() => {
@@ -356,7 +358,7 @@ export default function HomePage() {
       }, 300); // fade out 300ms, then swap content and fade back in
     }, 5000);
     return () => clearInterval(t);
-  }, []);
+  }, [heroPaused]);
   useEffect(() => {
     fetch('/api/public/stats')
       .then(r => r.json())
@@ -470,6 +472,26 @@ export default function HomePage() {
           {/* H1 in DOM for SEO — Slide 1 content is the primary keyword target */}
           <h1 className="sr-only">{geoHero.h1}</h1>
 
+          {/* ── Human hero image — real people, warm tone ──────────────
+              Addresses reviewer feedback: homepage felt "too serious and
+              verbose." A real photo breaks the wall of text/icons and
+              matches the warmth already established in social campaigns. */}
+          <div className="relative rounded-3xl overflow-hidden border border-zinc-800 -mx-1">
+            <img
+              src="/hero-tenant-couple.jpg"
+              alt="A couple reviewing their Nested Ark Rent Vault together at home"
+              className="w-full h-[200px] sm:h-[260px] object-cover"
+              loading="eager"
+            />
+            <div className="absolute inset-0 bg-gradient-to-t from-black via-black/20 to-transparent" />
+            <div className="absolute bottom-0 left-0 right-0 p-4">
+              <p className="text-white font-black text-lg leading-tight tracking-tight">
+                Rent Today. <span className="text-teal-400">Ready Tomorrow.</span>
+              </p>
+              <p className="text-zinc-300 text-[11px] mt-1">Save gradually. Pay confidently.</p>
+            </div>
+          </div>
+
           {/* ── 4-slide rotating hero ──────────────────────────────── */}
           <div
             onMouseEnter={() => setHeroPaused(true)}
@@ -518,8 +540,7 @@ export default function HomePage() {
                     {geoHero.sub}
                   </p>
                   <p className="text-[10px] text-zinc-600 border-l-2 border-teal-500/40 pl-3 leading-relaxed">
-                    Nested Ark is a Rent Vault platform that helps tenants prepare for
-                    annual rent while helping landlords receive payment with confidence.
+                    No borrowing. No panic. No last-minute pressure.
                   </p>
                   <div className="grid grid-cols-2 gap-2">
                     {[

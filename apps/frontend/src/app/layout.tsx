@@ -38,13 +38,13 @@ export const metadata: Metadata = {
     type: 'website',
     locale: 'en_NG',
     alternateLocale: ['en_GH', 'en_KE', 'en_GB', 'en_US'],
-    url: 'https://nested-ark-api.vercel.app',
+    url: 'https://nestedark.com',
     siteName: 'Nested Ark Rent Vault',
     title: 'Nested Ark Rent Vault – Save for Annual Rent Gradually',
     description:
       'Save gradually toward your annual rent. Track every contribution. Pay your landlord on time without borrowing. Nigeria · Ghana · Kenya · United Kingdom.',
     images: [{
-      url: 'https://nested-ark-api.vercel.app/og-image.png',
+      url: 'https://nestedark.com/og-image.png',
       width: 1200, height: 630,
       alt: 'Nested Ark Rent Vault – Save for Rent. Pay with Confidence.',
     }],
@@ -55,15 +55,15 @@ export const metadata: Metadata = {
     creator: '@NestedArk_OS',
     title: 'Nested Ark Rent Vault – Save for Annual Rent Gradually',
     description: 'Build a rent savings plan. Track progress. Pay confidently. Nigeria · Ghana · Kenya · UK.',
-    images: ['https://nested-ark-api.vercel.app/og-image.png'],
+    images: ['https://nestedark.com/og-image.png'],
   },
   alternates: {
-    canonical: 'https://nested-ark-api.vercel.app',
+    canonical: 'https://nestedark.com',
     languages: {
-      'en-NG': 'https://nested-ark-api.vercel.app/save-for-rent-nigeria',
-      'en-GH': 'https://nested-ark-api.vercel.app/save-for-rent-ghana',
-      'en-KE': 'https://nested-ark-api.vercel.app/save-for-rent-kenya',
-      'en-GB': 'https://nested-ark-api.vercel.app/rent-planning',
+      'en-NG': 'https://nestedark.com/save-for-rent-nigeria',
+      'en-GH': 'https://nestedark.com/save-for-rent-ghana',
+      'en-KE': 'https://nestedark.com/save-for-rent-kenya',
+      'en-GB': 'https://nestedark.com/rent-planning',
     },
   },
   robots: {
