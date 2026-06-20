@@ -11564,11 +11564,6 @@ app.get('/api/public/stats', async (req: Request, res: Response): Promise<any> =
   }
 });
 
-// ── 404 catch-all — MUST be last route registration ──────────────────────────
-app.use((req: Request, res: Response) => {
-  res.status(404).json({ error: "Not Found" });
-});
-
 /* ============================================
    SERVER START
 ============================================ */
@@ -13285,6 +13280,11 @@ app.get('/api/admin/standalone-vaults', authenticate, async (req: Request, res: 
   }
 });
 
+
+// ── 404 catch-all — MUST be last route registration, after every app.* route ──
+app.use((req: Request, res: Response) => {
+  res.status(404).json({ error: "Not Found" });
+});
 
 async function startServer() {
   try {

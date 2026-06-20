@@ -19,6 +19,7 @@
 
 import { useState, useCallback, useEffect, useRef } from 'react';
 import Link from 'next/link';
+import Image from 'next/image';
 import {
   ArrowRight, CheckCircle2, Share2, Trophy,
   Flame, ChevronDown, AlertTriangle, TrendingUp,
@@ -252,6 +253,24 @@ export default function NoChopYourRentPage() {
 
           {/* ── Hero ────────────────────────────────────────────────────── */}
           <div className="space-y-4">
+
+            {/* Campaign photo — the human face of "No Chop Your Rent" */}
+            <div className="relative w-full max-w-xs mx-auto sm:mx-0 rounded-2xl overflow-hidden border border-zinc-800">
+              <Image
+                src="/images/no-chop-your-rent-hero.png"
+                alt="Shocked man feeding a tiny apartment building rice and stew off a plate — because if you don't plan, your rent chops your money like this"
+                width={479}
+                height={660}
+                priority
+                className="w-full h-auto object-cover"
+              />
+              <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent px-3 py-2">
+                <p className="text-[9px] font-bold text-zinc-200 italic">
+                  "Una go chop my rent? Not this year." 😅
+                </p>
+              </div>
+            </div>
+
             <div className="inline-flex items-center gap-2">
               <Flame size={14} className="text-orange-400" />
               <span className="text-[9px] font-black uppercase tracking-widest text-orange-400">
@@ -266,6 +285,11 @@ export default function NoChopYourRentPage() {
 
             <p className="text-zinc-400 text-sm leading-relaxed max-w-md">
               {region.sub}
+            </p>
+
+            <p className="text-zinc-500 text-xs leading-relaxed max-w-md italic">
+              Real talk: rent doesn't ambush you — it's on the calendar every year.
+              The only surprise is whether you were ready for it. Let's fix that.
             </p>
 
             {/* Checkmarks */}
@@ -289,9 +313,14 @@ export default function NoChopYourRentPage() {
 
           {/* ── Calculator inputs ────────────────────────────────────────── */}
           <div className="p-5 rounded-2xl border border-zinc-800 bg-zinc-900/20 space-y-5">
-            <p className="text-[9px] text-zinc-500 uppercase font-black tracking-widest">
-              Calculate Your Rent Plan
-            </p>
+            <div>
+              <p className="text-[9px] text-zinc-500 uppercase font-black tracking-widest">
+                Calculate Your Rent Plan
+              </p>
+              <p className="text-[10px] text-zinc-600 mt-1">
+                Two numbers. Thirty seconds. No drama.
+              </p>
+            </div>
 
             {/* Annual rent */}
             <div>
@@ -433,6 +462,15 @@ export default function NoChopYourRentPage() {
                   your {fmt(target, sym)} rent will be fully ready in 365 days.
                 </p>
                 <p className="text-[10px] text-zinc-500 mt-2">No borrowing. No stress. No stories.</p>
+              </div>
+
+              {/* Human quote card — same voice as the campaign visual */}
+              <div className="p-4 rounded-2xl border border-zinc-800 bg-zinc-900/10 flex gap-3">
+                <span className="text-3xl text-teal-500/40 font-black leading-none">"</span>
+                <p className="text-xs text-zinc-400 leading-relaxed italic">
+                  Rent stress is coming. The best time to start was yesterday.
+                  The next best time is right now — not when your landlord starts calling.
+                </p>
               </div>
 
               {/* ── Affordability Check ──────────────────────────────────── */}

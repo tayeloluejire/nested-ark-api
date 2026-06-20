@@ -473,9 +473,9 @@ export default function HomePage() {
           <h1 className="sr-only">{geoHero.h1}</h1>
 
           {/* ── Human hero image — real people, warm tone ──────────────
-              Addresses reviewer feedback: homepage felt "too serious and
-              verbose." A real photo breaks the wall of text/icons and
-              matches the warmth already established in social campaigns. */}
+              Calm, aspirational brand photography. Intentionally distinct
+              from the louder "No Chop Your Rent" campaign tone — see bridge
+              line below that connects the two without disrupting this mood. */}
           <div className="relative rounded-3xl overflow-hidden border border-zinc-800 -mx-1">
             <img
               src="/hero-tenant-couple.jpg"
@@ -491,6 +491,26 @@ export default function HomePage() {
               <p className="text-zinc-300 text-[11px] mt-1">Save gradually. Pay confidently.</p>
             </div>
           </div>
+
+          {/* ── Tonal bridge to the "No Chop Your Rent" campaign ────────
+              Keeps the campaign's social-share energy connected to the
+              calmer platform voice, so visitors arriving from that page
+              (or about to discover it) don't feel a personality split. */}
+          <Link
+            href="/no-chop-your-rent"
+            className="flex items-center gap-3 p-3 rounded-2xl border border-orange-500/20 bg-orange-500/5 hover:bg-orange-500/10 transition-all group"
+          >
+            <span className="text-xl flex-shrink-0">🔥</span>
+            <div className="flex-1">
+              <p className="text-[11px] font-black text-orange-300">
+                Heard about &ldquo;No Chop Your Rent&rdquo;?
+              </p>
+              <p className="text-[9px] text-zinc-500 mt-0.5">
+                That&apos;s us. Calculate your free rent plan in 30 seconds.
+              </p>
+            </div>
+            <ArrowRight size={13} className="text-orange-400 group-hover:translate-x-1 transition-transform flex-shrink-0" />
+          </Link>
 
           {/* ── 4-slide rotating hero ──────────────────────────────── */}
           <div
