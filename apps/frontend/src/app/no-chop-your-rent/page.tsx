@@ -257,7 +257,7 @@ export default function NoChopYourRentPage() {
             {/* Campaign photo — the human face of "No Chop Your Rent" */}
             <div className="relative w-full max-w-xs mx-auto sm:mx-0 rounded-2xl overflow-hidden border border-zinc-800">
               <Image
-                src="/images/no-chop-your-rent-hero.png"
+                src="/no-chop-your-rent-hero.png"
                 alt="Shocked man feeding a tiny apartment building rice and stew off a plate — because if you don't plan, your rent chops your money like this"
                 width={479}
                 height={660}
