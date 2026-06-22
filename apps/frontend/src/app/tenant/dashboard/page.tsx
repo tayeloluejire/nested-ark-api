@@ -11,6 +11,7 @@ import {
   TrendingUp, ArrowRight, Bell, CheckCircle2, Star,
   FileText, Building2, Gavel, Lock, Search, MapPin,
   Zap, Home, Wallet, ImageOff, ChevronRight, RefreshCw,
+  Calculator, PiggyBank, Send, Target,
 } from 'lucide-react';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -239,9 +240,9 @@ function RhythmCard({ vault, nextDueDate }: { vault: LinkedVaultSummary; nextDue
 function OnboardingProgress({ steps }: { steps: OnboardingStep[] }) {
   const stepDesc: Record<string, (s: string) => string> = {
     account_created:      ()  => 'Your Nested Ark account is live and active.',
-    payout_destination:   (s) => s === 'done' ? 'Landlord payout destination verified.' : 'No bank details provided. Add from settings anytime.',
-    escrow_vault_profile: (s) => s === 'done' ? 'Your savings vault is active.' : 'Activated when you initialize your vault.',
-    link_to_property:     (s) => s === 'done' ? 'Linked to a property via tenancy.' : 'Browse the marketplace or await a landlord invite.',
+    payout_destination:   (s) => s === 'done' ? 'Landlord payout destination verified.' : 'Optional — add anytime before your vault is ready.',
+    escrow_vault_profile: (s) => s === 'done' ? 'Your savings vault is active.' : 'Create your vault below to activate this.',
+    link_to_property:     (s) => s === 'done' ? 'Linked to a property via tenancy.' : 'Optional — link now or anytime later.',
   };
   return (
     <div className="p-5 rounded-2xl border border-zinc-800 bg-zinc-900/20 space-y-4">
@@ -658,11 +659,12 @@ function IndependentTenantHub({
             <StandaloneVaultCard vault={standaloneVault} onPay={() => router.push('/tenant/pay')}/>
             <EscrowSeal status={standaloneVault.status}/>
             <RecentPayments payments={recentPayments}/>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               {[
                 { href:'/tenant/pay',          Icon:DollarSign, ic:'text-teal-400',  bd:'border-teal-500/30 bg-teal-500/10 hover:bg-teal-500/20', t:'Pay Installment', s:'Contribute to vault'     },
                 { href:'/tenant/vault',         Icon:TrendingUp, ic:'text-amber-400', bd:'border-zinc-800 bg-zinc-900/20 hover:border-zinc-700',    t:'My Vault',        s:'Vault details & history'  },
                 { href:'/tenant/contributions', Icon:FileText,   ic:'text-teal-400',  bd:'border-zinc-800 bg-zinc-900/20 hover:border-zinc-700',    t:'Contributions',   s:'All payments & receipts'  },
+                { href:'/rent-vault/calculator',Icon:Calculator, ic:'text-purple-400',bd:'border-zinc-800 bg-zinc-900/20 hover:border-zinc-700',    t:'Calculator',      s:'Recalculate your plan'    },
               ].map(a => (
                 <Link key={a.href} href={a.href}
                   className={`p-4 rounded-2xl border ${a.bd} transition-all flex items-center justify-between group`}>
@@ -677,31 +679,66 @@ function IndependentTenantHub({
             </div>
           </>
         ) : (
-          /* B2: No vault yet */
-          <div className="p-6 rounded-2xl border border-zinc-800 bg-zinc-900/20 flex items-start gap-4">
-            <div className="w-10 h-10 rounded-xl bg-zinc-800 flex items-center justify-center flex-shrink-0">
-              <Home size={18} className="text-zinc-500"/>
-            </div>
-            <div className="flex-1">
-              <p className="font-bold text-sm">No unit linked yet</p>
-              <p className="text-[10px] text-zinc-500 mt-1 leading-relaxed">
-                Your account is an independent savings profile. Browse the marketplace to find a property, or ask your landlord to send you an invite link. Once linked, your escrow vault activates automatically.
-              </p>
-              <div className="flex gap-3 mt-4 flex-wrap">
-                <Link href="/tenant/vault"
-                  className="px-4 py-2 bg-teal-500 text-black text-[9px] font-black uppercase rounded-xl hover:bg-teal-400 transition-all tracking-widest">
-                  🚀 Initialize Savings Vault
-                </Link>
-                <Link href="/marketplace"
-                  className="flex items-center gap-1.5 px-4 py-2 border border-zinc-700 text-zinc-400 text-[9px] font-black uppercase rounded-xl hover:border-zinc-600 transition-all tracking-widest">
-                  <Search size={11}/> Browse Properties
-                </Link>
-                <Link href="/dashboard"
-                  className="flex items-center gap-1.5 px-4 py-2 border border-zinc-700 text-zinc-400 text-[9px] font-black uppercase rounded-xl hover:border-zinc-600 transition-all tracking-widest">
-                  <Building2 size={11}/> Platform Hub
-                </Link>
+          /* B2: No vault yet — conversion-focused hero */
+          <div className="space-y-4">
+
+            {/* Primary CTA — dominant, single focus */}
+            <div className="p-6 rounded-2xl border border-teal-500/30 bg-gradient-to-br from-teal-500/10 to-teal-500/5 space-y-4">
+              <div className="flex items-start gap-3">
+                <div className="w-11 h-11 rounded-xl bg-teal-500/20 flex items-center justify-center flex-shrink-0">
+                  <PiggyBank size={20} className="text-teal-400"/>
+                </div>
+                <div>
+                  <p className="font-black text-base tracking-tight">Start Saving for Your Rent Today</p>
+                  <p className="text-[11px] text-zinc-400 mt-1 leading-relaxed">
+                    Set a target. Save daily, weekly or monthly. Your money stays in secure
+                    escrow until you're ready — withdraw it yourself or send it straight to
+                    your landlord when your target is reached.
+                  </p>
+                </div>
               </div>
+              <Link href="/tenant/vault"
+                className="flex items-center justify-center gap-2 w-full py-3.5 bg-teal-500 text-black text-[11px] font-black uppercase tracking-widest rounded-xl hover:bg-teal-400 transition-all">
+                <PiggyBank size={14}/> Create My Rent Vault — Free
+              </Link>
+              <p className="text-[9px] text-zinc-600 text-center">
+                Takes 30 seconds · No bank account required to start
+              </p>
             </div>
+
+            {/* Calculator — secondary but prominent, answers "how much?" */}
+            <Link href="/rent-vault/calculator"
+              className="flex items-center justify-between p-4 rounded-2xl border border-zinc-800 bg-zinc-900/20 hover:border-teal-500/30 hover:bg-teal-500/5 transition-all group">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-xl bg-amber-500/15 flex items-center justify-center flex-shrink-0">
+                  <Calculator size={16} className="text-amber-400"/>
+                </div>
+                <div>
+                  <p className="font-black text-sm">Not sure how much to save?</p>
+                  <p className="text-[10px] text-zinc-500 mt-0.5">Calculate your daily, weekly or monthly target in seconds</p>
+                </div>
+              </div>
+              <ArrowRight size={14} className="text-amber-400 group-hover:translate-x-1 transition-transform flex-shrink-0"/>
+            </Link>
+
+            {/* Secondary actions — equal, smaller weight */}
+            <div className="grid grid-cols-2 gap-3">
+              <Link href="/marketplace"
+                className="flex items-center gap-2 p-3.5 rounded-xl border border-zinc-800 text-zinc-400 text-[10px] font-bold uppercase tracking-widest hover:border-zinc-600 hover:text-zinc-300 transition-all">
+                <Search size={13}/> Browse Properties
+              </Link>
+              <Link href="/dashboard"
+                className="flex items-center gap-2 p-3.5 rounded-xl border border-zinc-800 text-zinc-400 text-[10px] font-bold uppercase tracking-widest hover:border-zinc-600 hover:text-zinc-300 transition-all">
+                <Building2 size={13}/> Platform Hub
+              </Link>
+            </div>
+
+            {/* Reassurance note — moved here from the old card, condensed */}
+            <p className="text-[9px] text-zinc-600 text-center leading-relaxed px-4">
+              No landlord on Nested Ark yet? No problem — choose to withdraw to your own
+              account or send directly to your landlord's bank when your vault is ready.
+              If your landlord invites you later, your account links automatically.
+            </p>
           </div>
         )}
 
@@ -713,17 +750,23 @@ function IndependentTenantHub({
           </div>
           <p className="text-[10px] text-zinc-400 leading-relaxed">
             {standaloneVault
-              ? 'Keep contributing. When your target is reached, funds auto-disburse to your landlord. Your vault history and tenant score carry across properties.'
-              : 'Once you link to a property, your Flex-Pay vault activates automatically. Contributions accumulate in Paystack escrow and auto-disburse when the target is reached.'}
+              ? 'Keep contributing. When your target is reached, choose to withdraw to your own account or send directly to your landlord. Your vault history and tenant score carry across properties.'
+              : 'Save toward any rent target — with or without a landlord on the platform. When you reach your target, choose to withdraw to your own account or send straight to your landlord.'}
           </p>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            {[['🔒','Escrow-held'],['📅','Your rhythm'],['⚡','Auto-disburse'],['🧾','SHA-256 receipts']].map(([icon,label])=>(
+            {[['🔒','Escrow-held'],['📅','Your rhythm'],['↗️','Withdraw or send'],['🧾','SHA-256 receipts']].map(([icon,label])=>(
               <div key={label} className="p-3 rounded-xl border border-zinc-800 bg-zinc-900/40 text-center">
                 <div className="text-lg mb-1">{icon}</div>
                 <p className="text-[8px] text-zinc-500 uppercase font-bold tracking-widest">{label}</p>
               </div>
             ))}
           </div>
+          {!standaloneVault && (
+            <Link href="/rent-vault/calculator"
+              className="flex items-center justify-center gap-2 w-full py-2.5 border border-zinc-700 text-zinc-300 text-[9px] font-black uppercase tracking-widest rounded-xl hover:border-amber-500/40 hover:text-amber-400 transition-all">
+              <Calculator size={12}/> Calculate My Savings Plan
+            </Link>
+          )}
         </div>
 
         {/* Property browse shortcuts */}
