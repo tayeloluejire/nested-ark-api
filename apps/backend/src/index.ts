@@ -1358,33 +1358,44 @@ app.post("/api/auth/register", async (req: Request, res: Response): Promise<any>
     
     console.log(`✅ User registered: ${email}`);
 
-    // ── Send verification email (non-blocking — registration succeeds even if mail fails) ──
+    // ── Send verification email — FIRE AND FORGET, never blocks the response ──
+    // Root cause of "timeout of 30000ms exceeded" on register: sendMail() was
+    // previously awaited with no SMTP connection/socket timeout. If Gmail SMTP
+    // is slow, unreachable, or rate-limited, nodemailer can hang well past the
+    // client's 30s timeout. Token storage stays awaited (fast, local DB); only
+    // the outbound SMTP call is detached so a slow mail server can never delay
+    // account creation or the HTTP response.
+    let verificationToken = '';
     try {
-      const verificationToken = crypto.randomBytes(32).toString('hex');
+      verificationToken = crypto.randomBytes(32).toString('hex');
       const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
 
-      // Store token in DB
       await pool.query(
         `INSERT INTO email_verification_tokens (id, user_id, token, expires_at)
          VALUES ($1, $2, $3, $4)
          ON CONFLICT (user_id) DO UPDATE SET token = $3, expires_at = $4`,
         [uuidv4(), userId, verificationToken, expiresAt]
       );
+    } catch (tokenErr: any) {
+      console.error('⚠️ Verification token storage failed (non-fatal):', tokenErr.message);
+    }
 
+    if (verificationToken) {
       const verifyUrl = `${process.env.FRONTEND_URL || "https://nestedark.com"}/verify-email?token=${verificationToken}`;
-
       const nodemailer = require("nodemailer");
       const transporter = nodemailer.createTransport({
         host: process.env.EMAIL_HOST || "smtp.gmail.com",
         port: parseInt(process.env.EMAIL_PORT || "587"),
         secure: process.env.EMAIL_PORT === "465",
-        auth: {
-          user: process.env.EMAIL_USER,
-          pass: process.env.EMAIL_PASS,
-        },
+        auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
+        connectionTimeout: 8000,  // 8s to establish TCP/TLS connection
+        greetingTimeout:   8000,  // 8s to receive SMTP greeting
+        socketTimeout:     10000, // 10s idle socket timeout
       });
 
-      await transporter.sendMail({
+      // Fire-and-forget — NOT awaited. Registration response is never
+      // delayed by SMTP latency, downtime, or rate limiting.
+      transporter.sendMail({
         from: `"Nested Ark OS" <${process.env.EMAIL_USER}>`,
         to: email,
         subject: "VERIFY YOUR OPERATOR ACCOUNT — Nested Ark OS",
@@ -1407,11 +1418,11 @@ app.post("/api/auth/register", async (req: Request, res: Response): Promise<any>
             </div>
           </div>
         `,
+      }).then(() => {
+        console.log(`📧 Verification email sent to: ${email}`);
+      }).catch((mailErr: any) => {
+        console.error("⚠️ Verification email failed (non-fatal):", mailErr.message);
       });
-      console.log(`📧 Verification email sent to: ${email}`);
-    } catch (mailErr: any) {
-      // Log but do not block registration response
-      console.error("⚠️ Verification email failed (non-fatal):", mailErr.message);
     }
 
     // ── Welcome email — role-aware, non-blocking ──────────────────────────────
@@ -1427,6 +1438,9 @@ app.post("/api/auth/register", async (req: Request, res: Response): Promise<any>
         port: parseInt(process.env.EMAIL_PORT || '587'),
         secure: process.env.EMAIL_PORT === '465',
         auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
+        connectionTimeout: 8000,
+        greetingTimeout:   8000,
+        socketTimeout:     10000,
       });
 
       const emailBase = `background:#050505;color:white;padding:48px 32px;font-family:'Segoe UI',Arial,sans-serif;max-width:520px;margin:0 auto;border:1px solid #18181b;border-radius:16px;`;
@@ -1517,15 +1531,20 @@ app.post("/api/auth/register", async (req: Request, res: Response): Promise<any>
 
       const htmlBody = isTenant ? tenantHtml : isLandlord ? landlordHtml : tenantHtml;
 
-      await welcomeTransporter.sendMail({
+      // Fire-and-forget — NOT awaited. See verification email comment above
+      // for why: SMTP latency must never delay the registration response.
+      welcomeTransporter.sendMail({
         from: `"Nested Ark OS" <${process.env.EMAIL_USER}>`,
         to:   email,
         subject,
         html: htmlBody,
+      }).then(() => {
+        console.log(`🎉 Welcome email sent to ${email} (role: ${role || 'default'})`);
+      }).catch((welcomeErr: any) => {
+        console.error('⚠️ Welcome email failed (non-fatal):', welcomeErr.message);
       });
-      console.log(`🎉 Welcome email sent to ${email} (role: ${role || 'default'})`);
-    } catch (welcomeErr: any) {
-      console.error('⚠️ Welcome email failed (non-fatal):', welcomeErr.message);
+    } catch (welcomeSetupErr: any) {
+      console.error('⚠️ Welcome email setup failed (non-fatal):', welcomeSetupErr.message);
     }
 
     return res.status(201).json({
@@ -1647,9 +1666,15 @@ app.post("/api/auth/forgot-password", async (req: Request, res: Response): Promi
       port: parseInt(process.env.EMAIL_PORT || "587"),
       secure: process.env.EMAIL_PORT === "465",
       auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
+      connectionTimeout: 8000,
+      greetingTimeout:   8000,
+      socketTimeout:     10000,
     });
 
-    await transporter.sendMail({
+    // Fire-and-forget — same fix as /api/auth/register. A slow or unreachable
+    // SMTP server must never hang this HTTP response (was causing the same
+    // "timeout of 30000ms exceeded" symptom on forgot-password).
+    transporter.sendMail({
       from: `"Nested Ark OS" <${process.env.EMAIL_USER}>`,
       to: email,
       subject: "RECOVERY PROTOCOL: Reset Operator Access Key",
@@ -1673,9 +1698,12 @@ app.post("/api/auth/forgot-password", async (req: Request, res: Response): Promi
           </div>
         </div>
       `,
+    }).then(() => {
+      console.log(`📧 Password reset email sent to: ${email}`);
+    }).catch((mailErr: any) => {
+      console.error("⚠️ Password reset email failed (non-fatal):", mailErr.message);
     });
 
-    console.log(`📧 Password reset email sent to: ${email}`);
     return res.status(200).json({ message: "Recovery link dispatched." });
   } catch (error: any) {
     console.error("Forgot password error:", error.message);
