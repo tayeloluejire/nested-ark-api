@@ -1,38 +1,36 @@
 // ════════════════════════════════════════════════════════════════════════════
-// EmailService — the ONLY place in this codebase allowed to call
-// nodemailer.createTransport(). Every route sends mail through
-// `EmailService.send(...)`. Nothing else touches SMTP directly.
+// EmailService — the ONLY place in this codebase allowed to talk to Brevo.
+// Every route sends mail through `EmailService.send(...)`. Nothing else
+// touches the mail provider directly.
+//
+// WHY HTTP API, NOT SMTP: Render blocks outbound SMTP ports (25/465/587) on
+// free-tier web services (platform policy since Sept 2025) — no amount of
+// correct SMTP config gets past that network-level block. Brevo's
+// transactional email HTTP API runs over HTTPS (port 443), which Render
+// never blocks on any plan. This also removes the SMTP handshake overhead
+// entirely — one HTTPS POST per email, clearer error responses from Brevo's
+// JSON body instead of raw SMTP error codes.
 //
 // Lifecycle:
 //   1. `initEmailService()` is called ONCE from startServer(), before the
-//      HTTP listener opens. It creates the pooled transporter and (best
-//      effort) verifies the SMTP connection so boot logs tell you
-//      immediately if mail is misconfigured — it does NOT crash boot if
-//      verification fails, since a temporarily-down mail server should never
-//      take down the whole API.
-//   2. `EmailService.send(...)` reuses that one transporter for every email,
-//      for the lifetime of the process.
+//      HTTP listener opens. It does a lightweight check that BREVO_API_KEY
+//      is valid (calls Brevo's /account endpoint) so boot logs tell you
+//      immediately if mail is misconfigured — it does NOT crash boot if the
+//      check fails, since a temporarily-unreachable API should never take
+//      down the whole app.
+//   2. `EmailService.send(...)` reuses the same API key / fetch config for
+//      every email, for the lifetime of the process.
 //   3. `setDbLogger(...)` lets index.ts wire up persistence (email_logs
 //      table) without this module needing to know about `pg.Pool` directly.
 // ════════════════════════════════════════════════════════════════════════════
 
-import nodemailer, { Transporter } from 'nodemailer';
-
 // ── Config ────────────────────────────────────────────────────────────────
-// NOTE: reads SMTP_* first (what's actually set on Render), falls back to
-// EMAIL_* for local/dev convenience. Previously this only checked EMAIL_*,
-// which doesn't exist on Render — every value silently fell back to its
-// hardcoded default (smtp.gmail.com with no credentials), which is why boot
-// logged "Connection timeout": it was trying to reach Gmail, not Brevo.
-const EMAIL_HOST    = process.env.SMTP_HOST || process.env.EMAIL_HOST || 'smtp-relay.brevo.com';
-const EMAIL_PORT    = parseInt(process.env.SMTP_PORT || process.env.EMAIL_PORT || '587', 10);
-const EMAIL_SECURE  = (process.env.SMTP_SECURE || process.env.EMAIL_SECURE || 'false').toLowerCase() === 'true';
-const EMAIL_USER    = process.env.SMTP_USER || process.env.EMAIL_USER || '';   // SMTP login (e.g. a7af0c001@smtp-brevo.com) — used for auth only
-const EMAIL_PASS    = process.env.SMTP_PASS || process.env.EMAIL_PASS || '';
-// FROM_ADDRESS is the visible "From" address shown to recipients. Brevo's
-// SMTP login is not a real mailbox — the domain-authenticated address
-// (SPF/DKIM/DMARC verified on nestedark.com) belongs in EMAIL_FROM.
-const FROM_ADDRESS   = process.env.EMAIL_FROM || EMAIL_USER;
+const BREVO_API_KEY = process.env.BREVO_API_KEY || '';
+const BREVO_API_URL = 'https://api.brevo.com/v3/smtp/email';
+// FROM_ADDRESS is the visible "From" address shown to recipients — must be a
+// domain-authenticated (SPF/DKIM/DMARC verified) sender in Brevo, e.g. the
+// existing EMAIL_FROM=info@nestedark.com already configured on Render.
+const FROM_ADDRESS   = process.env.EMAIL_FROM || 'info@nestedark.com';
 const FROM_NAME      = process.env.EMAIL_FROM_NAME || 'Nested Ark OS';
 const SUPPORT_EMAIL  = process.env.SUPPORT_EMAIL || process.env.EMAIL_FROM || 'nestedark@gmail.com';
 const FRONTEND_URL   = process.env.FRONTEND_URL || 'https://nestedark.com';
@@ -40,62 +38,119 @@ const MAX_RETRIES    = 2;
 const RETRY_DELAY_MS = 1500;
 
 // ════════════════════════════════════════════════════════════════════════════
-// SINGLETON TRANSPORTER
+// TRANSPORT — Brevo HTTP API, wrapped in a nodemailer-shaped `sendMail()`
+// so cron_scheduler.ts's existing `getMailer()` contract (which expects
+// something with a `.sendMail(mailOptions)` method) keeps working unchanged.
 // ════════════════════════════════════════════════════════════════════════════
-let _transporter: Transporter | null = null;
-let _initialized = false;
-
-function buildTransporter(): Transporter {
-  return nodemailer.createTransport({
-    host: EMAIL_HOST,
-    port: EMAIL_PORT,
-    secure: EMAIL_SECURE,
-    auth: EMAIL_USER ? { user: EMAIL_USER, pass: EMAIL_PASS } : undefined,
-    pool: true,             // reuse SMTP connections (Phase 4: connection pooling)
-    maxConnections: 3,
-    maxMessages: 100,
-    connectionTimeout: 8000,
-    greetingTimeout: 8000,
-    socketTimeout: 10000,
-  });
+export interface MailOptions {
+  from?: string;
+  fromName?: string;
+  to: string;
+  subject: string;
+  html: string;
+  attachments?: { filename: string; content: Buffer | string; contentType?: string }[];
+}
+export interface SendMailInfo {
+  messageId?: string;
+  response?: string;
+}
+export interface MailTransport {
+  sendMail(options: MailOptions): Promise<SendMailInfo>;
 }
 
+class BrevoApiError extends Error {
+  transient: boolean;
+  constructor(message: string, transient: boolean) {
+    super(message);
+    this.transient = transient;
+  }
+}
+
+async function sendViaBrevoApi(mailOptions: MailOptions): Promise<SendMailInfo> {
+  if (!BREVO_API_KEY) {
+    throw new BrevoApiError('BREVO_API_KEY not configured', false);
+  }
+
+  const attachment = (mailOptions.attachments || []).map((a) => ({
+    name: a.filename,
+    content: Buffer.isBuffer(a.content) ? a.content.toString('base64') : Buffer.from(a.content).toString('base64'),
+  }));
+
+  const body: any = {
+    sender: { name: mailOptions.fromName || FROM_NAME, email: FROM_ADDRESS },
+    to: [{ email: mailOptions.to }],
+    subject: mailOptions.subject,
+    htmlContent: mailOptions.html,
+  };
+  if (attachment.length) body.attachment = attachment;
+
+  let res: Response;
+  try {
+    res = await fetch(BREVO_API_URL, {
+      method: 'POST',
+      headers: { 'api-key': BREVO_API_KEY, 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch (networkErr: any) {
+    // fetch() itself threw — a real network failure, always worth retrying
+    throw new BrevoApiError(networkErr?.message || 'Network error calling Brevo API', true);
+  }
+
+  const data: any = await res.json().catch(() => ({}));
+
+  if (!res.ok) {
+    const msg = data?.message || `Brevo API error (HTTP ${res.status})`;
+    // 429 (rate limit) and 5xx (Brevo-side issue) are worth retrying;
+    // 4xx (bad request, bad API key, unverified sender) are not — retrying
+    // an invalid request just wastes time before it fails again anyway.
+    const transient = res.status === 429 || res.status >= 500;
+    throw new BrevoApiError(msg, transient);
+  }
+
+  return { messageId: data?.messageId, response: `Brevo: ${data?.messageId || 'accepted'}` };
+}
+
+let _initialized = false;
+const _transport: MailTransport = { sendMail: sendViaBrevoApi };
+
 /**
- * Call ONCE at server startup, before app.listen(). Creates the singleton
- * transporter and verifies connectivity (logs only — never throws, since a
- * flaky mail server must never block the API from booting).
+ * Call ONCE at server startup, before app.listen(). Does a lightweight
+ * check that BREVO_API_KEY is valid so boot logs tell you immediately if
+ * mail is misconfigured — never throws, since a temporarily-unreachable
+ * API should never block the app from booting.
  */
 export async function initEmailService(): Promise<void> {
   if (_initialized) {
-    console.warn('[EmailService] initEmailService() called more than once — ignoring, singleton already exists.');
+    console.warn('[EmailService] initEmailService() called more than once — ignoring.');
     return;
   }
-  if (!EMAIL_USER || !EMAIL_PASS) {
-    console.error('[EmailService] SMTP_USER / SMTP_PASS (or EMAIL_USER / EMAIL_PASS) not set — email sending will be disabled until configured.');
-  }
-  _transporter = buildTransporter();
   _initialized = true;
 
+  if (!BREVO_API_KEY) {
+    console.error('[EmailService] BREVO_API_KEY not set — email sending will be disabled until configured.');
+    return;
+  }
+
   try {
-    await _transporter.verify();
-    console.log(`[EmailService] Ready — SMTP connection verified (${EMAIL_HOST}:${EMAIL_PORT}, pooled).`);
+    const res = await fetch('https://api.brevo.com/v3/account', { headers: { 'api-key': BREVO_API_KEY } });
+    if (res.ok) {
+      console.log(`[EmailService] Ready — Brevo API key verified (sending as ${FROM_NAME} <${FROM_ADDRESS}>).`);
+    } else {
+      console.warn(`[EmailService] Brevo API key check failed at boot (HTTP ${res.status}, non-fatal, will retry on send).`);
+    }
   } catch (err: any) {
-    console.warn(`[EmailService] SMTP verify failed at boot (non-fatal, will retry on send): ${err?.message || err}`);
+    console.warn(`[EmailService] Brevo reachability check failed at boot (non-fatal, will retry on send): ${err?.message || err}`);
   }
 }
 
 /**
- * Returns the singleton transporter, creating it defensively if
- * initEmailService() was never called (e.g. in a test harness). Also used by
- * cron_scheduler.ts via the getMailer() compatibility shim in index.ts, so
- * scheduled jobs share the exact same pooled connection as HTTP routes.
+ * Returns the shared mail transport. Used internally by EmailService.send()
+ * and by cron_scheduler.ts via the getMailer() compatibility shim in
+ * index.ts, so scheduled jobs send through the exact same Brevo API path as
+ * HTTP routes.
  */
-export function getTransporter(): Transporter {
-  if (!_transporter) {
-    console.warn('[EmailService] getTransporter() called before initEmailService() — creating transporter lazily.');
-    _transporter = buildTransporter();
-  }
-  return _transporter;
+export function getTransporter(): MailTransport {
+  return _transport;
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -170,8 +225,9 @@ function sleep(ms: number) {
 
 async function sendWithRetry(opts: SendEmailOptions): Promise<SendEmailResult> {
   const templateName = opts.template || 'generic';
-  const mailOptions = {
-    from: `"${opts.fromName || FROM_NAME}" <${FROM_ADDRESS}>`,
+  const mailOptions: MailOptions = {
+    from: `"${opts.fromName || FROM_NAME}" <${FROM_ADDRESS}>`, // kept for logging/back-compat readability only
+    fromName: opts.fromName,
     to: opts.to,
     subject: opts.subject,
     html: opts.html,
@@ -191,9 +247,11 @@ async function sendWithRetry(opts: SendEmailOptions): Promise<SendEmailResult> {
       return { success: true };
     } catch (err: any) {
       lastError = err;
-      const isTransient =
-        err?.code === 'ETIMEDOUT' || err?.code === 'ECONNECTION' || err?.code === 'ESOCKET' ||
-        /timeout|timed out|econnreset|econnrefused/i.test(err?.message || '');
+      // BrevoApiError sets `transient` explicitly (429/5xx/network failure =
+      // retry; 4xx bad request/auth = don't bother, it'll just fail again).
+      const isTransient = typeof err?.transient === 'boolean'
+        ? err.transient
+        : /timeout|timed out|econnreset|econnrefused|network/i.test(err?.message || '');
       if (!isTransient || attempt > MAX_RETRIES) break;
       await sleep(RETRY_DELAY_MS * attempt);
     }
@@ -222,8 +280,8 @@ export const EmailService = {
    * behavior, just a real, single return type now.)
    */
   send(opts: SendEmailOptions): Promise<SendEmailResult> {
-    if (!EMAIL_USER || !EMAIL_PASS) {
-      logEmailEvent({ recipient: opts.to, template: opts.template || 'generic', status: 'FAILED', errorMessage: 'SMTP_USER/SMTP_PASS not configured' });
+    if (!BREVO_API_KEY) {
+      logEmailEvent({ recipient: opts.to, template: opts.template || 'generic', status: 'FAILED', errorMessage: 'BREVO_API_KEY not configured' });
       return Promise.resolve({ success: false, error: 'Email not configured' });
     }
     return sendWithRetry(opts); // caller decides whether to await; errors are already caught/logged inside
