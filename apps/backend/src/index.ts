@@ -8002,12 +8002,17 @@ app.get('/api/admin/overview', authenticate, async (req: Request, res: Response)
 
 // ── COMPATIBILITY SHIM: getMailer() ──────────────────────────────────────────
 // The ONLY remaining consumer of this is `startReminderCron(pool, getMailer)`
-// at the bottom of this file — cron_scheduler.ts expects a function that
-// returns a transporter. Rather than create a second transporter, this just
-// hands back the SAME singleton EmailService owns, so scheduled jobs share
-// one pooled SMTP connection with every HTTP route. No route handler calls
-// this anymore — they all call EmailService.send() directly.
-function getMailer() {
+// at the bottom of this file — cron_scheduler.ts types its parameter as
+// `MailerFactory`, which expects a function returning a full nodemailer
+// `Transporter`. Since the email architecture moved to Brevo's HTTP API,
+// getTransporter() now returns a much simpler `MailTransport` (just
+// `.sendMail()`) — the only method cron_scheduler.ts actually calls. The
+// `as any` below is a type-level cast only; the object returned at runtime
+// is identical to what every other email call site in this file already
+// uses successfully. If cron_scheduler.ts is ever revised, its
+// `MailerFactory` type should be loosened to `() => { sendMail(...): ... }`
+// so this cast can be removed.
+function getMailer(): any {
   return getTransporter();
 }
 
