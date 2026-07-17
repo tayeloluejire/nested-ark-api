@@ -7,6 +7,21 @@ import bcryptjs from "bcryptjs";
 import cors from 'cors';
 import crypto from 'crypto';
 import { startReminderCron } from './cron_scheduler';
+import {
+  EmailService,
+  initEmailService,
+  getTransporter,
+  setDbLogger,
+  genericTemplate,
+  welcomeTenantTemplate,
+  welcomeLandlordTemplate,
+  verifyEmailTemplate,
+  forgotPasswordTemplate,
+  passwordChangedTemplate,
+  vaultMilestoneTemplate,
+  landlordDisbursementTemplate,
+  adminNotificationTemplate,
+} from './emailService';
 // recovery routes are inline in this file (forgot-password, verify-reset-token, reset-password)
 
 dotenv.config();
@@ -120,6 +135,9 @@ const noticeLimiter   = createRateLimiter(60 * 1000,       10, 'Too many notice 
 app.use('/api/auth/login',                         authLimiter);
 app.use('/api/auth/register',                      authLimiter);
 app.use('/api/auth/forgot-password',               authLimiter);
+app.use('/api/auth/reset-password',                authLimiter);
+app.use('/api/auth/verify-email',                  authLimiter);
+app.use('/api/auth/resend-verification',           authLimiter);
 app.use('/api/rental/marketplace/advertise',       paymentLimiter);
 app.use('/api/tenant/pay-installment',             paymentLimiter);
 app.use('/api/tenant/maintenance-request',         actionLimiter);
@@ -247,6 +265,16 @@ const ensureTablesExist = async () => {
         role VARCHAR(50) DEFAULT 'PROJECT_SPONSOR',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS email_logs (
+        id UUID PRIMARY KEY,
+        recipient VARCHAR(255) NOT NULL,
+        template VARCHAR(100) NOT NULL,
+        status VARCHAR(20) NOT NULL,
+        provider_response TEXT,
+        error_message TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
 
       CREATE TABLE IF NOT EXISTS projects (
@@ -1382,170 +1410,18 @@ app.post("/api/auth/register", async (req: Request, res: Response): Promise<any>
 
     if (verificationToken) {
       const verifyUrl = `${process.env.FRONTEND_URL || "https://nestedark.com"}/verify-email?token=${verificationToken}`;
-      const nodemailer = require("nodemailer");
-      const transporter = nodemailer.createTransport({
-        host: process.env.EMAIL_HOST || "smtp.gmail.com",
-        port: parseInt(process.env.EMAIL_PORT || "587"),
-        secure: process.env.EMAIL_PORT === "465",
-        auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
-        connectionTimeout: 8000,  // 8s to establish TCP/TLS connection
-        greetingTimeout:   8000,  // 8s to receive SMTP greeting
-        socketTimeout:     10000, // 10s idle socket timeout
-      });
-
       // Fire-and-forget — NOT awaited. Registration response is never
-      // delayed by SMTP latency, downtime, or rate limiting.
-      transporter.sendMail({
-        from: `"Nested Ark OS" <${process.env.EMAIL_USER}>`,
-        to: email,
-        subject: "VERIFY YOUR OPERATOR ACCOUNT — Nested Ark OS",
-        html: `
-          <div style="background:#050505;color:white;padding:40px;font-family:sans-serif;border:1px solid #1f2937;border-radius:12px;max-width:500px;margin:0 auto;">
-            <div style="text-align:center;margin-bottom:32px;">
-              <p style="color:#14b8a6;font-size:10px;font-weight:900;letter-spacing:4px;text-transform:uppercase;margin:0 0 8px;">Nested Ark OS</p>
-              <h1 style="color:white;font-size:22px;font-weight:900;letter-spacing:-0.5px;text-transform:uppercase;margin:0;">Verify Your Account</h1>
-            </div>
-            <p style="color:#a1a1aa;font-size:13px;line-height:1.6;">Your operator account has been created. Click the button below to verify your email and activate your access.</p>
-            <div style="text-align:center;margin:32px 0;">
-              <a href="${verifyUrl}"
-                 style="background:#14b8a6;color:black;padding:14px 32px;text-decoration:none;font-weight:900;border-radius:8px;text-transform:uppercase;font-size:11px;letter-spacing:2px;display:inline-block;">
-                Verify My Account
-              </a>
-            </div>
-            <div style="border-top:1px solid #1f2937;padding-top:20px;margin-top:20px;">
-              <p style="color:#52525b;font-size:9px;text-transform:uppercase;letter-spacing:2px;text-align:center;">Link expires in 24 hours · If you did not register, ignore this email</p>
-              <p style="color:#52525b;font-size:9px;text-transform:uppercase;letter-spacing:1px;text-align:center;margin-top:8px;">Impressions &amp; Impacts Ltd · nestedark@gmail.com</p>
-            </div>
-          </div>
-        `,
-      }).then(() => {
-        console.log(`📧 Verification email sent to: ${email}`);
-      }).catch((mailErr: any) => {
-        console.error("⚠️ Verification email failed (non-fatal):", mailErr.message);
-      });
+      // delayed by SMTP latency, downtime, or rate limiting. Routed through
+      // the centralized EmailService instead of an inline
+      // nodemailer.createTransport — same content/behaviour as before.
+      const { subject, html } = verifyEmailTemplate(verifyUrl);
+      EmailService.send({ to: email, subject, html, template: 'verify_email' });
     }
 
-    // ── Welcome email — role-aware, non-blocking ──────────────────────────────
-    try {
-      const firstName   = full_name?.split(' ')[0] || 'there';
-      const isTenant    = (role || '').toUpperCase() === 'TENANT';
-      const isLandlord  = ['DEVELOPER','LANDLORD'].includes((role || '').toUpperCase());
-      const frontendUrl = process.env.FRONTEND_URL || 'https://nestedark.com';
-
-      const nodemailer2 = require('nodemailer');
-      const welcomeTransporter = nodemailer2.createTransport({
-        host: process.env.EMAIL_HOST || 'smtp.gmail.com',
-        port: parseInt(process.env.EMAIL_PORT || '587'),
-        secure: process.env.EMAIL_PORT === '465',
-        auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
-        connectionTimeout: 8000,
-        greetingTimeout:   8000,
-        socketTimeout:     10000,
-      });
-
-      const emailBase = `background:#050505;color:white;padding:48px 32px;font-family:'Segoe UI',Arial,sans-serif;max-width:520px;margin:0 auto;border:1px solid #18181b;border-radius:16px;`;
-      const btnStyle  = `display:inline-block;background:#14b8a6;color:#000;padding:14px 36px;text-decoration:none;font-weight:900;border-radius:8px;text-transform:uppercase;font-size:11px;letter-spacing:2px;margin-top:8px;`;
-      const dimText   = `color:#52525b;font-size:10px;text-transform:uppercase;letter-spacing:1.5px;`;
-      const bodyText  = `color:#a1a1aa;font-size:13px;line-height:1.8;margin:0 0 12px;`;
-      const h1Style   = `color:white;font-size:22px;font-weight:900;letter-spacing:-0.5px;text-transform:uppercase;margin:0 0 6px;`;
-      const tagStyle  = `color:#14b8a6;font-size:9px;font-weight:900;letter-spacing:4px;text-transform:uppercase;margin:0 0 8px;`;
-      const divider   = `border-top:1px solid #27272a;padding-top:24px;margin-top:24px;`;
-      const bulletRow = (icon: string, text: string) =>
-        `<tr><td style="padding:5px 0;font-size:13px;color:#a1a1aa;"><span style="color:#14b8a6;margin-right:10px;">${icon}</span>${text}</td></tr>`;
-
-      const tenantHtml = `
-        <div style="${emailBase}">
-          <p style="${tagStyle}">Nested Ark OS</p>
-          <h1 style="${h1Style}">Welcome to Nested Ark</h1>
-          <p style="${h1Style};color:#14b8a6;font-size:14px;">Your Rent Journey Starts Here</p>
-          <p style="${bodyText};margin-top:24px;">Hello <strong style="color:white;">${firstName}</strong>,</p>
-          <p style="${bodyText}">Welcome to Nested Ark. We're excited to have you join a growing community of people taking control of their rent journey.</p>
-          <p style="${bodyText}">With Nested Ark, you can:</p>
-          <table style="border-collapse:collapse;width:100%;margin:4px 0 20px;">
-            ${bulletRow('•','Create a Rent Vault for your next rent payment')}
-            ${bulletRow('•','Contribute gradually instead of scrambling at renewal')}
-            ${bulletRow('•','Track every contribution transparently')}
-            ${bulletRow('•','Receive reminders and progress updates')}
-            ${bulletRow('•','Prepare confidently for rent obligations')}
-          </table>
-          <p style="${bodyText};font-weight:700;color:white;">Your next steps:</p>
-          <table style="border-collapse:collapse;width:100%;margin:4px 0 24px;">
-            ${bulletRow('01','Log in to your account')}
-            ${bulletRow('02','Create your Rent Vault')}
-            ${bulletRow('03','Set your rent target')}
-            ${bulletRow('04','Start contributing toward your goal')}
-          </table>
-          <div style="text-align:center;margin:32px 0;">
-            <a href="${frontendUrl}/tenant/vault" style="${btnStyle}">Create My Rent Vault</a>
-          </div>
-          <p style="background:#0d1f1f;border:1px solid #134e4a;border-radius:8px;padding:16px;font-size:12px;color:#5eead4;font-style:italic;text-align:center;">
-            Small consistent contributions today can eliminate rent pressure tomorrow.
-          </p>
-          <div style="${divider}">
-            <p style="${dimText};text-align:center;">Thank you for choosing Nested Ark</p>
-            <p style="${dimText};text-align:center;">The Nested Ark Team · Infrastructure OS &amp; Property Solutions</p>
-            <p style="${dimText};text-align:center;margin-top:8px;">Impressions &amp; Impacts Ltd · nestedark@gmail.com</p>
-          </div>
-        </div>`;
-
-      const landlordHtml = `
-        <div style="${emailBase}">
-          <p style="${tagStyle}">Nested Ark OS</p>
-          <h1 style="${h1Style}">Welcome to Nested Ark</h1>
-          <p style="${h1Style};color:#14b8a6;font-size:14px;">Landlord Network</p>
-          <p style="${bodyText};margin-top:24px;">Hello <strong style="color:white;">${firstName}</strong>,</p>
-          <p style="${bodyText}">Welcome to Nested Ark. Thank you for joining our growing network of landlords embracing smarter rent management.</p>
-          <p style="${bodyText}">With Nested Ark, you can:</p>
-          <table style="border-collapse:collapse;width:100%;margin:4px 0 20px;">
-            ${bulletRow('•','List and manage rental units')}
-            ${bulletRow('•','Track tenant activity in real time')}
-            ${bulletRow('•','Receive secure, automated rent payments')}
-            ${bulletRow('•','Access transparent payment records')}
-            ${bulletRow('•','Benefit from automated payout workflows')}
-          </table>
-          <p style="${bodyText};font-weight:700;color:white;">Your next steps:</p>
-          <table style="border-collapse:collapse;width:100%;margin:4px 0 24px;">
-            ${bulletRow('01','Complete your profile')}
-            ${bulletRow('02','Add your bank account')}
-            ${bulletRow('03','List your property')}
-            ${bulletRow('04','Invite your tenants')}
-          </table>
-          <div style="text-align:center;margin:32px 0;">
-            <a href="${frontendUrl}/projects/my" style="${btnStyle}">Go to My Properties</a>
-          </div>
-          <p style="background:#0d1f1f;border:1px solid #134e4a;border-radius:8px;padding:16px;font-size:12px;color:#5eead4;font-style:italic;text-align:center;">
-            Our goal: make rent collection more predictable, transparent, and stress-free.
-          </p>
-          <div style="${divider}">
-            <p style="${dimText};text-align:center;">We look forward to supporting your property management journey.</p>
-            <p style="${dimText};text-align:center;">The Nested Ark Team · Infrastructure OS &amp; Property Solutions</p>
-            <p style="${dimText};text-align:center;margin-top:8px;">Impressions &amp; Impacts Ltd · nestedark@gmail.com</p>
-          </div>
-        </div>`;
-
-      const subject = isTenant
-        ? 'Welcome to Nested Ark — Your Rent Journey Starts Here'
-        : isLandlord
-          ? 'Welcome to Nested Ark Landlord Network'
-          : 'Welcome to Nested Ark OS';
-
-      const htmlBody = isTenant ? tenantHtml : isLandlord ? landlordHtml : tenantHtml;
-
-      // Fire-and-forget — NOT awaited. See verification email comment above
-      // for why: SMTP latency must never delay the registration response.
-      welcomeTransporter.sendMail({
-        from: `"Nested Ark OS" <${process.env.EMAIL_USER}>`,
-        to:   email,
-        subject,
-        html: htmlBody,
-      }).then(() => {
-        console.log(`🎉 Welcome email sent to ${email} (role: ${role || 'default'})`);
-      }).catch((welcomeErr: any) => {
-        console.error('⚠️ Welcome email failed (non-fatal):', welcomeErr.message);
-      });
-    } catch (welcomeSetupErr: any) {
-      console.error('⚠️ Welcome email setup failed (non-fatal):', welcomeSetupErr.message);
-    }
+    // NOTE: the Welcome email is no longer sent here. It now fires
+    // automatically once the user completes email verification (see
+    // GET /api/auth/verify-email below) — so "Welcome" arrives once we know
+    // the address is real, instead of immediately at signup.
 
     return res.status(201).json({
       success: true,
@@ -1660,49 +1536,13 @@ app.post("/api/auth/forgot-password", async (req: Request, res: Response): Promi
     const frontendUrl = process.env.FRONTEND_URL || "https://nestedark.com";
     const resetLink   = `${frontendUrl}/reset-password/${rawToken}`;
 
-    const nodemailer = require("nodemailer");
-    const transporter = nodemailer.createTransport({
-      host: process.env.EMAIL_HOST || "smtp.gmail.com",
-      port: parseInt(process.env.EMAIL_PORT || "587"),
-      secure: process.env.EMAIL_PORT === "465",
-      auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
-      connectionTimeout: 8000,
-      greetingTimeout:   8000,
-      socketTimeout:     10000,
-    });
-
-    // Fire-and-forget — same fix as /api/auth/register. A slow or unreachable
-    // SMTP server must never hang this HTTP response (was causing the same
-    // "timeout of 30000ms exceeded" symptom on forgot-password).
-    transporter.sendMail({
-      from: `"Nested Ark OS" <${process.env.EMAIL_USER}>`,
-      to: email,
-      subject: "RECOVERY PROTOCOL: Reset Operator Access Key",
-      html: `
-        <div style="background:#050505;color:white;padding:48px;font-family:sans-serif;border:1px solid #14b8a630;border-radius:12px;max-width:520px;margin:0 auto;">
-          <div style="text-align:center;margin-bottom:32px;">
-            <p style="color:#14b8a6;font-size:9px;font-weight:900;letter-spacing:4px;text-transform:uppercase;margin:0 0 8px;">Nested Ark OS</p>
-            <h1 style="color:white;font-size:22px;font-weight:900;letter-spacing:-0.5px;text-transform:uppercase;margin:0;font-style:italic;">Recovery Protocol</h1>
-          </div>
-          <p style="color:#a1a1aa;font-size:13px;line-height:1.6;">Hello ${user.full_name || 'Operator'},</p>
-          <p style="color:#a1a1aa;font-size:13px;line-height:1.6;">An access key reset was requested for this account. Click below to reset your key. This link expires in <strong style="color:white;">15 minutes</strong>.</p>
-          <div style="text-align:center;margin:32px 0;">
-            <a href="${resetLink}"
-               style="background:#14b8a6;color:black;padding:14px 32px;text-decoration:none;font-weight:900;border-radius:8px;text-transform:uppercase;font-size:11px;letter-spacing:2px;display:inline-block;">
-              Reset Access Key
-            </a>
-          </div>
-          <div style="border-top:1px solid #1f2937;padding-top:20px;margin-top:20px;">
-            <p style="color:#52525b;font-size:9px;text-transform:uppercase;letter-spacing:2px;text-align:center;">If you did not request this, ignore this message. Your key remains secure.</p>
-            <p style="color:#52525b;font-size:9px;text-transform:uppercase;letter-spacing:1px;text-align:center;margin-top:8px;">Impressions & Impacts Ltd · nestedark@gmail.com</p>
-          </div>
-        </div>
-      `,
-    }).then(() => {
-      console.log(`📧 Password reset email sent to: ${email}`);
-    }).catch((mailErr: any) => {
-      console.error("⚠️ Password reset email failed (non-fatal):", mailErr.message);
-    });
+    // Fire-and-forget via the centralized EmailService — same fix as before:
+    // a slow or unreachable SMTP server must never hang this HTTP response
+    // (was causing "timeout of 30000ms exceeded" on forgot-password).
+    {
+      const { subject, html } = forgotPasswordTemplate(user.full_name, resetLink);
+      EmailService.send({ to: email, subject, html, template: 'forgot_password' });
+    }
 
     return res.status(200).json({ message: "Recovery link dispatched." });
   } catch (error: any) {
@@ -1761,7 +1601,7 @@ app.post("/api/auth/reset-password", async (req: Request, res: Response): Promis
   try {
     const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
     const result = await pool.query(
-      `SELECT prt.id, prt.user_id, u.email FROM password_reset_tokens prt
+      `SELECT prt.id, prt.user_id, u.email, u.full_name FROM password_reset_tokens prt
        JOIN public.users u ON prt.user_id = u.id
        WHERE prt.token_hash = $1 AND prt.used = false AND prt.expires_at > NOW()`,
       [tokenHash]
@@ -1788,6 +1628,15 @@ app.post("/api/auth/reset-password", async (req: Request, res: Response): Promis
     );
 
     console.log(`✅ Password reset for: ${row.email}`);
+
+    // Confirmation email — fire-and-forget, never blocks the response.
+    // Lets the account owner know immediately if a reset happened that
+    // they didn't initiate (Phase 3/7: reset-attack visibility).
+    {
+      const { subject, html } = passwordChangedTemplate(row.full_name);
+      EmailService.send({ to: row.email, subject, html, template: 'password_changed' });
+    }
+
     return res.json({ success: true, message: "Operator access key updated. You may now sign in." });
   } catch (error: any) {
     console.error("Reset password error:", error.message);
@@ -1795,7 +1644,110 @@ app.post("/api/auth/reset-password", async (req: Request, res: Response): Promis
   }
 });
 
-// All recovery endpoints are handled inline above (forgot-password, verify-reset-token, reset-password)
+// ============================================================================
+// EMAIL VERIFICATION — completes the loop started at /api/auth/register
+// GET  /api/auth/verify-email          → consumes the token, activates the account
+// POST /api/auth/resend-verification   → issues a fresh token + email
+// ============================================================================
+
+// GET /api/auth/verify-email?token=xxx
+app.get("/api/auth/verify-email", async (req: Request, res: Response): Promise<any> => {
+  const token = (req.query.token as string) || '';
+  if (!token) return res.status(400).json({ error: "Verification token required" });
+
+  try {
+    const result = await pool.query(
+      `SELECT evt.id, evt.user_id, u.email, u.email_verified, u.full_name, u.role
+       FROM email_verification_tokens evt
+       JOIN public.users u ON u.id = evt.user_id
+       WHERE evt.token = $1 AND evt.used = false AND evt.expires_at > NOW()`,
+      [token]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(400).json({ error: "Verification link is invalid or has expired. Request a new one." });
+    }
+
+    const row = result.rows[0];
+    const wasAlreadyVerified = row.email_verified;
+
+    if (!wasAlreadyVerified) {
+      await pool.query(
+        "UPDATE public.users SET email_verified = true, email_verified_at = NOW() WHERE id = $1",
+        [row.user_id]
+      );
+    }
+    await pool.query("UPDATE email_verification_tokens SET used = true WHERE id = $1", [row.id]);
+
+    console.log(`✅ Email verified: ${row.email}`);
+
+    // Welcome email fires automatically on first successful verification —
+    // never on a re-verify of an already-verified account, and never
+    // blocking this response either way.
+    if (!wasAlreadyVerified) {
+      const firstName  = (row.full_name || '').split(' ')[0] || 'there';
+      const isLandlord = ['DEVELOPER', 'LANDLORD'].includes((row.role || '').toUpperCase());
+      const { subject, html } = isLandlord ? welcomeLandlordTemplate(firstName) : welcomeTenantTemplate(firstName);
+      EmailService.send({ to: row.email, subject, html, template: isLandlord ? 'welcome_landlord' : 'welcome_tenant' });
+    }
+
+    return res.json({ success: true, message: "Email verified successfully. You may now sign in." });
+  } catch (error: any) {
+    console.error("Verify email error:", error.message);
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/auth/resend-verification  { email }
+app.post("/api/auth/resend-verification", async (req: Request, res: Response): Promise<any> => {
+  const { email } = req.body;
+  if (!email) return res.status(400).json({ error: "Email required" });
+
+  try {
+    const userResult = await pool.query(
+      "SELECT id, full_name, email_verified FROM public.users WHERE email = $1",
+      [email.toLowerCase()]
+    );
+
+    // Anti-enumeration — same response whether or not the account exists.
+    if (userResult.rows.length === 0) {
+      return res.status(200).json({ message: "Verification link dispatched if account exists." });
+    }
+
+    const user = userResult.rows[0];
+    if (user.email_verified) {
+      return res.status(200).json({ message: "This email is already verified. You can sign in." });
+    }
+
+    const verificationToken = crypto.randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+
+    // Invalidate previous unused tokens, then store the new one — mirrors the
+    // forgot-password token-rotation pattern already used above.
+    await pool.query("DELETE FROM email_verification_tokens WHERE user_id = $1 AND used = false", [user.id]);
+    await pool.query(
+      `INSERT INTO email_verification_tokens (id, user_id, token, expires_at) VALUES ($1, $2, $3, $4)`,
+      [uuidv4(), user.id, verificationToken, expiresAt]
+    );
+
+    const verifyUrl = `${process.env.FRONTEND_URL || "https://nestedark.com"}/verify-email?token=${verificationToken}`;
+
+    // Fire-and-forget via the centralized EmailService — same reasoning as
+    // register/forgot-password: a slow or unreachable SMTP server must never
+    // hang this HTTP response.
+    {
+      const { subject, html } = verifyEmailTemplate(verifyUrl);
+      EmailService.send({ to: email, subject, html, template: 'verify_email' });
+    }
+
+    return res.status(200).json({ message: "Verification link dispatched." });
+  } catch (error: any) {
+    console.error("Resend verification error:", error.message);
+    return res.status(500).json({ error: "Mail dispatch failed. Check email configuration." });
+  }
+});
+
+// All recovery endpoints are handled inline above (forgot-password, verify-reset-token, reset-password, verify-email, resend-verification)
 
 // ============================================================================
 // ════════════════════════════════════════════════════════════════════════════
@@ -4277,48 +4229,19 @@ app.post("/api/payments/webhook",
                   const { tenant_name, tenant_email, unit_name, project_title } = tRes.rows[0];
                   const firstName = (tenant_name || 'Tenant').split(' ')[0];
                   const frontendUrl = process.env.FRONTEND_URL || 'https://nestedark.com';
-                  const milestoneEmoji = hitMilestone === 100 ? '✅' : hitMilestone === 75 ? '🔥' : hitMilestone === 50 ? '🚀' : '🎉';
-                  const milestoneMsg = hitMilestone === 100
-                    ? 'Your vault is fully funded! Disbursement to your landlord will proceed automatically.'
-                    : `You're ${hitMilestone}% of the way to your rent goal. Keep going!`;
-
-                  const mailer = getMailer();
-                  if (!mailer) return;
-                  await mailer.sendMail({
-                    from: `"Nested Ark OS" <${process.env.EMAIL_USER}>`,
-                    to:   tenant_email,
-                    subject: `${milestoneEmoji} Your Rent Vault is ${hitMilestone}% Funded — Nested Ark OS`,
-                    html: `
-                      <div style="background:#050505;color:white;padding:40px 28px;font-family:'Segoe UI',Arial,sans-serif;max-width:480px;margin:0 auto;border:1px solid #18181b;border-radius:16px;">
-                        <p style="color:#14b8a6;font-size:9px;font-weight:900;letter-spacing:4px;text-transform:uppercase;margin:0 0 12px;">Nested Ark OS · Vault Update</p>
-                        <h1 style="color:white;font-size:24px;font-weight:900;margin:0 0 4px;text-transform:uppercase;">
-                          ${milestoneEmoji} ${hitMilestone}% Funded
-                        </h1>
-                        <p style="color:#52525b;font-size:11px;margin:0 0 28px;">
-                          ${unit_name || ''}${project_title ? ` · ${project_title}` : ''}
-                        </p>
-                        <p style="color:#a1a1aa;font-size:14px;line-height:1.7;margin:0 0 8px;">
-                          Hello <strong style="color:white;">${firstName}</strong>,
-                        </p>
-                        <p style="color:#a1a1aa;font-size:14px;line-height:1.7;margin:0 0 28px;">${milestoneMsg}</p>
-                        <div style="background:#0d1f1f;border:1px solid #134e4a;border-radius:12px;padding:20px;text-align:center;margin-bottom:28px;">
-                          <p style="color:#52525b;font-size:10px;text-transform:uppercase;letter-spacing:1.5px;margin:0 0 6px;">Vault Progress</p>
-                          <p style="color:#14b8a6;font-size:40px;font-weight:900;margin:0;font-family:monospace;">${fundedPct}%</p>
-                          <p style="color:#3f3f46;font-size:11px;margin:6px 0 0;font-family:monospace;">
-                            ₦${Math.round(newBalance).toLocaleString()} of ₦${Math.round(target).toLocaleString()}
-                          </p>
-                        </div>
-                        <div style="text-align:center;margin-bottom:24px;">
-                          <a href="${frontendUrl}/tenant/vault" style="display:inline-block;background:#14b8a6;color:#000;padding:12px 32px;text-decoration:none;font-weight:900;border-radius:8px;text-transform:uppercase;font-size:11px;letter-spacing:2px;">
-                            View My Vault
-                          </a>
-                        </div>
-                        <p style="color:#3f3f46;font-size:9px;text-align:center;text-transform:uppercase;letter-spacing:1.5px;">
-                          Nested Ark OS · SHA-256 Secured · Impressions &amp; Impacts Ltd
-                        </p>
-                      </div>`,
+                  const { subject, html } = vaultMilestoneTemplate({
+                    firstName,
+                    vaultLabel: 'Rent Vault',
+                    hitMilestone,
+                    fundedPct,
+                    currentAmount: `₦${Math.round(newBalance).toLocaleString()}`,
+                    targetAmount: `₦${Math.round(target).toLocaleString()}`,
+                    ctaUrl: `${frontendUrl}/tenant/vault`,
                   });
-                  console.log(`[MILESTONE] ${hitMilestone}% notification sent → ${tenant_email}`);
+                  const result = await EmailService.send({ to: tenant_email, subject, html, template: 'vault_milestone', await: true });
+                  if (result?.success) {
+                    console.log(`[MILESTONE] ${hitMilestone}% notification sent → ${tenant_email}`);
+                  }
                 } catch (milestoneErr: any) {
                   console.error('[MILESTONE] Email failed (non-fatal):', milestoneErr.message);
                 }
@@ -4634,43 +4557,19 @@ app.post("/api/payments/webhook",
             const { full_name, email: tenantEmail } = uRes.rows[0];
             const firstName  = (full_name || 'Tenant').split(' ')[0];
             const frontendUrl = process.env.FRONTEND_URL || 'https://nestedark.com';
-            const milestoneEmoji = hitMilestone === 100 ? '✅' : hitMilestone === 75 ? '🔥' : hitMilestone === 50 ? '🚀' : '🎉';
-            const milestoneMsg = hitMilestone === 100
-              ? 'Your independent savings vault is fully funded! Disbursement will proceed when your landlord is onboarded.'
-              : `You're ${hitMilestone}% of the way to your savings goal. Keep going!`;
-
-            const mailer = getMailer();
-            if (!mailer) return;
-            await mailer.sendMail({
-              from: `"Nested Ark OS" <${process.env.EMAIL_USER}>`,
-              to:   tenantEmail,
-              subject: `${milestoneEmoji} Your Savings Vault is ${hitMilestone}% Funded — Nested Ark OS`,
-              html: `
-                <div style="background:#050505;color:white;padding:40px 28px;font-family:'Segoe UI',Arial,sans-serif;max-width:480px;margin:0 auto;border:1px solid #18181b;border-radius:16px;">
-                  <p style="color:#14b8a6;font-size:9px;font-weight:900;letter-spacing:4px;text-transform:uppercase;margin:0 0 12px;">Nested Ark OS · Vault Update</p>
-                  <h1 style="color:white;font-size:24px;font-weight:900;margin:0 0 28px;text-transform:uppercase;">
-                    ${milestoneEmoji} ${hitMilestone}% Funded
-                  </h1>
-                  <p style="color:#a1a1aa;font-size:14px;line-height:1.7;margin:0 0 8px;">Hello <strong style="color:white;">${firstName}</strong>,</p>
-                  <p style="color:#a1a1aa;font-size:14px;line-height:1.7;margin:0 0 28px;">${milestoneMsg}</p>
-                  <div style="background:#0d1f1f;border:1px solid #134e4a;border-radius:12px;padding:20px;text-align:center;margin-bottom:28px;">
-                    <p style="color:#52525b;font-size:10px;text-transform:uppercase;letter-spacing:1.5px;margin:0 0 6px;">Vault Progress</p>
-                    <p style="color:#14b8a6;font-size:40px;font-weight:900;margin:0;font-family:monospace;">${fundedPct}%</p>
-                    <p style="color:#3f3f46;font-size:11px;margin:6px 0 0;font-family:monospace;">
-                      ₦${Math.round(newBalance).toLocaleString()} of ₦${Math.round(target).toLocaleString()}
-                    </p>
-                  </div>
-                  <div style="text-align:center;margin-bottom:24px;">
-                    <a href="${frontendUrl}/tenant/vault" style="display:inline-block;background:#14b8a6;color:#000;padding:12px 32px;text-decoration:none;font-weight:900;border-radius:8px;text-transform:uppercase;font-size:11px;letter-spacing:2px;">
-                      View My Vault
-                    </a>
-                  </div>
-                  <p style="color:#3f3f46;font-size:9px;text-align:center;text-transform:uppercase;letter-spacing:1.5px;">
-                    Nested Ark OS · SHA-256 Secured · Impressions &amp; Impacts Ltd
-                  </p>
-                </div>`,
+            const { subject, html } = vaultMilestoneTemplate({
+              firstName,
+              vaultLabel: 'Savings Vault',
+              hitMilestone,
+              fundedPct,
+              currentAmount: `₦${Math.round(newBalance).toLocaleString()}`,
+              targetAmount: `₦${Math.round(target).toLocaleString()}`,
+              ctaUrl: `${frontendUrl}/tenant/vault`,
             });
-            console.log(`[STANDALONE-MILESTONE] ${hitMilestone}% notification sent → ${tenantEmail}`);
+            const result = await EmailService.send({ to: tenantEmail, subject, html, template: 'vault_milestone', await: true });
+            if (result?.success) {
+              console.log(`[STANDALONE-MILESTONE] ${hitMilestone}% notification sent → ${tenantEmail}`);
+            }
           } catch (e: any) {
             console.error('[STANDALONE-MILESTONE] Email failed (non-fatal):', e.message);
           }
@@ -6509,6 +6408,31 @@ app.post('/api/landlord/payout', authenticate, async (req: Request, res: Respons
       ]
     );
 
+    // ── Notifications: landlord confirmation + admin alert ────────────────
+    // Fire-and-forget — a notification failure must never affect the
+    // already-completed Paystack transfer or this response.
+    try {
+      const landlordRes = await pool.query(`SELECT email, full_name FROM public.users WHERE id=$1`, [userId]);
+      const landlord = landlordRes.rows[0];
+      if (landlord?.email) {
+        const { subject, html } = landlordDisbursementTemplate({
+          landlordName: landlord.full_name,
+          amount: `₦${netToLandlordNgn.toLocaleString()}`,
+          unitName: project_id ? `Project ${project_id}` : 'your rental account',
+          bankAccount: `${a.account_name} — ${a.bank_name}`,
+        });
+        EmailService.send({ to: landlord.email, subject, html, template: 'landlord_disbursement' });
+      }
+      const adminEmail = process.env.ADMIN_EMAIL || 'nestedark@gmail.com';
+      const { subject: adminSubject, html: adminHtml } = adminNotificationTemplate({
+        heading: 'Landlord Payout Processed',
+        message: `Reference ${reference}: ₦${netToLandlordNgn.toLocaleString()} net (₦${platformFeeNgn.toLocaleString()} fee) transferred to ${a.account_name} (${a.bank_name}) for user ${userId}.`,
+      });
+      EmailService.send({ to: adminEmail, subject: adminSubject, html: adminHtml, template: 'admin_notification' });
+    } catch (notifyErr: any) {
+      console.warn('[PAYOUT] Notification dispatch failed (non-fatal):', notifyErr.message);
+    }
+
     return res.json({
       success:             true,
       reference,
@@ -6521,7 +6445,7 @@ app.post('/api/landlord/payout', authenticate, async (req: Request, res: Respons
       account_name:        a.account_name,
       bank_name:           a.bank_name,
       ledger_hash:         h,
-      message: `₦\${netToLandlordNgn.toLocaleString()} transferred to \${a.account_name} at \${a.bank_name}. Platform fee: ₦\${platformFeeNgn.toLocaleString()} (2%).`,
+      message: `₦${netToLandlordNgn.toLocaleString()} transferred to ${a.account_name} at ${a.bank_name}. Platform fee: ₦${platformFeeNgn.toLocaleString()} (2%).`,
     });
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
@@ -8076,36 +8000,15 @@ app.get('/api/admin/overview', authenticate, async (req: Request, res: Response)
 // Flex-Pay Vaults · Mobilization Escrow · Reminders · Notice Generator · Dashboard
 // ============================================================================
 
-// ── HELPER: build nodemailer transporter ─────────────────────────────────────
+// ── COMPATIBILITY SHIM: getMailer() ──────────────────────────────────────────
+// The ONLY remaining consumer of this is `startReminderCron(pool, getMailer)`
+// at the bottom of this file — cron_scheduler.ts expects a function that
+// returns a transporter. Rather than create a second transporter, this just
+// hands back the SAME singleton EmailService owns, so scheduled jobs share
+// one pooled SMTP connection with every HTTP route. No route handler calls
+// this anymore — they all call EmailService.send() directly.
 function getMailer() {
-  const nodemailer = require('nodemailer');
-  return nodemailer.createTransport({
-    host:   process.env.EMAIL_HOST || 'smtp.gmail.com',
-    port:   parseInt(process.env.EMAIL_PORT  || '587'),
-    secure: process.env.EMAIL_PORT === '465',
-    auth:   { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
-  });
-}
-
-// ── HELPER: Ark-branded email wrapper ────────────────────────────────────────
-function arkEmail(subject: string, bodyHtml: string, actionBtn?: { label: string; url: string }) {
-  const btn = actionBtn
-    ? `<div style="text-align:center;margin:28px 0;">
-         <a href="${actionBtn.url}" style="background:#14b8a6;color:#000;padding:13px 30px;text-decoration:none;font-weight:900;border-radius:8px;text-transform:uppercase;font-size:11px;letter-spacing:2px;display:inline-block;">${actionBtn.label}</a>
-       </div>`
-    : '';
-  return `
-    <div style="background:#050505;color:#f4f4f5;padding:40px 32px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;max-width:520px;margin:0 auto;border:1px solid #1f2937;border-radius:12px;">
-      <p style="color:#14b8a6;font-size:9px;font-weight:900;letter-spacing:4px;text-transform:uppercase;margin:0 0 6px;">Nested Ark OS</p>
-      <h1 style="color:#fff;font-size:20px;font-weight:900;letter-spacing:-0.5px;text-transform:uppercase;margin:0 0 24px;">${subject}</h1>
-      ${bodyHtml}
-      ${btn}
-      <div style="border-top:1px solid #1f2937;padding-top:18px;margin-top:28px;">
-        <p style="color:#3f3f46;font-size:9px;text-transform:uppercase;letter-spacing:1.5px;text-align:center;margin:0;">
-          Impressions &amp; Impacts Ltd · Nested Ark OS · nestedark@gmail.com
-        </p>
-      </div>
-    </div>`;
+  return getTransporter();
 }
 
 // ── HELPER: generate HTML notice body ────────────────────────────────────────
@@ -8469,17 +8372,16 @@ app.post('/api/reminders/send-bulk', authenticate, async (req: Request, res: Res
     const roleCheck = await pool.query(`SELECT role FROM public.users WHERE id=$1`, [userId]);
     if (pRes.rows[0].sponsor_id !== userId && !['ADMIN'].includes(roleCheck.rows[0]?.role)) return res.status(403).json({ error: 'Only project owner or admin can send reminders' });
     const tenancies = await pool.query(`SELECT t.*, ru.unit_name, ru.rent_amount, p.title AS project_title, p.project_number FROM tenancies t JOIN rental_units ru ON ru.id = t.unit_id LEFT JOIN projects p ON p.id = t.project_id WHERE t.project_id = $1 AND t.status = 'ACTIVE'`, [project_id]);
-    const mailer = getMailer();
     const results: any[] = [];
     for (const t of tenancies.rows) {
-      try {
-        const html = arkEmail('Rent Payment Reminder', `<p style="color:#a1a1aa;font-size:13px;line-height:1.7;">Dear <strong style="color:white">${t.tenant_name}</strong>,<br><br>Your rent of <strong style="color:#14b8a6">₦${Number(t.rent_amount).toLocaleString()}</strong> for <strong style="color:white">${t.unit_name}</strong> at <strong style="color:white">${t.project_title}</strong> (${t.project_number}) is due. Please pay promptly to avoid a formal notice.</p>`, { label: 'Pay Now via Ark Portal', url: `${process.env.FRONTEND_URL}/tenant/pay/${t.id}` });
-        await mailer.sendMail({ from: `"Nested Ark OS" <${process.env.EMAIL_USER}>`, to: t.tenant_email, subject: `[ACTION REQUIRED] Rent Reminder — ${t.unit_name} · ${t.project_number}`, html });
+      const html = genericTemplate('Rent Payment Reminder', `<p style="color:#a1a1aa;font-size:13px;line-height:1.7;">Dear <strong style="color:white">${t.tenant_name}</strong>,<br><br>Your rent of <strong style="color:#14b8a6">₦${Number(t.rent_amount).toLocaleString()}</strong> for <strong style="color:white">${t.unit_name}</strong> at <strong style="color:white">${t.project_title}</strong> (${t.project_number}) is due. Please pay promptly to avoid a formal notice.</p>`, { label: 'Pay Now via Ark Portal', url: `${process.env.FRONTEND_URL}/tenant/pay/${t.id}` });
+      const sendResult = await EmailService.send({ to: t.tenant_email, subject: `[ACTION REQUIRED] Rent Reminder — ${t.unit_name} · ${t.project_number}`, html, template: 'rent_reminder', await: true });
+      if (sendResult?.success) {
         await pool.query(`INSERT INTO rent_reminders (tenancy_id, unit_id, project_id, reminder_type, sent_via, recipient_email, was_delivered) VALUES ($1,$2,$3,$4,'EMAIL',$5,true)`, [t.id, t.unit_id, project_id, reminder_type, t.tenant_email]);
         results.push({ tenancy_id: t.id, tenant: t.tenant_name, status: 'SENT' });
-      } catch (mailErr: any) {
-        await pool.query(`INSERT INTO rent_reminders (tenancy_id, unit_id, project_id, reminder_type, sent_via, recipient_email, was_delivered, error_msg) VALUES ($1,$2,$3,$4,'EMAIL',$5,false,$6)`, [t.id, t.unit_id, project_id, reminder_type, t.tenant_email, mailErr.message]);
-        results.push({ tenancy_id: t.id, tenant: t.tenant_name, status: 'FAILED', error: mailErr.message });
+      } else {
+        await pool.query(`INSERT INTO rent_reminders (tenancy_id, unit_id, project_id, reminder_type, sent_via, recipient_email, was_delivered, error_msg) VALUES ($1,$2,$3,$4,'EMAIL',$5,false,$6)`, [t.id, t.unit_id, project_id, reminder_type, t.tenant_email, sendResult?.error || 'unknown error']);
+        results.push({ tenancy_id: t.id, tenant: t.tenant_name, status: 'FAILED', error: sendResult?.error });
       }
     }
     return res.json({ success: true, sent: results.filter(r => r.status === 'SENT').length, failed: results.filter(r => r.status === 'FAILED').length, results });
@@ -8540,11 +8442,14 @@ app.post(['/api/notices/generate', '/api/notices/generate/'], authenticate, asyn
       metadata:    { notice_id: noticeRes.rows[0].id, notice_number: noticeNumber, notice_type, amount_overdue: overdue, days_overdue: daysOvd, ledger_hash: h },
     });
     try {
-      const mailer = getMailer();
-      const emailHtml = arkEmail(`${noticeNumber} — Formal Notice`, `<p style="color:#a1a1aa;font-size:13px;line-height:1.7;">Dear <strong style="color:white">${t.tenant_name}</strong>,<br><br>Please find attached a formal legal notice for <strong style="color:#14b8a6">${t.unit_name}</strong>, ${t.project_title}.<br><strong style="color:#ef4444">Arrears: ₦${overdue.toLocaleString()}</strong> · <strong style="color:#f97316">Deadline: ${deadlineStr}</strong></p>`, { label: 'Resolve via Ark Portal', url: `${process.env.FRONTEND_URL}/tenant/notices/${noticeRes.rows[0].id}` });
+      const emailHtml = genericTemplate(`${noticeNumber} — Formal Notice`, `<p style="color:#a1a1aa;font-size:13px;line-height:1.7;">Dear <strong style="color:white">${t.tenant_name}</strong>,<br><br>Please find attached a formal legal notice for <strong style="color:#14b8a6">${t.unit_name}</strong>, ${t.project_title}.<br><strong style="color:#ef4444">Arrears: ₦${overdue.toLocaleString()}</strong> · <strong style="color:#f97316">Deadline: ${deadlineStr}</strong></p>`, { label: 'Resolve via Ark Portal', url: `${process.env.FRONTEND_URL}/tenant/notices/${noticeRes.rows[0].id}` });
       const attachments = pdfBuffer ? [{ filename: `${noticeNumber}.pdf`, content: pdfBuffer, contentType: 'application/pdf' }] : [{ filename: `${noticeNumber}.html`, content: Buffer.from(noticeHtml), contentType: 'text/html' }];
-      await mailer.sendMail({ from: `"Nested Ark OS — Legal" <${process.env.EMAIL_USER}>`, to: t.tenant_email, subject: `FORMAL NOTICE: ${noticeNumber} — Rental Arrears · ${t.project_number}`, html: emailHtml, attachments });
-      await pool.query(`UPDATE legal_notices SET served_at=NOW(), status='SERVED' WHERE id=$1`, [noticeRes.rows[0].id]);
+      const sendResult = await EmailService.send({ to: t.tenant_email, subject: `FORMAL NOTICE: ${noticeNumber} — Rental Arrears · ${t.project_number}`, html: emailHtml, attachments, template: 'legal_notice', fromName: 'Nested Ark OS — Legal', await: true });
+      if (sendResult?.success) {
+        await pool.query(`UPDATE legal_notices SET served_at=NOW(), status='SERVED' WHERE id=$1`, [noticeRes.rows[0].id]);
+      } else {
+        console.warn('[NOTICE] Email delivery failed:', sendResult?.error);
+      }
     } catch (mailErr: any) { console.warn('[NOTICE] Email delivery failed:', mailErr.message); }
     // Always return JSON so the frontend can parse the response consistently.
     // If a PDF was generated, embed it as base64 so the client can trigger a download.
@@ -8612,27 +8517,23 @@ app.get('/api/rental/management/:projectId', authenticate, async (req: Request, 
 
 
 
-// ============================================================================
 // ════════════════════════════════════════════════════════════════════════════
 // MODULE: TENANT PORTAL — Dashboard · Vault · Notices · Contributions · Pay
 // Endpoints: /api/tenant …
 // ════════════════════════════════════════════════════════════════════════════
 // NESTED ARK — DUAL-CHANNEL MESSAGING + RECEIPT ENGINE + TENANT ENDPOINTS
-// File: backend/dual-channel.routes.ts
 //
-// PASTE THIS ENTIRE BLOCK into index.ts just BEFORE the 404 handler.
-//
-// New routes added:
+// Routes in this module:
 //  1.  PATCH  /api/flex-pay/contribute          — enhanced with dual-channel receipt
 //  2.  GET    /api/flex-pay/receipt/:id         — download digital receipt (PDF/HTML)
 //  3.  GET    /api/flex-pay/contributions/:tid  — contribution history for tenant
 //  4.  GET    /api/tenant/my-tenancy            — resolve tenancy from auth user
 //  5.  GET    /api/tenant/notices/:tenancyId    — tenant's own legal notices
 //  6.  POST   /api/messaging/send               — unified dual-channel dispatch
-//  7.  POST   /api/flex-pay/contribute          REPLACES existing with dual-channel
+//  7.  POST   /api/flex-pay/contribute          — dual-channel receipt version
 //
-// Also: adds dual-channel dispatch to the existing onboard POST
-// ============================================================================
+// Also includes dual-channel dispatch on the tenant onboarding POST.
+// ════════════════════════════════════════════════════════════════════════════
 
 // ── DUAL-CHANNEL DISPATCHER ───────────────────────────────────────────────────
 // Used internally by all critical events.
@@ -8810,22 +8711,21 @@ async function dispatchDualChannel(payload: DualChannelPayload): Promise<{ email
   const results = { emailOk: false, whatsappUrl: '' };
 
   // ── Channel 1: Email ───────────────────────────────────────────────────────
-  try {
-    const mailer = getMailer();
-    const attachments: any[] = [];
-    if (payload.pdfBuffer && payload.pdfFilename) {
-      attachments.push({ filename: payload.pdfFilename, content: payload.pdfBuffer, contentType: 'application/pdf' });
-    }
-    await mailer.sendMail({
-      from:    `"Nested Ark OS" <${process.env.EMAIL_USER}>`,
-      to:      payload.email,
-      subject: payload.subject,
-      html:    payload.emailHtml,
-      attachments,
-    });
-    results.emailOk = true;
-  } catch (emailErr: any) {
-    console.warn('[DUAL-CHANNEL] Email failed:', emailErr.message);
+  const attachments: any[] = [];
+  if (payload.pdfBuffer && payload.pdfFilename) {
+    attachments.push({ filename: payload.pdfFilename, content: payload.pdfBuffer, contentType: 'application/pdf' });
+  }
+  const sendResult = await EmailService.send({
+    to: payload.email,
+    subject: payload.subject,
+    html: payload.emailHtml,
+    attachments,
+    template: 'dual_channel',
+    await: true,
+  });
+  results.emailOk = !!sendResult?.success;
+  if (!sendResult?.success) {
+    console.warn('[DUAL-CHANNEL] Email failed:', sendResult?.error);
   }
 
   // ── Channel 2: WhatsApp ────────────────────────────────────────────────────
@@ -9236,7 +9136,7 @@ app.post('/api/messaging/send', authenticate, async (req: Request, res: Response
       return res.status(403).json({ error: 'Only property owner or admin can send messages' });
     }
 
-    const emailHtml = arkEmail(
+    const emailHtml = genericTemplate(
       subject || 'Message from Nested Ark',
       `<p style="color:#a1a1aa;font-size:13px;line-height:1.7;">Dear <strong style="color:white">${t.tenant_name}</strong>,<br><br>${message_body.replace(/\n/g, '<br>')}</p>`,
     );
@@ -9420,7 +9320,7 @@ app.post('/api/flex-pay/contribute', authenticate, async (req: Request, res: Res
           phone:       d.tenant_phone,
           name:        d.tenant_name,
           subject:     `${receiptNumber} — Payment Confirmed · ${d.project_number}`,
-          emailHtml:   arkEmail(`${receiptNumber}`, emailBody, { label: 'View My Vault', url: `${frontendUrl}/tenant/dashboard` }),
+          emailHtml:   genericTemplate(`${receiptNumber}`, emailBody, { label: 'View My Vault', url: `${frontendUrl}/tenant/dashboard` }),
           whatsappText: waText,
           pdfBuffer,
           pdfFilename: pdfBuffer ? `${receiptNumber}.pdf` : undefined,
@@ -9457,10 +9357,6 @@ app.post('/api/flex-pay/contribute', authenticate, async (req: Request, res: Res
 // The tenant dashboard calls these convenience URLs so it can load all data
 // in a single authenticated session without needing to first fetch the
 // tenancy_id and then make separate parameterised calls.
-//
-// HOW TO APPLY:
-//   Paste this entire block into index.ts JUST BEFORE the 404 handler:
-//     app.use((req, res) => { res.status(404).json({ error: "Not Found" }); });
 // ============================================================================
 
 // ── MIGRATION GUARD — run once on every startup, safe on existing DBs ─────────
@@ -10919,7 +10815,7 @@ app.post('/api/tenant/onboard', async (req: Request, res: Response): Promise<any
     const frontendUrl = process.env.FRONTEND_URL || 'https://nestedark.com';
     setImmediate(async () => {
       try {
-        const emailHtml = arkEmail(
+        const emailHtml = genericTemplate(
           `Welcome to Nested Ark, ${fullName.split(' ')[0]}!`,
           `<p style="color:#a1a1aa;font-size:13px;line-height:1.7;">Your digital tenancy for <strong style="color:white">${unit.unit_name}</strong> at <strong style="color:white">${unit.project_title}</strong> (${unit.project_number}) is now active.</p>
            <div style="background:#18181b;border:1px solid #27272a;border-radius:8px;padding:14px;margin:16px 0;">
@@ -10931,13 +10827,14 @@ app.post('/api/tenant/onboard', async (req: Request, res: Response): Promise<any
           { label: 'View My Rent Vault', url: `${frontendUrl}/tenant/dashboard` }
         );
         const waText = `*Welcome to Nested Ark* 🏠\n\nDear ${fullName.split(' ')[0]}, your digital tenancy for ${unit.unit_name} at ${unit.project_title} is now active.\n\n💳 Your ${frequency} installment: ${unit.currency||'NGN'} ${installment.toLocaleString()}\n🔐 Ledger Hash: ${h.slice(0,16)}…\n\nPlease check your email for your official Tenancy Handbook.\n\nView vault: ${frontendUrl}/tenant/dashboard`;
-        const mailer = getMailer();
-        await mailer.sendMail({
-          from: `"Nested Ark OS" <${process.env.EMAIL_USER}>`, to: email.toLowerCase().trim(),
+        const sendResult = await EmailService.send({
+          to: email.toLowerCase().trim(),
           subject: `OFFICIAL: Tenancy Confirmed — ${unit.unit_name} · ${unit.project_number}`,
           html: emailHtml,
+          template: 'tenancy_confirmed',
+          await: true,
         });
-        console.log(`[ONBOARD] Email sent → ${email}`);
+        if (sendResult?.success) console.log(`[ONBOARD] Email sent → ${email}`);
         console.log(`[ONBOARD] WhatsApp text ready for ${fullName} (${phone || 'no phone'})`);
       } catch(err: any) { console.warn('[ONBOARD] Welcome dispatch failed:', err.message); }
     });
@@ -13393,6 +13290,23 @@ async function startServer() {
     await ensureTablesExist();
     console.log("Tables verified");
 
+    // ── Initialize the EmailService singleton ────────────────────────────────
+    // Creates the ONE pooled SMTP transporter for the entire process and
+    // verifies connectivity. Must run before app.listen() so the very first
+    // request can send mail without a cold-start delay, and before the cron
+    // jobs below (which share the same transporter via getMailer()).
+    await initEmailService();
+
+    // Persist every email event (recipient, template, status, provider
+    // response, timestamp) to the email_logs table. Best-effort — if this
+    // insert ever fails, it's logged and swallowed; it must never affect
+    // the business transaction that triggered the email.
+    setDbLogger(async (entry) => {
+      await pool.query(
+        `INSERT INTO email_logs (id, recipient, template, status, provider_response, error_message) VALUES ($1,$2,$3,$4,$5,$6)`,
+        [uuidv4(), entry.recipient, entry.template, entry.status, entry.providerResponse || null, entry.errorMessage || null]
+      );
+    });
 
     // Start daily reminder & drawdown cron (08:00 WAT)
     startReminderCron(pool, getMailer);
