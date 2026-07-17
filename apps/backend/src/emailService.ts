@@ -202,15 +202,22 @@ async function sendWithRetry(opts: SendEmailOptions): Promise<SendEmailResult> {
 }
 
 export const EmailService = {
-  send(opts: SendEmailOptions): Promise<SendEmailResult> | void {
+  /**
+   * Always returns Promise<SendEmailResult>. Fire-and-forget callers can
+   * simply not `await` it — the send still happens in the background and
+   * errors are already caught/logged inside sendWithRetry either way.
+   * (Previously this had a conditional `Promise<SendEmailResult> | void`
+   * return type keyed off `opts.await`, which TypeScript can't narrow at
+   * the call site — every awaited call was typed as `void | SendEmailResult`
+   * and `.success`/`.error` access failed to compile. Same runtime
+   * behavior, just a real, single return type now.)
+   */
+  send(opts: SendEmailOptions): Promise<SendEmailResult> {
     if (!EMAIL_USER || !EMAIL_PASS) {
       logEmailEvent({ recipient: opts.to, template: opts.template || 'generic', status: 'FAILED', errorMessage: 'EMAIL_USER/EMAIL_PASS not configured' });
-      if (opts.await) return Promise.resolve({ success: false, error: 'Email not configured' });
-      return;
+      return Promise.resolve({ success: false, error: 'Email not configured' });
     }
-    if (opts.await) return sendWithRetry(opts);
-    sendWithRetry(opts); // fire-and-forget — errors already caught/logged above
-    return;
+    return sendWithRetry(opts); // caller decides whether to await; errors are already caught/logged inside
   },
 };
 
