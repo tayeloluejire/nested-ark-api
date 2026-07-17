@@ -19,13 +19,22 @@
 import nodemailer, { Transporter } from 'nodemailer';
 
 // ── Config ────────────────────────────────────────────────────────────────
-const EMAIL_HOST    = process.env.EMAIL_HOST || 'smtp.gmail.com';
-const EMAIL_PORT    = parseInt(process.env.EMAIL_PORT || '587', 10);
-const EMAIL_SECURE  = process.env.EMAIL_PORT === '465';
-const EMAIL_USER    = process.env.EMAIL_USER || '';
-const EMAIL_PASS    = process.env.EMAIL_PASS || '';
+// NOTE: reads SMTP_* first (what's actually set on Render), falls back to
+// EMAIL_* for local/dev convenience. Previously this only checked EMAIL_*,
+// which doesn't exist on Render — every value silently fell back to its
+// hardcoded default (smtp.gmail.com with no credentials), which is why boot
+// logged "Connection timeout": it was trying to reach Gmail, not Brevo.
+const EMAIL_HOST    = process.env.SMTP_HOST || process.env.EMAIL_HOST || 'smtp-relay.brevo.com';
+const EMAIL_PORT    = parseInt(process.env.SMTP_PORT || process.env.EMAIL_PORT || '587', 10);
+const EMAIL_SECURE  = (process.env.SMTP_SECURE || process.env.EMAIL_SECURE || 'false').toLowerCase() === 'true';
+const EMAIL_USER    = process.env.SMTP_USER || process.env.EMAIL_USER || '';   // SMTP login (e.g. a7af0c001@smtp-brevo.com) — used for auth only
+const EMAIL_PASS    = process.env.SMTP_PASS || process.env.EMAIL_PASS || '';
+// FROM_ADDRESS is the visible "From" address shown to recipients. Brevo's
+// SMTP login is not a real mailbox — the domain-authenticated address
+// (SPF/DKIM/DMARC verified on nestedark.com) belongs in EMAIL_FROM.
+const FROM_ADDRESS   = process.env.EMAIL_FROM || EMAIL_USER;
 const FROM_NAME      = process.env.EMAIL_FROM_NAME || 'Nested Ark OS';
-const SUPPORT_EMAIL  = process.env.SUPPORT_EMAIL || 'nestedark@gmail.com';
+const SUPPORT_EMAIL  = process.env.SUPPORT_EMAIL || process.env.EMAIL_FROM || 'nestedark@gmail.com';
 const FRONTEND_URL   = process.env.FRONTEND_URL || 'https://nestedark.com';
 const MAX_RETRIES    = 2;
 const RETRY_DELAY_MS = 1500;
@@ -62,7 +71,7 @@ export async function initEmailService(): Promise<void> {
     return;
   }
   if (!EMAIL_USER || !EMAIL_PASS) {
-    console.error('[EmailService] EMAIL_USER / EMAIL_PASS not set — email sending will be disabled until configured.');
+    console.error('[EmailService] SMTP_USER / SMTP_PASS (or EMAIL_USER / EMAIL_PASS) not set — email sending will be disabled until configured.');
   }
   _transporter = buildTransporter();
   _initialized = true;
@@ -162,7 +171,7 @@ function sleep(ms: number) {
 async function sendWithRetry(opts: SendEmailOptions): Promise<SendEmailResult> {
   const templateName = opts.template || 'generic';
   const mailOptions = {
-    from: `"${opts.fromName || FROM_NAME}" <${EMAIL_USER}>`,
+    from: `"${opts.fromName || FROM_NAME}" <${FROM_ADDRESS}>`,
     to: opts.to,
     subject: opts.subject,
     html: opts.html,
@@ -214,7 +223,7 @@ export const EmailService = {
    */
   send(opts: SendEmailOptions): Promise<SendEmailResult> {
     if (!EMAIL_USER || !EMAIL_PASS) {
-      logEmailEvent({ recipient: opts.to, template: opts.template || 'generic', status: 'FAILED', errorMessage: 'EMAIL_USER/EMAIL_PASS not configured' });
+      logEmailEvent({ recipient: opts.to, template: opts.template || 'generic', status: 'FAILED', errorMessage: 'SMTP_USER/SMTP_PASS not configured' });
       return Promise.resolve({ success: false, error: 'Email not configured' });
     }
     return sendWithRetry(opts); // caller decides whether to await; errors are already caught/logged inside
