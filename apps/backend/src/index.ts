@@ -1362,6 +1362,38 @@ const authenticate = (req: Request, res: Response, next: NextFunction) => {
   }
 };
 
+// ── requireVerifiedEmail ──────────────────────────────────────────────────────
+// Soft-gate for money-moving actions (vault creation, contributions, payouts).
+// Unverified users can still log in and browse — this only blocks the
+// specific endpoints it's attached to. Must run AFTER `authenticate` so
+// `req.userId` is already set.
+//
+// Deliberately re-checks the DATABASE on every call rather than trusting a
+// possibly-stale `email_verified` claim baked into the JWT at login time —
+// a user who verifies their email in one tab, using a token issued before
+// verification, would otherwise stay blocked until they log out and back in.
+// The extra query only runs on these few sensitive routes, not on every
+// authenticated request.
+const requireVerifiedEmail = async (req: Request, res: Response, next: NextFunction): Promise<any> => {
+  try {
+    const userId = (req as any).userId;
+    const result = await pool.query("SELECT email_verified FROM public.users WHERE id = $1", [userId]);
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "User not found" });
+    }
+    if (!result.rows[0].email_verified) {
+      return res.status(403).json({
+        error: "Please verify your email address before performing this action.",
+        code: "EMAIL_NOT_VERIFIED",
+      });
+    }
+    next();
+  } catch (error: any) {
+    console.error("requireVerifiedEmail check failed:", error.message);
+    return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
+  }
+};
+
 // ============================================================================
 // ════════════════════════════════════════════════════════════════════════════
 // MODULE: AUTH — Registration · Login · Email Verification · Password Reset
@@ -6297,7 +6329,7 @@ app.get('/api/landlord/paystack-balance', authenticate, async (req: Request, res
 
 // ── POST /api/landlord/payout — trigger Paystack transfer to landlord ────────
 // Called automatically by the cron or manually by admin after rent is collected
-app.post('/api/landlord/payout', authenticate, async (req: Request, res: Response): Promise<any> => {
+app.post('/api/landlord/payout', authenticate, requireVerifiedEmail, async (req: Request, res: Response): Promise<any> => {
   const userId = (req as any).userId;
   try {
     const { bank_account_id, amount_ngn, project_id, reason } = req.body;
@@ -8173,7 +8205,7 @@ async function generateNoticePDF(html: string): Promise<Buffer | null> {
 // ── 1. FLEX-PAY VAULT ─────────────────────────────────────────────────────────
 
 // POST /api/flex-pay/setup
-app.post('/api/flex-pay/setup', authenticate, async (req: Request, res: Response): Promise<any> => {
+app.post('/api/flex-pay/setup', authenticate, requireVerifiedEmail, async (req: Request, res: Response): Promise<any> => {
   const userId = (req as any).userId;
   const { tenancy_id, frequency, cashout_mode, drawdown_day } = req.body;
   if (!tenancy_id || !frequency) return res.status(400).json({ error: 'tenancy_id and frequency required' });
@@ -9194,7 +9226,7 @@ app.post('/api/messaging/send', authenticate, async (req: Request, res: Response
 });
 
 // ── 6. POST /api/flex-pay/contribute — dual-channel receipt version ──────────
-app.post('/api/flex-pay/contribute', authenticate, async (req: Request, res: Response): Promise<any> => {
+app.post('/api/flex-pay/contribute', authenticate, requireVerifiedEmail, async (req: Request, res: Response): Promise<any> => {
   const userId = (req as any).userId;
   const { vault_id, amount_ngn, paystack_ref } = req.body;
   if (!vault_id || !amount_ngn) return res.status(400).json({ error: 'vault_id and amount_ngn required' });
@@ -9536,7 +9568,7 @@ app.get('/api/tenant/my-vault', authenticate, async (req: Request, res: Response
 // Accepts: target_amount, installment_amount, frequency, and optional landlord
 // payout details (name, email, bank account). Vault is immediately active and
 // accepts Paystack contributions. When the landlord onboards, admin migrates it.
-app.post('/api/tenant/standalone-vault/init', authenticate, async (req: Request, res: Response): Promise<any> => {
+app.post('/api/tenant/standalone-vault/init', authenticate, requireVerifiedEmail, async (req: Request, res: Response): Promise<any> => {
   const userId = (req as any).userId;
   try {
     const uRes = await pool.query(`SELECT role, email, full_name FROM public.users WHERE id=$1`, [userId]);
@@ -9922,7 +9954,7 @@ app.get('/api/tenant/standalone-vault/:id/receipt', authenticate, async (req: Re
 // Platform covers Paystack fee (bearer:account). 2% platform fee at vault release.
 // Vault must exist — call /init first if not. Optional: pass `amount` to override
 // the default installment_amount.
-app.post('/api/tenant/standalone-vault/pay', authenticate, async (req: Request, res: Response): Promise<any> => {
+app.post('/api/tenant/standalone-vault/pay', authenticate, requireVerifiedEmail, async (req: Request, res: Response): Promise<any> => {
   const userId = (req as any).userId;
   const { amount } = req.body;
   try {
