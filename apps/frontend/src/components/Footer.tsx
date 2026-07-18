@@ -18,7 +18,7 @@ export default function Footer() {
                 { href:'https://twitter.com/NestedArkOS', Icon: Twitter },
                 { href:'https://linkedin.com/company/nested-ark', Icon: Linkedin },
                 { href:'https://github.com/tayeloluejire/nested-ark-api', Icon: Github },
-                { href:'mailto:nestedark@gmail.com', Icon: Mail },
+                { href:'mailto:info@nestedark.com', Icon: Mail },
               ].map(({ href, Icon }) => (
                 <a key={href} href={href} target={href.startsWith('mailto')? undefined:'_blank'} rel="noopener noreferrer"
                   className="p-2 rounded-lg border border-zinc-800 text-zinc-600 hover:text-teal-500 hover:border-teal-500/50 transition-all">
@@ -56,7 +56,7 @@ export default function Footer() {
           <div>
             <h4 className="text-white font-bold mb-5 text-xs uppercase tracking-widest flex items-center gap-2"><Globe size={12} className="text-teal-500"/> Contact</h4>
             <div className="space-y-3 text-sm text-zinc-500 mb-5">
-              <div className="flex items-center gap-2"><Mail size={12} className="text-teal-500 flex-shrink-0"/><a href="mailto:nestedark@gmail.com" className="hover:text-teal-500 transition-colors">nestedark@gmail.com</a></div>
+              <div className="flex items-center gap-2"><Mail size={12} className="text-teal-500 flex-shrink-0"/><a href="mailto:info@nestedark.com" className="hover:text-teal-500 transition-colors">info@nestedark.com</a></div>
               <div className="flex items-center gap-2"><Twitter size={12} className="text-teal-500 flex-shrink-0"/><a href="https://twitter.com/NestedArkOS" target="_blank" rel="noopener noreferrer" className="hover:text-teal-500 transition-colors">@NestedArk_OS</a></div>
               <div className="flex items-center gap-2"><Globe size={12} className="text-teal-500 flex-shrink-0"/><a href="https://iandi-studios.web.app" target="_blank" rel="noopener noreferrer" className="text-[10px] hover:text-teal-500 transition-colors">Impressions &amp; Impacts Ltd</a></div>
               <p className="text-zinc-600 text-[10px] font-mono">Lagos · London · Dubai</p>
