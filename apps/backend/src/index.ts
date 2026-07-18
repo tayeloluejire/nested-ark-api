@@ -1448,7 +1448,7 @@ app.post("/api/auth/register", async (req: Request, res: Response): Promise<any>
     if (error.code === '23505') return res.status(400).json({ error: "Email already registered" });
     if (error.code === '22001') return res.status(400).json({ error: "One of the fields you entered is too long. Please shorten it and try again." });
     console.error("Register error:", error.message);
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -1497,7 +1497,7 @@ app.post("/api/auth/login", async (req: Request, res: Response): Promise<any> =>
     });
   } catch (error: any) {
     console.error("Login error:", error.message);
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -1507,7 +1507,7 @@ app.get("/api/auth/me", authenticate, async (req: Request, res: Response): Promi
     if (result.rows.length === 0) return res.status(404).json({ error: "User not found" });
     return res.json({ success: true, user: result.rows[0] });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -1600,7 +1600,7 @@ app.post("/api/auth/verify-reset-token", async (req: Request, res: Response): Pr
     const masked = row.email.replace(/(.{2}).+(@.+)/, '$1***$2');
     return res.json({ valid: true, email_hint: masked });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -1656,7 +1656,7 @@ app.post("/api/auth/reset-password", async (req: Request, res: Response): Promis
     return res.json({ success: true, message: "Operator access key updated. You may now sign in." });
   } catch (error: any) {
     console.error("Reset password error:", error.message);
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -1710,7 +1710,7 @@ app.get("/api/auth/verify-email", async (req: Request, res: Response): Promise<a
     return res.json({ success: true, message: "Email verified successfully. You may now sign in." });
   } catch (error: any) {
     console.error("Verify email error:", error.message);
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -1893,7 +1893,7 @@ app.post("/api/projects", authenticate, async (req: Request, res: Response): Pro
   } catch (err: any) {
     await pool.query('ROLLBACK');
     console.error("Project create error:", err.message);
-    return res.status(500).json({ error: err.message });
+    console.error("Unhandled error:", err.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -1980,7 +1980,7 @@ app.get("/api/projects", async (req: Request, res: Response): Promise<any> => {
       offset: Number(offset),
     });
   } catch (err: any) {
-    return res.status(500).json({ error: err.message });
+    console.error("Unhandled error:", err.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -2086,7 +2086,7 @@ app.get('/api/projects/search', async (req: Request, res: Response): Promise<any
     });
   } catch (err: any) {
     console.error('[/api/projects/search]', err.message);
-    return res.status(500).json({ error: err.message });
+    console.error("Unhandled error:", err.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -2107,7 +2107,7 @@ app.get("/api/projects/my", authenticate, async (req: Request, res: Response): P
       [userId]
     );
     return res.json({ success: true, projects: result.rows });
-  } catch (err: any) { return res.status(500).json({ error: err.message }); }
+  } catch (err: any) { console.error("Unhandled error:", err.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // GET /api/projects/:projectId — full project detail with all documents and milestones
@@ -2125,7 +2125,7 @@ app.get("/api/projects/saved", authenticate, async (req: Request, res: Response)
       [userId]
     );
     return res.json({ success: true, projects: result.rows });
-  } catch (err: any) { return res.status(500).json({ error: err.message }); }
+  } catch (err: any) { console.error("Unhandled error:", err.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 app.get("/api/projects/convert", async (req: Request, res: Response): Promise<any> => {
@@ -2150,7 +2150,7 @@ app.get("/api/projects/convert", async (req: Request, res: Response): Promise<an
 
     return res.json({ success: true, projects, currency, rate, count: projects.length });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -2201,7 +2201,7 @@ app.get("/api/projects/:projectId", async (req: Request, res: Response): Promise
 
     return res.json({ success: true, project: result.rows[0] });
   } catch (err: any) {
-    return res.status(500).json({ error: err.message });
+    console.error("Unhandled error:", err.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -2251,7 +2251,7 @@ app.put("/api/projects/:projectId", authenticate, async (req: Request, res: Resp
        req.params.projectId]
     );
     return res.json({ success: true, project: result.rows[0] });
-  } catch (err: any) { return res.status(500).json({ error: err.message }); }
+  } catch (err: any) { console.error("Unhandled error:", err.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // DELETE /api/projects/:projectId
@@ -2266,7 +2266,7 @@ app.delete("/api/projects/:projectId", authenticate, async (req: Request, res: R
       return res.status(403).json({ error: "Not authorised" });
     await pool.query("DELETE FROM projects WHERE id=$1", [req.params.projectId]);
     return res.json({ success: true, message: "Project deleted" });
-  } catch (err: any) { return res.status(500).json({ error: err.message }); }
+  } catch (err: any) { console.error("Unhandled error:", err.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // GET /api/projects/:projectId/stats
@@ -2288,7 +2288,7 @@ app.get("/api/projects/:projectId/stats", async (req: Request, res: Response): P
         completed_milestones: s.completed,
       }
     });
-  } catch (err: any) { return res.status(500).json({ error: err.message }); }
+  } catch (err: any) { console.error("Unhandled error:", err.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── PROJECT DOCUMENTS ────────────────────────────────────────────────────────
@@ -2321,7 +2321,7 @@ app.post("/api/projects/:projectId/documents", authenticate, async (req: Request
        sort_order || 0, file_size_kb || null, mime_type || null, userId]
     );
     return res.status(201).json({ success: true, document: result.rows[0] });
-  } catch (err: any) { return res.status(500).json({ error: err.message }); }
+  } catch (err: any) { console.error("Unhandled error:", err.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // GET /api/projects/:projectId/documents — list all documents
@@ -2332,7 +2332,7 @@ app.get("/api/projects/:projectId/documents", async (req: Request, res: Response
       [req.params.projectId]
     );
     return res.json({ success: true, documents: result.rows });
-  } catch (err: any) { return res.status(500).json({ error: err.message }); }
+  } catch (err: any) { console.error("Unhandled error:", err.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // DELETE /api/projects/:projectId/documents/:docId
@@ -2346,7 +2346,7 @@ app.delete("/api/projects/:projectId/documents/:docId", authenticate, async (req
       return res.status(403).json({ error: "Not authorised" });
     await pool.query("DELETE FROM project_documents WHERE id=$1 AND project_id=$2", [req.params.docId, req.params.projectId]);
     return res.json({ success: true });
-  } catch (err: any) { return res.status(500).json({ error: err.message }); }
+  } catch (err: any) { console.error("Unhandled error:", err.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── PROJECT SAVE / WATCHLIST ─────────────────────────────────────────────────
@@ -2360,7 +2360,7 @@ app.post("/api/projects/:projectId/save", authenticate, async (req: Request, res
       [req.params.projectId, userId]
     );
     return res.json({ success: true, saved: true });
-  } catch (err: any) { return res.status(500).json({ error: err.message }); }
+  } catch (err: any) { console.error("Unhandled error:", err.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // DELETE /api/projects/:projectId/save
@@ -2369,7 +2369,7 @@ app.delete("/api/projects/:projectId/save", authenticate, async (req: Request, r
   try {
     await pool.query("DELETE FROM project_saves WHERE project_id=$1 AND user_id=$2", [req.params.projectId, userId]);
     return res.json({ success: true, saved: false });
-  } catch (err: any) { return res.status(500).json({ error: err.message }); }
+  } catch (err: any) { console.error("Unhandled error:", err.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // GET /api/projects/saved — user's saved/watchlisted projects
@@ -2407,7 +2407,7 @@ app.post("/api/projects/:projectId/milestones", authenticate, async (req: Reques
        estimated_start_date || null, estimated_completion_date || null]
     );
     return res.status(201).json({ success: true, milestone: result.rows[0] });
-  } catch (err: any) { return res.status(500).json({ error: err.message }); }
+  } catch (err: any) { console.error("Unhandled error:", err.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── MARKETPLACE STATS ────────────────────────────────────────────────────────
@@ -2443,7 +2443,7 @@ app.get("/api/marketplace/stats", async (req: Request, res: Response): Promise<a
         key_rates,
       }
     });
-  } catch (err: any) { return res.status(500).json({ error: err.message }); }
+  } catch (err: any) { console.error("Unhandled error:", err.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── PLATFORM REVENUE — Admin Revenue Dashboard ────────────────────────────────
@@ -2529,7 +2529,7 @@ app.get("/api/admin/revenue", authenticate, async (req: Request, res: Response):
       },
       config: (config as any).rows ?? [],
     });
-  } catch (err: any) { return res.status(500).json({ error: err.message }); }
+  } catch (err: any) { console.error("Unhandled error:", err.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // POST /api/projects/listing-fee/record — called after developer lists a project
@@ -2554,7 +2554,7 @@ app.post("/api/projects/listing-fee/record", authenticate, async (req: Request, 
     });
     await client.query('COMMIT');
     return res.json({ success: true, fee: REVENUE_CONFIG.LISTING_FEE_USD, message: 'Listing fee recorded. Project is now live.' });
-  } catch (err: any) { await client.query('ROLLBACK'); return res.status(500).json({ error: err.message }); }
+  } catch (err: any) { await client.query('ROLLBACK'); console.error("Unhandled error:", err.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
   finally { client.release(); }
 });
 
@@ -2577,7 +2577,7 @@ app.post("/api/supplier/commission", authenticate, async (req: Request, res: Res
     });
     await client.query('COMMIT');
     return res.json({ success: true, commission, supplier_pay: dispatch_value_usd - commission, message: `Supply commission of $${commission.toFixed(2)} recorded.` });
-  } catch (err: any) { await client.query('ROLLBACK'); return res.status(500).json({ error: err.message }); }
+  } catch (err: any) { await client.query('ROLLBACK'); console.error("Unhandled error:", err.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
   finally { client.release(); }
 });
 
@@ -2602,7 +2602,7 @@ app.post("/api/contractors/profile", authenticate, async (req: Request, res: Res
     );
     return res.status(201).json({ success: true, contractor: result.rows[0] });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -2629,7 +2629,7 @@ app.get("/api/contractors", async (req: Request, res: Response): Promise<any> =>
     const result = await pool.query(query, params);
     return res.json({ success: true, contractors: result.rows, count: result.rows.length });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -2639,7 +2639,7 @@ app.get("/api/contractors/:contractorId", async (req: Request, res: Response): P
     if (result.rows.length === 0) return res.status(404).json({ error: "Contractor not found" });
     return res.json({ success: true, contractor: result.rows[0] });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -2653,7 +2653,7 @@ app.put("/api/contractors/profile", authenticate, async (req: Request, res: Resp
     if (result.rows.length === 0) return res.status(404).json({ error: "Contractor not found" });
     return res.json({ success: true, contractor: result.rows[0] });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -2663,7 +2663,7 @@ app.get("/api/contractors/profile/me", authenticate, async (req: Request, res: R
     if (result.rows.length === 0) return res.status(404).json({ error: "Contractor profile not found" });
     return res.json({ success: true, contractor: result.rows[0] });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -2696,7 +2696,7 @@ app.post("/api/contractors/bids", authenticate, async (req: Request, res: Respon
 
     return res.status(201).json({ success: true, bid: result.rows[0], ledger_hash: bidHash });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -2713,7 +2713,7 @@ app.get("/api/contractors/bids/my", authenticate, async (req: Request, res: Resp
     );
     return res.json({ success: true, bids: result.rows, count: result.rows.length });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -2745,7 +2745,7 @@ app.get("/api/contractors/:contractorId/stats", async (req: Request, res: Respon
       }
     });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -2770,7 +2770,7 @@ app.post("/api/milestones", authenticate, async (req: Request, res: Response): P
     );
     return res.status(201).json({ success: true, milestone: result.rows[0] });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -2794,7 +2794,7 @@ app.get("/api/milestones", async (req: Request, res: Response): Promise<any> => 
     const result = await pool.query(query, params);
     return res.json({ success: true, milestones: result.rows, count: result.rows.length });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -2804,7 +2804,7 @@ app.get("/api/milestones/:milestoneId", async (req: Request, res: Response): Pro
     if (result.rows.length === 0) return res.status(404).json({ error: "Milestone not found" });
     return res.json({ success: true, milestone: result.rows[0] });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -2820,7 +2820,7 @@ app.put("/api/milestones/:milestoneId/status", authenticate, async (req: Request
     if (result.rows.length === 0) return res.status(404).json({ error: "Milestone not found" });
     return res.json({ success: true, milestone: result.rows[0] });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -2838,7 +2838,7 @@ app.put("/api/milestones/:milestoneId/progress", authenticate, async (req: Reque
     if (result.rows.length === 0) return res.status(404).json({ error: "Milestone not found" });
     return res.json({ success: true, milestone: result.rows[0] });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -2861,7 +2861,7 @@ app.post("/api/milestones/:milestoneId/verify", authenticate, async (req: Reques
 
     return res.status(201).json({ success: true, verification: result.rows[0] });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -2874,7 +2874,7 @@ app.get("/api/milestones/:milestoneId/verification", async (req: Request, res: R
     if (result.rows.length === 0) return res.status(404).json({ error: "Verification not found" });
     return res.json({ success: true, verification: result.rows[0] });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -2914,7 +2914,7 @@ app.post("/api/milestones/:milestoneId/approve", authenticate, async (req: Reque
       message: `Milestone ${approval_status.toLowerCase()} successfully`
     });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -2947,7 +2947,7 @@ app.post("/api/escrow/deposit", authenticate, async (req: Request, res: Response
     
     return res.status(201).json({ success: true, transaction: { id: transactionId, wallet_id: walletId, amount, type: 'DEPOSIT' } });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -2967,7 +2967,7 @@ app.get("/api/escrow/balance/:walletId", async (req: Request, res: Response): Pr
       } 
     });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -2984,7 +2984,7 @@ app.post("/api/escrow/hold", authenticate, async (req: Request, res: Response): 
     
     return res.status(201).json({ success: true, hold: { id: uuidv4(), wallet_id, amount, reason, status: 'ACTIVE' } });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -3039,7 +3039,7 @@ app.post("/api/escrow/release", authenticate, async (req: Request, res: Response
     return res.json({ success: true, message: "Funds released to contractor node", transaction: { id: transactionId, type: 'RELEASE', amount: releaseAmount } });
   } catch (error: any) {
     await pool.query('ROLLBACK');
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -3052,7 +3052,7 @@ app.get("/api/escrow/transactions/:walletId", async (req: Request, res: Response
     );
     return res.json({ success: true, transactions: result.rows || [], count: (result.rows || []).length });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -3062,7 +3062,7 @@ app.get("/api/escrow/transaction/:transactionId", async (req: Request, res: Resp
     if (result.rows.length === 0) return res.status(404).json({ error: "Transaction not found" });
     return res.json({ success: true, transaction: result.rows[0] });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -3081,7 +3081,7 @@ app.get("/api/escrow/holds/:walletId", async (req: Request, res: Response): Prom
       count: wallet.held_amount > 0 ? 1 : 0
     });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -3098,7 +3098,7 @@ app.post("/api/escrow/hold/cancel", authenticate, async (req: Request, res: Resp
 
     return res.json({ success: true, message: "Payment hold cancelled successfully" });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -3122,7 +3122,7 @@ app.post("/api/escrow/withdraw", authenticate, async (req: Request, res: Respons
 
     return res.json({ success: true, transaction: { id: transactionId, type: 'WITHDRAW', amount } });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -3157,7 +3157,7 @@ app.post("/api/escrow/settle", authenticate, async (req: Request, res: Response)
       } 
     });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -3177,7 +3177,7 @@ app.get("/api/ledger", async (req: Request, res: Response) => {
     );
     res.json({ logs: result.rows });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -3215,7 +3215,7 @@ app.post("/api/gov/verify-project", authenticate, async (req: Request, res: Resp
     res.json({ success: true, hash: vHash, verification_hash: vHash });
   } catch (error: any) {
     await pool.query('ROLLBACK');
-    res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -3347,7 +3347,7 @@ app.post("/api/milestones/approve-and-release", authenticate, async (req: Reques
     });
   } catch (error: any) {
     await client.query('ROLLBACK');
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   } finally {
     client.release();
   }
@@ -3371,7 +3371,7 @@ app.get("/api/investments", async (req: Request, res: Response) => {
     `);
     res.json({ investments: result.rows });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -3429,7 +3429,7 @@ app.post("/api/investments/commit", async (req: Request, res: Response) => {
 
     res.status(201).json({ success: true, investment: result.rows[0], ledger_hash: investHash });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -3480,7 +3480,7 @@ app.post("/api/projects/:projectId/apply", authenticate, async (req: Request, re
       message: "Application submitted successfully"
     });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -3497,7 +3497,7 @@ app.get("/health", async (req: Request, res: Response): Promise<any> => {
       timestamp: new Date().toISOString()
     });
   } catch (error: any) {
-    return res.status(500).json({ status: "unhealthy", error: error.message });
+    console.error("Health check error:", error.message); return res.status(500).json({ status: "unhealthy", error: "Service temporarily unavailable." });
   }
 });
 
@@ -3512,7 +3512,7 @@ app.get("/api/health", async (req: Request, res: Response): Promise<any> => {
       timestamp: new Date().toISOString()
     });
   } catch (error: any) {
-    return res.status(500).json({ status: "unhealthy", error: error.message });
+    console.error("Health check error:", error.message); return res.status(500).json({ status: "unhealthy", error: "Service temporarily unavailable." });
   }
 });
 
@@ -3579,7 +3579,8 @@ app.post("/api/milestones/:milestoneId/verify/ai", authenticate, async (req: Req
         }
       }
     } catch (fetchErr: any) {
-      return res.status(400).json({ error: "Could not fetch evidence image: " + fetchErr.message });
+      console.error("Evidence image fetch error:", fetchErr.message);
+      return res.status(400).json({ error: "Could not fetch the evidence image. Please check the URL and try again." });
     }
 
     if (!aiOk) {
@@ -3606,7 +3607,7 @@ app.post("/api/milestones/:milestoneId/verify/ai", authenticate, async (req: Req
 
     return res.json({ success: true, ai_status: 'VERIFIED', ai_hash: aiHash, reason: aiReason });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -3647,7 +3648,7 @@ app.post("/api/milestones/:milestoneId/verify/human", authenticate, async (req: 
 
     return res.json({ success: true, human_status: status, auditor_id: userId });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -3692,7 +3693,7 @@ app.post("/api/milestones/:milestoneId/verify/drone", async (req: Request, res: 
 
     return res.json({ success: true, drone_status: 'VERIFIED', drone_hash: droneHash });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -3720,7 +3721,7 @@ app.get("/api/milestones/:milestoneId/verification-status", async (req: Request,
       budget_allocation: m.budget_allocation,
     });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -3736,7 +3737,7 @@ app.get("/api/ledger/full", async (req: Request, res: Response): Promise<any> =>
     const result = await pool.query(query, params);
     return res.json({ success: true, logs: result.rows, count: result.rows.length });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -3763,7 +3764,7 @@ app.post("/api/auth/update-role", async (req: Request, res: Response): Promise<a
     console.log(`[ADMIN] Role updated: ${email} -> ${new_role}`);
     return res.json({ success: true, user: result.rows[0], message: `${email} elevated to ${new_role}. Sign out and back in to activate.` });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -3780,7 +3781,7 @@ app.get("/api/admin/users", authenticate, async (req: Request, res: Response): P
     );
     return res.json({ success: true, users: result.rows, count: result.rows.length });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -3832,7 +3833,7 @@ app.get("/api/admin/approval-queue", authenticate, async (req: Request, res: Res
 
     return res.json({ success: true, milestones: rows, count: rows.length });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -3872,7 +3873,7 @@ app.get("/api/admin/summary", authenticate, async (req: Request, res: Response):
       }
     });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -3903,7 +3904,7 @@ app.post("/api/admin/milestones/:milestoneId/human-approve", authenticate, async
     );
     return res.json({ success: true, human_status: status, ledger_hash: lHash });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -4023,7 +4024,7 @@ app.post("/api/admin/milestones/:milestoneId/release", authenticate, async (req:
     });
   } catch (error: any) {
     await client.query('ROLLBACK');
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   } finally { client.release(); }
 });
 
@@ -4854,7 +4855,8 @@ app.post("/api/payments/initialize", authenticate, async (req: Request, res: Res
 
     if (!paystackData.status) {
       console.error('[PAYSTACK] Init failed:', paystackData);
-      return res.status(502).json({ error: 'Payment gateway error: ' + paystackData.message });
+      console.error("Paystack transfer error:", paystackData.message);
+      return res.status(502).json({ error: 'Payment gateway error. Please try again shortly or contact support.' });
     }
 
     // Store pending transaction in our DB so webhook can complete it
@@ -4867,7 +4869,7 @@ app.post("/api/payments/initialize", authenticate, async (req: Request, res: Res
     return res.json({ success: true, data: paystackData.data, reference });
   } catch (err: any) {
     console.error('[PAYSTACK] Initialize error:', err.message);
-    return res.status(500).json({ error: err.message });
+    console.error("Unhandled error:", err.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -4903,7 +4905,7 @@ app.get("/api/payments/verify/:reference", authenticate, async (req: Request, re
       project_id: dbTx.rows[0]?.project_id,
     });
   } catch (err: any) {
-    return res.status(500).json({ error: err.message });
+    console.error("Unhandled error:", err.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -4920,7 +4922,7 @@ app.get("/api/payments/history", authenticate, async (req: Request, res: Respons
     );
     return res.json({ success: true, transactions: result.rows });
   } catch (err: any) {
-    return res.status(500).json({ error: err.message });
+    console.error("Unhandled error:", err.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -4951,7 +4953,7 @@ app.post("/api/kyc/submit", authenticate, async (req: Request, res: Response): P
     await pool.query("INSERT INTO system_ledger (transaction_type, payload, immutable_hash) VALUES ($1, $2, $3)", ['KYC_SUBMITTED', JSON.stringify({ user_id: userId, id_type }), lHash]);
     return res.status(201).json({ success: true, kyc: result.rows[0], message: 'KYC submitted. Verification takes 1-3 business days.' });
   } catch (err: any) {
-    return res.status(500).json({ error: err.message });
+    console.error("Unhandled error:", err.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -4963,7 +4965,7 @@ app.get("/api/kyc/status", authenticate, async (req: Request, res: Response): Pr
     if (result.rows.length === 0) return res.json({ success: true, kyc_status: 'NOT_SUBMITTED', record: null });
     return res.json({ success: true, kyc_status: result.rows[0].kyc_status, record: result.rows[0] });
   } catch (err: any) {
-    return res.status(500).json({ error: err.message });
+    console.error("Unhandled error:", err.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -4984,7 +4986,7 @@ app.post("/api/admin/kyc/:userId/review", authenticate, async (req: Request, res
     await pool.query("INSERT INTO system_ledger (transaction_type, payload, immutable_hash) VALUES ($1, $2, $3)", [approved ? 'KYC_VERIFIED' : 'KYC_REJECTED', JSON.stringify({ user_id: req.params.userId, reviewer: adminId, status }), lHash]);
     return res.json({ success: true, kyc: result.rows[0] });
   } catch (err: any) {
-    return res.status(500).json({ error: err.message });
+    console.error("Unhandled error:", err.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -4999,7 +5001,7 @@ app.get("/api/admin/kyc", authenticate, async (req: Request, res: Response): Pro
     );
     return res.json({ success: true, records: result.rows, count: result.rows.length });
   } catch (err: any) {
-    return res.status(500).json({ error: err.message });
+    console.error("Unhandled error:", err.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -5025,7 +5027,7 @@ app.post("/api/seed", async (req: Request, res: Response): Promise<any> => {
     sponsor_id = userCheck.rows[0].id;
     console.log("🌱 SEED: Resolved sponsor UUID:", sponsor_id);
   } catch (lookupErr: any) {
-    return res.status(500).json({ error: "User lookup failed: " + lookupErr.message });
+    console.error("User lookup failed:", lookupErr.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 
   const client = await pool.connect();
@@ -5101,7 +5103,7 @@ app.post("/api/seed", async (req: Request, res: Response): Promise<any> => {
     });
   } catch (error: any) {
     await client.query('ROLLBACK');
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   } finally {
     client.release();
   }
@@ -5167,7 +5169,7 @@ app.get("/api/rates", async (req: Request, res: Response): Promise<any> => {
       cached_at: rateCache ? new Date(rateCache.fetchedAt).toISOString() : null,
     });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -5237,7 +5239,7 @@ app.get("/api/ticker/?", async (req: Request, res: Response): Promise<any> => {
 
     return res.json({ success: true, items: ticker, count: ticker.length });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -5285,7 +5287,7 @@ app.get("/api/geo/projects", async (req: Request, res: Response): Promise<any> =
 
     return res.json({ success: true, projects: converted, count: converted.length, currency, rate });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -5311,7 +5313,7 @@ app.post("/api/ticker/ad", authenticate, async (req: Request, res: Response): Pr
 
     return res.status(201).json({ success: true, ad: result.rows[0] });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -5328,7 +5330,7 @@ app.get("/api/admin/ticker", authenticate, async (req: Request, res: Response): 
     const items = await pool.query("SELECT * FROM ticker_news ORDER BY priority DESC, created_at DESC LIMIT 100");
     const ads = await pool.query("SELECT * FROM ticker_items WHERE active = true ORDER BY created_at DESC LIMIT 50");
     return res.json({ success: true, news: items.rows, ads: ads.rows });
-  } catch (err: any) { return res.status(500).json({ error: err.message }); }
+  } catch (err: any) { console.error("Unhandled error:", err.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // POST — push a new ticker item
@@ -5343,7 +5345,7 @@ app.post("/api/admin/ticker", authenticate, async (req: Request, res: Response):
       [content.trim(), item_type, sponsor_name || null, link_url || null, priority]
     );
     return res.status(201).json({ success: true, item: result.rows[0] });
-  } catch (err: any) { return res.status(500).json({ error: err.message }); }
+  } catch (err: any) { console.error("Unhandled error:", err.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // PUT — update a ticker item
@@ -5366,7 +5368,7 @@ app.put("/api/admin/ticker/:id", authenticate, async (req: Request, res: Respons
     );
     if (result.rows.length === 0) return res.status(404).json({ error: "Item not found" });
     return res.json({ success: true, item: result.rows[0] });
-  } catch (err: any) { return res.status(500).json({ error: err.message }); }
+  } catch (err: any) { console.error("Unhandled error:", err.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // DELETE — remove a ticker item
@@ -5376,7 +5378,7 @@ app.delete("/api/admin/ticker/:id", authenticate, async (req: Request, res: Resp
   try {
     await pool.query("DELETE FROM ticker_news WHERE id = $1", [req.params.id]);
     return res.json({ success: true });
-  } catch (err: any) { return res.status(500).json({ error: err.message }); }
+  } catch (err: any) { console.error("Unhandled error:", err.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // POST — toggle active status
@@ -5389,7 +5391,7 @@ app.post("/api/admin/ticker/:id/toggle", authenticate, async (req: Request, res:
       [req.params.id]
     );
     return res.json({ success: true, item: result.rows[0] });
-  } catch (err: any) { return res.status(500).json({ error: err.message }); }
+  } catch (err: any) { console.error("Unhandled error:", err.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // GET /api/ticker — public ticker feed (merges live activity + news items + rates)
@@ -5422,7 +5424,7 @@ app.get("/api/market/summary", async (req: Request, res: Response): Promise<any>
       }
     });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    console.error("Unhandled error:", error.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -5490,7 +5492,7 @@ app.get("/api/portfolio/summary", authenticate, async (req: Request, res: Respon
     });
   } catch (err: any) {
     console.error("Portfolio summary error:", err.message);
-    return res.status(500).json({ error: err.message });
+    console.error("Unhandled error:", err.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -5509,7 +5511,7 @@ app.get("/api/market/config", async (req: Request, res: Response): Promise<any> 
     result.rows.forEach((r: any) => { flat[r.key] = parseFloat(r.value); });
     return res.json({ success: true, config: result.rows, flat });
   } catch (err: any) {
-    return res.status(500).json({ error: err.message });
+    console.error("Unhandled error:", err.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -5540,7 +5542,7 @@ app.put("/api/admin/market/config", authenticate, async (req: Request, res: Resp
 
     return res.json({ success: true, config: result.rows[0] });
   } catch (err: any) {
-    return res.status(500).json({ error: err.message });
+    console.error("Unhandled error:", err.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -5578,7 +5580,7 @@ app.get("/api/investments/my", authenticate, async (req: Request, res: Response)
     return res.json({ success: true, investments: result.rows, count: result.rows.length });
   } catch (err: any) {
     console.error("Investments/my error:", err.message);
-    return res.status(500).json({ error: err.message });
+    console.error("Unhandled error:", err.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -5962,7 +5964,7 @@ app.get('/api/paystack/banks', authenticate, async (req: Request, res: Response)
     const data = await psRes.json() as any;
     if (!data.status) return res.status(500).json({ error: 'Could not fetch banks' });
     return res.json({ success: true, banks: data.data });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── POST /api/paystack/resolve-account — verify account number ──────────────
@@ -5976,9 +5978,9 @@ app.post('/api/paystack/resolve-account', authenticate, async (req: Request, res
       { headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` } }
     );
     const data = await psRes.json() as any;
-    if (!data.status) return res.status(400).json({ error: data.message || 'Could not verify account' });
+    if (!data.status) { console.error("Paystack resolve-account error:", data.message); return res.status(400).json({ error: 'Could not verify this account. Check the account number and bank, then try again.' }); }
     return res.json({ success: true, account_name: data.data.account_name, account_number: data.data.account_number });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── GET /api/landlord/payout-status — show all bank accounts + payout readiness ─
@@ -6010,7 +6012,7 @@ app.get('/api/landlord/payout-status', authenticate, async (req: Request, res: R
           : null,
       },
     });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── GET /api/landlord/bank-accounts — list saved bank accounts ───────────────
@@ -6031,7 +6033,7 @@ app.get('/api/landlord/bank-accounts', authenticate, async (req: Request, res: R
       [userId]
     );
     return res.json({ success: true, accounts: r.rows });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── POST /api/landlord/bank-accounts — save a bank account ──────────────────
@@ -6131,7 +6133,7 @@ app.post('/api/landlord/bank-accounts', authenticate, async (req: Request, res: 
        currency || 'NGN', recipientCode, subaccountCode, set_as_default ?? true]
     );
     return res.status(201).json({ success: true, account: r.rows[0] });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── POST /api/landlord/bank-accounts/:id/create-recipient — backfill recipient ─
@@ -6193,7 +6195,8 @@ app.post('/api/landlord/bank-accounts/:id/create-recipient', authenticate, async
       const prData = await prRes.json() as any;
 
       if (!prData.status || !prData.data?.recipient_code) {
-        return res.status(400).json({ error: prData.message || 'Paystack could not create recipient. Check account details.' });
+        console.error("Paystack recipient creation error:", prData.message);
+        return res.status(400).json({ error: 'Could not set up this payout destination. Check the account details and try again.' });
       }
       recipientCode = prData.data.recipient_code;
     }
@@ -6247,7 +6250,7 @@ app.post('/api/landlord/bank-accounts/:id/create-recipient', authenticate, async
         ? 'Recipient and subaccount created. Rent payments will now auto-split 98% landlord / 2% platform.'
         : 'Recipient code created. Subaccount creation failed — manual payout fallback active.',
     });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── DELETE /api/landlord/bank-accounts/:id — remove a bank account ───────────
@@ -6260,7 +6263,7 @@ app.delete('/api/landlord/bank-accounts/:id', authenticate, async (req: Request,
     );
     if (!r.rows.length) return res.status(404).json({ error: 'Account not found' });
     return res.json({ success: true });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── GET /api/landlord/paystack-balance — show available Paystack balance ────────
@@ -6273,7 +6276,7 @@ app.get('/api/landlord/paystack-balance', authenticate, async (req: Request, res
       headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` },
     });
     const balData = await balRes.json() as any;
-    if (!balData.status) return res.status(400).json({ error: balData.message || 'Could not fetch balance' });
+    if (!balData.status) { console.error("Paystack balance fetch error:", balData.message); return res.status(400).json({ error: 'Could not retrieve account balance right now. Please try again shortly.' }); }
 
     // Paystack returns balance in kobo — convert to NGN
     const balances = Array.isArray(balData.data) ? balData.data : [balData.data];
@@ -6289,7 +6292,7 @@ app.get('/api/landlord/paystack-balance', authenticate, async (req: Request, res
         ? 'Paystack settles collections to your balance the next business day (T+1). If rent was just collected, funds will be available tomorrow.'
         : null,
     });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── POST /api/landlord/payout — trigger Paystack transfer to landlord ────────
@@ -6463,7 +6466,7 @@ app.post('/api/landlord/payout', authenticate, async (req: Request, res: Respons
       ledger_hash:         h,
       message: `₦${netToLandlordNgn.toLocaleString()} transferred to ${a.account_name} at ${a.bank_name}. Platform fee: ₦${platformFeeNgn.toLocaleString()} (2%).`,
     });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── GET /api/landlord/payout-history — list past payouts ────────────────────
@@ -6478,7 +6481,7 @@ app.get('/api/landlord/payout-history', authenticate, async (req: Request, res: 
       [userId]
     );
     return res.json({ success: true, payouts: r.rows.map(row => ({ ...row, ...JSON.parse(row.payload) })) });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── GET /api/landlord/tenancies/active ─────────────────────────────────────
@@ -6526,7 +6529,7 @@ app.get('/api/landlord/tenancies/active', authenticate, async (req: Request, res
     );
     return res.json({ success: true, tenancies: r.rows, count: r.rows.length });
   } catch (e: any) {
-    return res.status(500).json({ error: e.message });
+    console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -6548,7 +6551,7 @@ app.get('/api/landlord/notices', authenticate, async (req: Request, res: Respons
     );
     return res.json({ success: true, notices: r.rows, count: r.rows.length });
   } catch (e: any) {
-    return res.status(500).json({ error: e.message });
+    console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 app.post('/api/rental/units', authenticate, async (req: Request, res: Response): Promise<any> => {
@@ -6682,7 +6685,7 @@ app.post('/api/rental/units', authenticate, async (req: Request, res: Response):
     }
 
     return res.status(201).json({ success: true, unit: r.rows[0] });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── GET /api/rental/units/single/:unitId — fetch ONE unit by its UUID ────
@@ -6708,7 +6711,7 @@ app.get('/api/rental/units/single/:unitId', authenticate, async (req: Request, r
     );
     if (!r.rows.length) return res.status(404).json({ error: 'Unit not found' });
     return res.json({ success: true, unit: r.rows[0] });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── GET /api/rental/landlord/tenants — alias kept for backward compat ────────
@@ -6746,7 +6749,7 @@ app.get('/api/rental/landlord/tenants', authenticate, async (req: Request, res: 
     // Return both shapes the frontend might expect
     return res.json({ success: true, tenancies: r.rows, tenants: r.rows, rows: r.rows, count: r.rows.length });
   } catch (e: any) {
-    return res.status(500).json({ error: e.message });
+    console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -6776,7 +6779,7 @@ app.get('/api/rental/tenants', authenticate, async (req: Request, res: Response)
       [landlordId]
     );
     return res.json(r.rows);
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── POST /api/rental/tenancies/lifecycle — edit particulars or terminate tenancy ─────────
@@ -6867,7 +6870,7 @@ app.post('/api/rental/tenancies/lifecycle', authenticate, async (req: Request, r
     }
 
     return res.status(400).json({ error: `Unknown action: ${action}` });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── GET /api/rental/invite/:token — PUBLIC: validate token, return unit/tenancy preview ──
@@ -6909,7 +6912,7 @@ app.get('/api/rental/invite/:token', async (req: Request, res: Response): Promis
       location: tenancy.location,
       country: tenancy.country,
     });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── POST /api/rental/consume-invite — links authenticated tenant user to their tenancy ──
@@ -6969,7 +6972,7 @@ app.post('/api/rental/consume-invite', authenticate, async (req: Request, res: R
     });
 
     return res.json({ success: true, message: 'Tenancy activated. Welcome to Nested Ark!' });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── POST /api/rental/onboard-tenant — landlord registers a tenant + creates Flex-Pay vault ──
@@ -7133,7 +7136,7 @@ app.post('/api/rental/onboard-tenant', authenticate, async (req: Request, res: R
 
   } catch (e: any) {
     console.error('[onboard-tenant]', e);
-    return res.status(500).json({ error: e.message });
+    console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -7148,7 +7151,7 @@ app.get('/api/rental/units/:projectId', authenticate, async (req: Request, res: 
       [req.params.projectId]
     );
     return res.json({ success: true, units: r.rows });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 
@@ -7241,7 +7244,7 @@ app.put('/api/rental/units/:id', authenticate, validateMediaPayload, async (req:
       metadata:    { fields_updated: Object.keys(req.body).filter(k => req.body[k] !== undefined && req.body[k] !== null) },
     });
     return res.json({ success: true, unit: r.rows[0] });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── PATCH /api/rental/units/:id/status — set VACANT/MAINTENANCE/PENDING ─────
@@ -7265,7 +7268,7 @@ app.patch('/api/rental/units/:id/status', authenticate, async (req: Request, res
       [status, id]
     );
     return res.json({ success: true, unit: r.rows[0] });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── POST /api/rental/tenancies — create a lease ──────────────────────────
@@ -7301,7 +7304,7 @@ app.delete('/api/rental/units/:id', authenticate, async (req: Request, res: Resp
       metadata:    { archived_by: userId },
     });
     return res.json({ success: true, message: 'Unit archived and removed from active inventory.' });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── POST /api/rental/marketplace/advertise — landlord pays to list vacant unit ──
@@ -7349,7 +7352,7 @@ app.post('/api/rental/marketplace/advertise', authenticate, async (req: Request,
       }),
     });
     const psData = await psRes.json() as any;
-    if (!psData.status) return res.status(502).json({ error: psData.message || 'Paystack error' });
+    if (!psData.status) { console.error("Paystack error:", psData.message); return res.status(502).json({ error: "Payment provider error. Please try again shortly." }); }
 
     return res.json({
       success:           true,
@@ -7358,7 +7361,7 @@ app.post('/api/rental/marketplace/advertise', authenticate, async (req: Request,
       listing_fee_ngn:   LISTING_FEE_NGN,
       message:           `Pay ₦${LISTING_FEE_NGN.toLocaleString()} to list this unit on the Nested Ark marketplace`,
     });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── GET /api/marketplace/discover — PUBLIC, no auth required ──────────────
@@ -7410,7 +7413,7 @@ app.get('/api/marketplace/discover', async (req: Request, res: Response): Promis
       page:     parseInt(page as string),
       limit:    parseInt(limit as string),
     });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── GET /api/marketplace/unit/:unitId — PUBLIC unit detail page ────────────
@@ -7428,7 +7431,7 @@ app.get('/api/marketplace/unit/:unitId', async (req: Request, res: Response): Pr
     );
     if (!result.rows.length) return res.status(404).json({ error: 'Listing not found' });
     return res.json({ success: true, unit: result.rows[0] });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 app.post('/api/rental/tenancies', authenticate, async (req: Request, res: Response): Promise<any> => {
@@ -7478,7 +7481,7 @@ app.post('/api/rental/tenancies', authenticate, async (req: Request, res: Respon
       tenancy: r.rows[0],
       ...(phoneWarningSR ? { phone_warning: phoneWarningSR } : {}),
     });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── POST /api/rental/payments/initialize — generate Paystack rent link ───
@@ -7587,7 +7590,7 @@ app.post('/api/rental/payments/initialize', async (req: Request, res: Response):
     });
 
     const psData = await psRes.json() as any;
-    if (!psData.status) return res.status(500).json({ error: psData.message ?? 'Paystack error' });
+    if (!psData.status) { console.error("Paystack error:", psData.message); return res.status(500).json({ error: "Payment provider error. Please try again shortly." }); }
 
     await pool.query(
       "UPDATE rent_payments SET paystack_access_code=$1 WHERE id=$2",
@@ -7604,7 +7607,7 @@ app.post('/api/rental/payments/initialize', async (req: Request, res: Response):
       tenant_email: t.tenant_email,
       unit_name: t.unit_name,
     });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── GET /api/rental/project/:projectId — full rental dashboard data ───────
@@ -7662,7 +7665,7 @@ app.get('/api/rental/project/:projectId', authenticate, async (req: Request, res
         total_distributions:  distributions.rows.length,
       },
     });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── POST /api/rental/stakeholders — set custom split for a project ────────
@@ -7699,7 +7702,7 @@ app.post('/api/rental/stakeholders', authenticate, async (req: Request, res: Res
     return res.json({ success: true, message: 'Stakeholder splits saved', total_pct: total });
   } catch (e: any) {
     await pool.query('ROLLBACK');
-    return res.status(500).json({ error: e.message });
+    console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -7715,7 +7718,7 @@ app.get('/api/rental/stakeholders/:projectId', authenticate, async (req: Request
     );
     return res.json({ success: true, splits: r.rows,
       total_pct: r.rows.reduce((s: number, x: any) => s + parseFloat(x.share_pct), 0) });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── GET /api/rental/portfolio — investor's rental income stream ───────────
@@ -7749,7 +7752,7 @@ app.get('/api/rental/portfolio', authenticate, async (req: Request, res: Respons
       summary: { total_received_ngn: totalNgn, total_received_usd: totalNgn/1379,
                  distribution_count: distributions.rows.length },
     });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── GET /api/rental/config — public rental split ratios ──────────────────
@@ -7759,7 +7762,7 @@ app.get('/api/rental/config', async (req: Request, res: Response): Promise<any> 
     return res.json({ success: true, config: Object.fromEntries(
       r.rows.map((row: any) => [row.key, { value: parseFloat(row.value), label: row.label }])
     )});
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── POST /api/maintenance — log a maintenance event ──────────────────────
@@ -7782,7 +7785,7 @@ app.post('/api/maintenance', authenticate, async (req: Request, res: Response): 
       [deduct[severity||'LOW']||2, project_id]
     );
     return res.status(201).json({ success: true, log: r.rows[0] });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── GET /api/maintenance/:projectId — get maintenance logs ───────────────
@@ -7796,7 +7799,7 @@ app.get('/api/maintenance/:projectId', authenticate, async (req: Request, res: R
       [req.params.projectId]
     );
     return res.json({ success: true, logs: r.rows });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 
@@ -8002,7 +8005,7 @@ app.get('/api/admin/overview', authenticate, async (req: Request, res: Response)
     });
   } catch (err: any) {
     console.error('[/api/admin/overview]', err.message);
-    return res.status(500).json({ error: err.message });
+    console.error("Unhandled error:", err.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -8197,7 +8200,7 @@ app.post('/api/flex-pay/setup', authenticate, async (req: Request, res: Response
     const h = crypto.createHash('sha256').update(`flex-vault-${vaultRes.rows[0].id}-${Date.now()}`).digest('hex');
     await pool.query(`INSERT INTO system_ledger (transaction_type, payload, immutable_hash) VALUES ($1,$2,$3)`, ['FLEX_VAULT_CREATED', JSON.stringify({ vault_id: vaultRes.rows[0].id, tenancy_id, frequency, installment }), h]);
     return res.status(201).json({ success: true, vault: vaultRes.rows[0], message: `Flex-Pay vault created. ${frequency} installment: ₦${installment.toLocaleString()}` });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // POST /api/flex-pay/contribute
@@ -8217,7 +8220,7 @@ app.get('/api/flex-pay/vault/:tenancyId', authenticate, async (req: Request, res
     if (!vault.rows.length) return res.status(404).json({ error: 'No vault found for this tenancy' });
     const v = vault.rows[0];
     return res.json({ success: true, vault: { ...v, funded_pct: Math.min(Math.round((parseFloat(v.vault_balance) / parseFloat(v.target_amount)) * 100), 100), total_contributed: parseFloat(v.total_contributed) } });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // POST /api/flex-pay/cashout
@@ -8312,7 +8315,7 @@ app.post('/api/flex-pay/cashout', authenticate, async (req: Request, res: Respon
         ? `₦${netPayout.toLocaleString()} transferred to landlord. Platform fee: ₦${platformFee.toLocaleString()} (2%).`
         : `Drawdown mode activated. ₦${Math.round(netPayout/12).toLocaleString()}/month will be disbursed on day ${v.drawdown_day}.`,
     });
-  } catch (e: any) { await client.query('ROLLBACK'); return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { await client.query('ROLLBACK'); console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── 2. MOBILIZATION ESCROW ────────────────────────────────────────────────────
@@ -8340,7 +8343,7 @@ app.post('/api/milestones/:milestoneId/mobilize', authenticate, async (req: Requ
     await client.query(`INSERT INTO system_ledger (transaction_type, payload, immutable_hash) VALUES ($1,$2,$3)`, ['MOBILIZATION_RELEASED', JSON.stringify({ milestone_id: milestoneId, project_id: m.project_id, total_budget: totalBudget, mobilization_pct: m.mobilization_pct || 70, mobilization_amount: mobilAmount, completion_held: completionAmt }), h]);
     await client.query('COMMIT');
     return res.json({ success: true, mobilization_amount: mobilAmount, completion_held: completionAmt, mobilization_pct: m.mobilization_pct || 70, message: `${m.mobilization_pct || 70}% mobilization (₦${mobilAmount.toLocaleString()}) released. 30% (₦${completionAmt.toLocaleString()}) held pending verification.`, ledger_hash: h });
-  } catch (e: any) { await client.query('ROLLBACK'); return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { await client.query('ROLLBACK'); console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // POST /api/milestones/:milestoneId/release-completion
@@ -8367,7 +8370,7 @@ app.post('/api/milestones/:milestoneId/release-completion', authenticate, async 
     await client.query(`INSERT INTO system_ledger (transaction_type, payload, immutable_hash) VALUES ($1,$2,$3)`, ['COMPLETION_RELEASED', JSON.stringify({ milestone_id: milestoneId, completion_amount: completionAmt, released_by: userId }), h]);
     await client.query('COMMIT');
     return res.json({ success: true, completion_amount: completionAmt, message: `Completion payment of ₦${completionAmt.toLocaleString()} released after tri-layer verification. Milestone PAID.`, ledger_hash: h });
-  } catch (e: any) { await client.query('ROLLBACK'); return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { await client.query('ROLLBACK'); console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // GET /api/milestones/:milestoneId/mobilization-status
@@ -8377,7 +8380,7 @@ app.get('/api/milestones/:milestoneId/mobilization-status', authenticate, async 
     if (!r.rows.length) return res.status(404).json({ error: 'Milestone not found' });
     const m = r.rows[0];
     return res.json({ success: true, milestone: m, mobilization_pct: m.mobilization_pct || 70, completion_pct: 100 - (m.mobilization_pct || 70), tri_layer_complete: m.ai_status === 'VERIFIED' && m.human_status === 'VERIFIED' && m.drone_status === 'VERIFIED', can_release_completion: m.mobilization_paid && !m.completion_paid && m.ai_status === 'VERIFIED' && m.human_status === 'VERIFIED' && m.drone_status === 'VERIFIED' });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── 3. AUTOMATED RENT REMINDERS ───────────────────────────────────────────────
@@ -8406,7 +8409,7 @@ app.post('/api/reminders/send-bulk', authenticate, async (req: Request, res: Res
       }
     }
     return res.json({ success: true, sent: results.filter(r => r.status === 'SENT').length, failed: results.filter(r => r.status === 'FAILED').length, results });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // GET /api/reminders/:projectId
@@ -8414,7 +8417,7 @@ app.get('/api/reminders/:projectId', authenticate, async (req: Request, res: Res
   try {
     const r = await pool.query(`SELECT rr.*, t.tenant_name, ru.unit_name FROM rent_reminders rr JOIN tenancies t ON t.id = rr.tenancy_id JOIN rental_units ru ON ru.id = rr.unit_id WHERE rr.project_id = $1 ORDER BY rr.sent_at DESC LIMIT 100`, [req.params.projectId]);
     return res.json({ success: true, reminders: r.rows, count: r.rows.length });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── 4. LEGAL NOTICE GENERATOR ─────────────────────────────────────────────────
@@ -8486,7 +8489,7 @@ app.post(['/api/notices/generate', '/api/notices/generate/'], authenticate, asyn
       pdf_base64:     pdfBuffer ? pdfBuffer.toString('base64') : null,
       message:        'Notice issued and emailed to tenant.',
     });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 
@@ -8496,7 +8499,7 @@ app.get('/api/notices/:projectId', authenticate, async (req: Request, res: Respo
   try {
     const r = await pool.query(`SELECT ln.*, t.tenant_name, t.tenant_email, ru.unit_name FROM legal_notices ln JOIN tenancies t ON t.id = ln.tenancy_id JOIN rental_units ru ON ru.id = ln.unit_id WHERE ln.project_id = $1 ORDER BY ln.issued_at DESC`, [req.params.projectId]);
     return res.json({ success: true, notices: r.rows, count: r.rows.length });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // GET /api/notices/download/:noticeId
@@ -8510,7 +8513,7 @@ app.get('/api/notices/download/:noticeId', authenticate, async (req: Request, re
     if (pdfBuffer) { res.setHeader('Content-Type', 'application/pdf'); res.setHeader('Content-Disposition', `attachment; filename="${n.notice_number}.pdf"`); return res.send(pdfBuffer); }
     res.setHeader('Content-Type', 'text/html');
     return res.send(noticeHtml);
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── 5. MANAGEMENT DASHBOARD ───────────────────────────────────────────────────
@@ -8531,7 +8534,7 @@ app.get('/api/rental/management/:projectId', authenticate, async (req: Request, 
     const occupiedUnits     = units.rows.filter((u: any) => u.tenancy_id).length;
     const totalVaultBalance = vaults.rows.reduce((s: number, v: any) => s + parseFloat(v.vault_balance || 0), 0);
     return res.json({ success: true, summary: { total_units: units.rows.length, occupied_units: occupiedUnits, vacant_units: units.rows.length - occupiedUnits, occupancy_pct: units.rows.length > 0 ? Math.round((occupiedUnits / units.rows.length) * 100) : 0, monthly_rent_ngn: totalMonthlyRent, total_vault_balance_ngn: totalVaultBalance, overdue_tenancies: overdue.rows.length, active_vaults: vaults.rows.filter((v: any) => v.status === 'ACTIVE').length, funded_vaults: vaults.rows.filter((v: any) => v.status === 'FUNDED_READY').length, pending_notices: notices.rows.filter((n: any) => n.status === 'ISSUED').length }, units: units.rows, tenancies: tenancies.rows, vaults: vaults.rows, reminders: reminders.rows, notices: notices.rows, overdue: overdue.rows });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── END POWERHOUSE ROUTES ─────────────────────────────────────────────────────
@@ -8917,7 +8920,7 @@ app.get('/api/flex-pay/contributions/:tenancyId', authenticate, async (req: Requ
       [tenancyId]
     );
     return res.json({ success: true, contributions: r.rows, count: r.rows.length });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── GET /api/rental/receipts/:projectId — all contributions across a project ──
@@ -8962,7 +8965,7 @@ app.get('/api/rental/receipts/:projectId', authenticate, async (req: Request, re
       [projectId, landlordId]
     );
     return res.json({ success: true, receipts: r.rows, count: r.rows.length });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── 2. GET /api/flex-pay/receipt/:contributionId — digital receipt PDF/HTML ───
@@ -9061,7 +9064,7 @@ app.get('/api/flex-pay/receipt/:contributionId', authenticate, async (req: Reque
     return res.send(html);
   } catch (e: any) {
     console.error('[/api/flex-pay/receipt]', e.message);
-    return res.status(500).json({ error: e.message });
+    console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -9114,7 +9117,7 @@ app.get('/api/tenant/my-tenancy', authenticate, async (req: Request, res: Respon
     }
     if (!tenancy.rows.length) return res.status(404).json({ error: 'No active tenancy found for this account' });
     return res.json({ success: true, ...tenancy.rows[0] });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── 4. GET /api/tenant/notices/:tenancyId — tenant's own notices ──────────────
@@ -9129,7 +9132,7 @@ app.get('/api/tenant/notices/:tenancyId', authenticate, async (req: Request, res
       [req.params.tenancyId]
     );
     return res.json({ success: true, notices: r.rows, count: r.rows.length });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── 5. POST /api/messaging/send — manual dual-channel dispatch ────────────────
@@ -9187,7 +9190,7 @@ app.post('/api/messaging/send', authenticate, async (req: Request, res: Response
       whatsapp_url:  whatsappUrl,
       message:       `Message dispatched. Email: ${emailOk ? '✓' : '✗ failed'}. WhatsApp link generated.`,
     });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── 6. POST /api/flex-pay/contribute — dual-channel receipt version ──────────
@@ -9366,7 +9369,7 @@ app.post('/api/flex-pay/contribute', authenticate, async (req: Request, res: Res
     });
   } catch (e: any) {
     await client.query('ROLLBACK');
-    return res.status(500).json({ error: e.message });
+    console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   } finally { client.release(); }
 });
 
@@ -9524,7 +9527,7 @@ app.get('/api/tenant/my-vault', authenticate, async (req: Request, res: Response
       },
     });
   } catch (e: any) {
-    return res.status(500).json({ error: e.message });
+    console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -9691,7 +9694,7 @@ app.post('/api/tenant/standalone-vault/init', authenticate, async (req: Request,
       message:             `Vault initialized. Save ₦${finalInstallment.toLocaleString()} ${freq.toLowerCase()} to reach your ₦${finalTarget.toLocaleString()} target. Your landlord will receive ₦${computedRentAmount.toLocaleString()} (100% rent).`,
     });
   } catch (e: any) {
-    return res.status(500).json({ error: e.message });
+    console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -9761,7 +9764,7 @@ app.get('/api/tenant/standalone-vault', authenticate, async (req: Request, res: 
       contributions: contribs.rows,
     });
   } catch (e: any) {
-    return res.status(500).json({ error: e.message });
+    console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -9845,7 +9848,7 @@ app.post('/api/tenant/standalone-vault/:id/payout-choice', authenticate, async (
         : `Funds will be released directly to your landlord (${bank_name} · ${account_number}) within 24 hours.`,
     });
   } catch (e: any) {
-    return res.status(500).json({ error: e.message });
+    console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -9910,7 +9913,7 @@ app.get('/api/tenant/standalone-vault/:id/receipt', authenticate, async (req: Re
       },
     });
   } catch (e: any) {
-    return res.status(500).json({ error: e.message });
+    console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -10011,7 +10014,7 @@ app.post('/api/tenant/standalone-vault/pay', authenticate, async (req: Request, 
       body:    JSON.stringify(psPayload),
     });
     const psData: any = await psRes.json();
-    if (!psData.status) return res.status(502).json({ error: psData.message || 'Paystack error' });
+    if (!psData.status) { console.error("Paystack error:", psData.message); return res.status(502).json({ error: "Payment provider error. Please try again shortly." }); }
 
     return res.json({
       success:            true,
@@ -10023,7 +10026,7 @@ app.post('/api/tenant/standalone-vault/pay', authenticate, async (req: Request, 
       total_charged_ngn:  baseAmountNaira,
     });
   } catch (e: any) {
-    return res.status(500).json({ error: e.message });
+    console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -10104,7 +10107,7 @@ app.get('/api/tenant/my-contributions', authenticate, async (req: Request, res: 
 
     return res.json({ success: true, contributions: r.rows, count: r.rows.length });
   } catch (e: any) {
-    return res.status(500).json({ error: e.message });
+    console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -10415,7 +10418,7 @@ app.get('/api/tenant/verify-payment', authenticate, async (req: Request, res: Re
       self_healed:        true,
     });
 
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── GET /api/tenant/my-notices ──────────────────────────────────────────────
@@ -10458,7 +10461,7 @@ app.get('/api/tenant/my-notices', authenticate, async (req: Request, res: Respon
 
     return res.json({ success: true, notices: r.rows, count: r.rows.length });
   } catch (e: any) {
-    return res.status(500).json({ error: e.message });
+    console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -10607,7 +10610,7 @@ app.post('/api/tenant/pay-installment', authenticate, async (req: Request, res: 
     });
 
     const psData: any = await psRes.json();
-    if (!psData.status) return res.status(502).json({ error: psData.message || 'Paystack error' });
+    if (!psData.status) { console.error("Paystack error:", psData.message); return res.status(502).json({ error: "Payment provider error. Please try again shortly." }); }
 
     return res.json({
       success:            true,
@@ -10619,7 +10622,7 @@ app.post('/api/tenant/pay-installment', authenticate, async (req: Request, res: 
       total_charged_ngn:  baseAmountNaira,
     });
   } catch (e: any) {
-    return res.status(500).json({ error: e.message });
+    console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -10702,7 +10705,7 @@ app.get('/api/tenant/receipt/:contributionId', authenticate, async (req: Request
     res.setHeader('Content-Disposition', `attachment; filename="receipt-${contributionId.slice(0,8)}.html"`);
     return res.send(html);
   } catch (e: any) {
-    return res.status(500).json({ error: e.message });
+    console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -10873,7 +10876,7 @@ app.post('/api/tenant/onboard', async (req: Request, res: Response): Promise<any
   } catch(e: any) {
     await client.query('ROLLBACK');
     console.error('[/api/tenant/onboard]', e.message);
-    return res.status(500).json({ error: e.message });
+    console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   } finally { 
     client.release(); 
   }
@@ -10923,7 +10926,7 @@ app.get('/api/landlord/units/?', authenticate, async (req: Request, res: Respons
     return res.json({ success: true, units: r.rows });
   } catch (e: any) {
     console.error('[LANDLORD_UNITS] error:', e.message);
-    return res.status(500).json({ success: false, units: [], error: e.message });
+    console.error("Unhandled error:", e.message); return res.status(500).json({ success: false, units: [], error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -11110,7 +11113,7 @@ app.get('/api/landlord/rent-dashboard', authenticate, async (req: Request, res: 
       tenancies:    enriched,
       transactions: transactions,
     });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 
@@ -11141,7 +11144,7 @@ app.get('/api/tenant/bank-accounts', authenticate, async (req: Request, res: Res
         next_debit_day:       r.rows.find((a: any) => a.is_default)?.preferred_debit_day ?? null,
       },
     });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 app.post('/api/tenant/bank-accounts', authenticate, async (req: Request, res: Response): Promise<any> => {
@@ -11189,7 +11192,7 @@ app.post('/api/tenant/bank-accounts', authenticate, async (req: Request, res: Re
       verified: isVerified, account_name: resolvedName,
       message: isVerified ? `Account verified: ${resolvedName}` : 'Account saved. Auto-verification unavailable — you can still use this account.',
     });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 app.patch('/api/tenant/bank-accounts/:id', authenticate, async (req: Request, res: Response): Promise<any> => {
@@ -11204,7 +11207,7 @@ app.patch('/api/tenant/bank-accounts/:id', authenticate, async (req: Request, re
     );
     if (!r.rows.length) return res.status(404).json({ error: 'Account not found' });
     return res.json({ success: true, account: r.rows[0] });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 app.post('/api/tenant/bank-accounts/:id/set-default', authenticate, async (req: Request, res: Response): Promise<any> => {
@@ -11215,7 +11218,7 @@ app.post('/api/tenant/bank-accounts/:id/set-default', authenticate, async (req: 
     await pool.query(`UPDATE tenant_bank_profiles SET is_default=false WHERE tenant_user_id=$1`, [userId]);
     await pool.query(`UPDATE tenant_bank_profiles SET is_default=true, updated_at=NOW() WHERE id=$1`, [id]);
     return res.json({ success: true, message: 'Default account updated' });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 app.post('/api/tenant/bank-accounts/:id/autopay-preference', authenticate, async (req: Request, res: Response): Promise<any> => {
@@ -11235,7 +11238,7 @@ app.post('/api/tenant/bank-accounts/:id/autopay-preference', authenticate, async
     return res.json({ success: true, account: r.rows[0], autopay_enabled: r.rows[0].direct_debit_enabled, mandate_status: r.rows[0].mandate_status,
       message: enable ? `AutoPay set: ₦${Number(preferred_amount).toLocaleString()} on day ${preferred_debit_day} monthly.` : 'AutoPay preference saved.',
       note: 'Full automatic deductions activate in the next platform update.' });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 app.delete('/api/tenant/bank-accounts/:id', authenticate, async (req: Request, res: Response): Promise<any> => {
@@ -11252,7 +11255,7 @@ app.delete('/api/tenant/bank-accounts/:id', authenticate, async (req: Request, r
     await logAudit({ event_type: 'TENANT_BANK_ACCOUNT_REMOVED', actor_id: userId, actor_role: 'TENANT', unit_id: null,
       description: `Tenant removed bank account: ${check.rows[0].bank_name}`, metadata: { account_id: id, bank_name: check.rows[0].bank_name } });
     return res.json({ success: true, message: 'Bank account removed.' });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 app.get('/api/tenant/autopay-status', authenticate, async (req: Request, res: Response): Promise<any> => {
@@ -11281,7 +11284,7 @@ app.get('/api/tenant/autopay-status', authenticate, async (req: Request, res: Re
         frequency: acct.frequency, vault_status: acct.vault_status,
       } : null,
     });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── GET /api/admin/founder-dashboard ─────────────────────────────────────────
@@ -11477,7 +11480,7 @@ app.get('/api/admin/founder-dashboard', authenticate, async (req: Request, res: 
       top_landlords:  topLandlords.rows,
       recent_signups: recentSignups.rows,
     });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 
@@ -11506,7 +11509,7 @@ app.get('/api/public/stats', async (req: Request, res: Response): Promise<any> =
       total_saved:  Math.round(totalSaved),
     });
   } catch (e: any) {
-    return res.status(500).json({ error: e.message });
+    console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -12162,7 +12165,7 @@ app.get('/api/rental/units/:id/advertise-status', authenticate, async (req: Requ
         : null,
       status:            u.status,
     });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── PATCH /api/rental/units/:id/unadvertise — landlord pulls listing manually ─
@@ -12197,7 +12200,7 @@ app.patch('/api/rental/units/:id/unadvertise', authenticate, async (req: Request
       metadata:    { removed_by: userId },
     });
     return res.json({ success: true, message: 'Listing removed from marketplace.' });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── Listing expiry auto-cron — runs at startup + daily via setInterval ────────
@@ -12472,7 +12475,7 @@ app.get('/api/tenant/dashboard', authenticate, async (req: Request, res: Respons
       recent_payments:     paymentsRes.rows,
       recent_maintenance:  maintRes.rows,
     });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── GET /api/tenant/rent-history — full rent_payments ledger for tenant ───
@@ -12544,7 +12547,7 @@ app.get('/api/tenant/rent-history', authenticate, async (req: Request, res: Resp
       limit,
       offset,
     });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── GET /api/tenant/receipt/:paymentId — receipt for a rent_payment ───────
@@ -12599,7 +12602,7 @@ app.get('/api/tenant/rent-receipt/:paymentId', authenticate, async (req: Request
       },
       generated_at: new Date().toISOString(),
     });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── POST /api/tenant/maintenance-request — tenant logs a maintenance issue ─
@@ -12639,7 +12642,7 @@ app.post('/api/tenant/maintenance-request', authenticate, async (req: Request, r
     });
 
     return res.status(201).json({ success: true, request: r.rows[0] });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── GET /api/tenant/maintenance-requests — tenant views their own requests ─
@@ -12658,7 +12661,7 @@ app.get('/api/tenant/maintenance-requests', authenticate, async (req: Request, r
       [tenancy.unit_id, userId]
     );
     return res.json({ success: true, requests: r.rows, unit_name: tenancy.unit_name });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── PATCH /api/tenant/profile — tenant updates their own contact details ──
@@ -12705,7 +12708,7 @@ app.patch('/api/tenant/profile', authenticate, async (req: Request, res: Respons
     });
 
     return res.json({ success: true, profile: r.rows[0] });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── POST /api/feature-waitlist — log interest in coming-soon features ────────
@@ -12731,7 +12734,7 @@ app.post('/api/feature-waitlist', async (req: Request, res: Response): Promise<a
       [userId, feature_name, email, source || 'register_page']);
     console.log(`[WAITLIST] ${feature_name} — user=${userId || 'anon'} email=${email || 'unknown'}`);
     return res.json({ success: true, message: `You're on the waitlist for ${feature_name}. We'll notify you when it launches.` });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -12766,7 +12769,7 @@ app.get('/api/audit/unit/:unitId', authenticate, async (req: Request, res: Respo
     );
     const total = await pool.query(`SELECT COUNT(*) FROM unit_audit_log WHERE unit_id=$1`, [unitId]);
     return res.json({ success: true, unit_id: unitId, logs: logs.rows, total: parseInt(total.rows[0].count), limit, offset });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── GET /api/audit/project/:projectId — all events across a project ────────
@@ -12800,7 +12803,7 @@ app.get('/api/audit/project/:projectId', authenticate, async (req: Request, res:
     );
     const total = await pool.query(`SELECT COUNT(*) FROM unit_audit_log ${where}`, params);
     return res.json({ success: true, project_id: projectId, logs: logs.rows, total: parseInt(total.rows[0].count), limit, offset });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── GET /api/audit/tenancy/:tenancyId — full event history for one tenancy ─
@@ -12828,7 +12831,7 @@ app.get('/api/audit/tenancy/:tenancyId', authenticate, async (req: Request, res:
       [tenancyId]
     );
     return res.json({ success: true, tenancy_id: tenancyId, logs: logs.rows });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 
@@ -12867,7 +12870,7 @@ app.get('/api/landlord/payout-failures', authenticate, async (req: Request, res:
         ? `${r.rows.length} payout(s) require attention. Contact support or verify your bank account details.`
         : 'No payout failures. All transfers are healthy.',
     });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ── POST /api/admin/trigger-payout/:vaultId — manual payout retry ─────────
@@ -12954,9 +12957,10 @@ app.post('/api/admin/trigger-payout/:vaultId', authenticate, async (req: Request
         description: `Admin-triggered payout FAILED: ${tData.message || 'Unknown error'}`,
         metadata:    { reference: payRef, error: tData.message, vault_id: vaultId },
       });
-      return res.status(502).json({ error: `Paystack rejected transfer: ${tData.message}`, reference: payRef });
+      console.error("Paystack transfer rejected:", tData.message);
+      return res.status(502).json({ error: 'Paystack rejected this transfer. Please verify the payout details and try again.', reference: payRef });
     }
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -13013,7 +13017,7 @@ app.post('/api/admin/dedup-tenancies', authenticate, async (req: Request, res: R
     });
   } catch (err: any) {
     console.error('[DEDUP] Error:', err.message);
-    return res.status(500).json({ error: err.message });
+    console.error("Unhandled error:", err.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -13125,7 +13129,7 @@ app.post('/api/admin/standalone-vault/:vaultId/migrate', authenticate, async (re
     });
   } catch (e: any) {
     console.error('[ADMIN] migrate standalone vault error:', e.message);
-    return res.status(500).json({ error: e.message });
+    console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -13207,7 +13211,7 @@ app.post('/api/admin/standalone-vault/:vaultId/release-escrow', authenticate, as
     });
   } catch (e: any) {
     console.error('[ADMIN] standalone vault release error:', e.message);
-    return res.status(500).json({ error: e.message });
+    console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
@@ -13276,7 +13280,7 @@ app.get('/api/admin/standalone-vaults', authenticate, async (req: Request, res: 
       })),
     });
   } catch (e: any) {
-    return res.status(500).json({ error: e.message });
+    console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
 });
 
