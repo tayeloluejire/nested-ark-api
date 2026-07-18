@@ -261,7 +261,7 @@ const ensureTablesExist = async () => {
         email VARCHAR(255) UNIQUE NOT NULL,
         password VARCHAR(255) NOT NULL,
         full_name VARCHAR(255),
-        phone VARCHAR(20),
+        phone VARCHAR(30),
         role VARCHAR(50) DEFAULT 'PROJECT_SPONSOR',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -399,6 +399,13 @@ const ensureTablesExist = async () => {
       );
 
       ALTER TABLE milestones ADD COLUMN IF NOT EXISTS payout_date TIMESTAMP;
+
+      -- users.phone was VARCHAR(20), too narrow for some real phone formats
+      -- (extensions, spaces, country-code punctuation) and caused a raw
+      -- Postgres "value too long for type character varying(20)" error to
+      -- reach the registration UI. Widening is safe/idempotent — never
+      -- loses data, no-op if already this width or wider.
+      ALTER TABLE users ALTER COLUMN phone TYPE VARCHAR(30);
 
       ALTER TABLE projects ADD COLUMN IF NOT EXISTS gov_verified BOOLEAN DEFAULT false;
       ALTER TABLE projects ADD COLUMN IF NOT EXISTS verification_hash VARCHAR(64);
@@ -1369,13 +1376,21 @@ app.post("/api/auth/register", async (req: Request, res: Response): Promise<any>
     if (!email || !password || !full_name) {
       return res.status(400).json({ error: "Email, password, and full_name required" });
     }
+    // Clean validation instead of letting the DB column limit throw a raw
+    // driver error at the user (was surfacing as "value too long for type
+    // character varying(20)" — a Postgres error, not a real validation
+    // message). The phone column has also been widened below as a
+    // second layer of defense.
+    if (phone && phone.trim().length > 30) {
+      return res.status(400).json({ error: "Phone number is too long (max 30 characters)." });
+    }
 
     const hashedPassword = await bcryptjs.hash(password, 12);
     const userId = uuidv4();
     
     const result = await pool.query(
       "INSERT INTO public.users (id, email, password, full_name, phone, role) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, email, full_name, role",
-      [userId, email.toLowerCase(), hashedPassword, full_name, phone || null, role || "PROJECT_SPONSOR"]
+      [userId, email.toLowerCase(), hashedPassword, full_name, phone?.trim() || null, role || "PROJECT_SPONSOR"]
     );
 
     const token = jwt.sign(
@@ -1431,6 +1446,7 @@ app.post("/api/auth/register", async (req: Request, res: Response): Promise<any>
     });
   } catch (error: any) {
     if (error.code === '23505') return res.status(400).json({ error: "Email already registered" });
+    if (error.code === '22001') return res.status(400).json({ error: "One of the fields you entered is too long. Please shorten it and try again." });
     console.error("Register error:", error.message);
     return res.status(500).json({ error: error.message });
   }

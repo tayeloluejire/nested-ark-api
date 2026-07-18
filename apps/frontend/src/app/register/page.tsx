@@ -40,7 +40,7 @@ import { useSearchParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
   Loader2, AlertCircle, ShieldCheck, Home, Info,
-  Wallet, Calendar, CheckCircle2, Building2, ArrowRight,
+  Wallet, Calendar, CheckCircle2, Building2, ArrowRight, Eye, EyeOff,
 } from 'lucide-react';
 
 import { useAuth } from '@/lib/AuthContext';
@@ -220,6 +220,7 @@ function RegisterContent() {
   const [bankLookupReady,          setBankLookupReady]          = useState(false);
   const [postAuthBankVerification, setPostAuthBankVerification] = useState(false);
   const [vaultProfileCreated,      setVaultProfileCreated]      = useState(false);
+  const [showPassword,             setShowPassword]             = useState(false);
 
   // ── Form state ────────────────────────────────────────────────────────────
   const [form, setForm] = useState({
@@ -332,6 +333,9 @@ function RegisterContent() {
     // Basic validation only
     if (!form.full_name.trim() || !form.email.trim() || !form.password.trim()) {
       setError('Full name, email and password are required.'); return;
+    }
+    if (form.phone.trim().length > 30) {
+      setError('Phone number is too long (max 30 characters).'); return;
     }
     const activeRoleId = isTenantInvite ? 'TENANT' : selectedRole?.id;
     if (!activeRoleId) { setError('Please select an account type.'); return; }
@@ -662,26 +666,50 @@ function RegisterContent() {
           </p>
 
           {[
-            { name: 'full_name', label: 'Full Name *',  type: 'text',     placeholder: 'e.g. Amaka Okonkwo',    mono: false },
-            { name: 'email',     label: 'Email *',      type: 'email',    placeholder: 'you@email.com',         mono: false },
-            { name: 'phone',     label: 'Phone',        type: 'tel',      placeholder: '+234 801 234 5678',     mono: true  },
-            { name: 'password',  label: 'Password *',   type: 'password', placeholder: '••••••••',              mono: false },
+            { name: 'full_name', label: 'Full Name *',  type: 'text',     placeholder: 'e.g. Amaka Okonkwo',    mono: false, maxLength: 255 },
+            { name: 'email',     label: 'Email *',      type: 'email',    placeholder: 'you@email.com',         mono: false, maxLength: 255 },
+            { name: 'phone',     label: 'Phone',        type: 'tel',      placeholder: '+234 801 234 5678',     mono: true,  maxLength: 30  },
+            { name: 'password',  label: 'Password *',   type: 'password', placeholder: '••••••••',              mono: false, maxLength: 255 },
           ].map(f => (
             <div key={f.name}>
               <label className="block text-[10px] text-zinc-400 uppercase font-black tracking-widest mb-2">
                 {f.label}
               </label>
-              <input
-                name={f.name}
-                type={f.type}
-                value={(form as any)[f.name]}
-                onChange={handleChange}
-                disabled={f.name === 'email' && isTenantInvite}
-                placeholder={f.placeholder}
-                className={`w-full bg-zinc-900 border border-zinc-800 px-4 py-3.5 rounded-xl text-sm outline-none focus:border-teal-500 transition-colors ${
-                  f.mono ? 'font-mono' : 'font-medium'
-                } ${f.name === 'email' && isTenantInvite ? 'opacity-60 cursor-not-allowed' : ''}`}
-              />
+              {f.name === 'password' ? (
+                <div className="relative">
+                  <input
+                    name={f.name}
+                    type={showPassword ? 'text' : 'password'}
+                    value={(form as any)[f.name]}
+                    onChange={handleChange}
+                    maxLength={f.maxLength}
+                    placeholder={f.placeholder}
+                    className="w-full bg-zinc-900 border border-zinc-800 pl-4 pr-12 py-3.5 rounded-xl text-sm outline-none focus:border-teal-500 transition-colors font-medium"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(v => !v)}
+                    tabIndex={-1}
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                    className="absolute right-4 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-teal-500 transition-colors"
+                  >
+                    {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                </div>
+              ) : (
+                <input
+                  name={f.name}
+                  type={f.type}
+                  value={(form as any)[f.name]}
+                  onChange={handleChange}
+                  disabled={f.name === 'email' && isTenantInvite}
+                  placeholder={f.placeholder}
+                  maxLength={f.maxLength}
+                  className={`w-full bg-zinc-900 border border-zinc-800 px-4 py-3.5 rounded-xl text-sm outline-none focus:border-teal-500 transition-colors ${
+                    f.mono ? 'font-mono' : 'font-medium'
+                  } ${f.name === 'email' && isTenantInvite ? 'opacity-60 cursor-not-allowed' : ''}`}
+                />
+              )}
             </div>
           ))}
         </div>
