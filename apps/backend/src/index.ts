@@ -6,6 +6,7 @@ import { v4 as uuidv4 } from "uuid";
 import bcryptjs from "bcryptjs";
 import cors from 'cors';
 import crypto from 'crypto';
+import { OAuth2Client } from 'google-auth-library';
 import { startReminderCron } from './cron_scheduler';
 import {
   EmailService,
@@ -177,6 +178,8 @@ const pool = new Pool({
 
 const JWT_SECRET: string = process.env.JWT_SECRET || "super-secret-key-change-this";
 const JWT_EXPIRY = (process.env.JWT_EXPIRY || "24h") as SignOptions['expiresIn'];
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
+const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
 const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET_KEY || '';
 const PAYSTACK_BASE = 'https://api.paystack.co';
 // Subaccount code from Paystack dashboard → Transaction Splits → Subaccounts
@@ -405,6 +408,15 @@ const ensureTablesExist = async () => {
       -- Postgres "value too long for type character varying(20)" error to
       -- reach the registration UI. Widening is safe/idempotent — never
       -- loses data, no-op if already this width or wider.
+      -- OAuth (Google Sign-In) support: accounts created via Google have no
+      -- password, so the NOT NULL constraint is relaxed. Existing rows are
+      -- unaffected — they already satisfy NOT NULL, this only changes what's
+      -- allowed going forward.
+      ALTER TABLE users ALTER COLUMN password DROP NOT NULL;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS oauth_provider VARCHAR(20);
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS oauth_id VARCHAR(255);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_users_oauth ON users(oauth_provider, oauth_id) WHERE oauth_id IS NOT NULL;
+
       ALTER TABLE users ALTER COLUMN phone TYPE VARCHAR(30);
 
       ALTER TABLE projects ADD COLUMN IF NOT EXISTS gov_verified BOOLEAN DEFAULT false;
@@ -1497,6 +1509,13 @@ app.post("/api/auth/login", async (req: Request, res: Response): Promise<any> =>
     }
 
     const user = result.rows[0];
+
+    // OAuth-only accounts (Google Sign-In) have no password set — bcryptjs.compare
+    // would throw on a null hash. Give a clear, actionable message instead.
+    if (!user.password) {
+      return res.status(400).json({ error: "This account uses Google Sign-In. Please continue with Google instead." });
+    }
+
     const valid = await bcryptjs.compare(password, user.password);
     if (!valid) {
       console.log(`❌ Login failed: Wrong password - ${email}`);
@@ -1796,6 +1815,135 @@ app.post("/api/auth/resend-verification", async (req: Request, res: Response): P
 });
 
 // All recovery endpoints are handled inline above (forgot-password, verify-reset-token, reset-password, verify-email, resend-verification)
+
+// ── POST /api/auth/google — Google Sign-In ───────────────────────────────────
+// Body: { credential: <Google ID token from Google Identity Services> }
+//
+// Behavior (per product decision):
+//   - Email already has a password account with the SAME email → AUTO-LINK.
+//     Google has independently proven ownership of that inbox, which is a
+//     stronger proof than our own unverified-password-account case — so this
+//     also immediately marks the account email_verified = true.
+//   - No account exists yet → create one. `role` is left NULL — the frontend
+//     must send the user through role selection (POST /api/auth/set-role)
+//     before they can do anything role-specific. This matches the decision
+//     to always confirm role choice, even for Google sign-ins.
+//   - Welcome email is NOT sent here — it fires from /api/auth/set-role the
+//     first time a role is actually assigned, since Welcome content is
+//     role-specific (tenant vs landlord) and brand-new Google users don't
+//     have a role yet at this point.
+app.post("/api/auth/google", async (req: Request, res: Response): Promise<any> => {
+  try {
+    const { credential } = req.body;
+    if (!credential) return res.status(400).json({ error: "Google credential required" });
+    if (!GOOGLE_CLIENT_ID) return res.status(503).json({ error: "Google Sign-In is not configured on this server." });
+
+    let payload: any;
+    try {
+      const ticket = await googleClient.verifyIdToken({ idToken: credential, audience: GOOGLE_CLIENT_ID });
+      payload = ticket.getPayload();
+    } catch (verifyErr: any) {
+      console.error("Google token verification failed:", verifyErr.message);
+      return res.status(401).json({ error: "Google sign-in could not be verified. Please try again." });
+    }
+
+    if (!payload?.email) return res.status(401).json({ error: "Google account has no email on file." });
+    if (!payload.email_verified) return res.status(401).json({ error: "Google account email is not verified." });
+
+    const email = payload.email.toLowerCase();
+    const googleId = payload.sub;
+    const fullName = payload.name || email.split('@')[0];
+
+    const existing = await pool.query("SELECT * FROM public.users WHERE email = $1", [email]);
+    let user: any;
+    let isNewUser = false;
+
+    if (existing.rows.length > 0) {
+      // ── Auto-link: existing account, same email, proven by Google ──────
+      user = existing.rows[0];
+      await pool.query(
+        `UPDATE public.users SET oauth_provider = 'google', oauth_id = $1, email_verified = true WHERE id = $2`,
+        [googleId, user.id]
+      );
+      user.email_verified = true;
+    } else {
+      // ── New account — role deliberately left NULL until confirmed ──────
+      isNewUser = true;
+      const userId = uuidv4();
+      const inserted = await pool.query(
+        `INSERT INTO public.users (id, email, password, full_name, role, email_verified, oauth_provider, oauth_id)
+         VALUES ($1, $2, NULL, $3, NULL, true, 'google', $4)
+         RETURNING id, email, full_name, role, email_verified`,
+        [userId, email, fullName, googleId]
+      );
+      user = inserted.rows[0];
+      console.log(`✅ User registered via Google: ${email}`);
+    }
+
+    const token = jwt.sign(
+      { id: user.id, email: user.email, role: user.role },
+      JWT_SECRET,
+      { expiresIn: JWT_EXPIRY }
+    );
+
+    return res.json({
+      success: true,
+      user: { id: user.id, email: user.email, full_name: user.full_name, role: user.role, email_verified: user.email_verified },
+      tokens: { access_token: token, expires_in: JWT_EXPIRY },
+      needs_role_selection: !user.role,
+      is_new_user: isNewUser,
+    });
+  } catch (error: any) {
+    console.error("Google sign-in error:", error.message);
+    return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
+  }
+});
+
+// ── POST /api/auth/set-role — role confirmation, shown on every Google sign-in ──
+// Per product decision: even returning users are shown a role-confirm step
+// on Google sign-in (not just brand-new accounts) — this endpoint handles
+// both "picking a role for the first time" and "reconfirming/changing it".
+// Welcome email fires ONLY on the true first assignment (role transitions
+// from NULL to a real value) — re-confirming an already-set role never
+// re-sends it.
+const VALID_ROLES = ['TENANT', 'DEVELOPER', 'LANDLORD', 'INVESTOR', 'CONTRACTOR', 'SUPPLIER', 'BANK', 'GOVERNMENT', 'VERIFIER', 'ADMIN', 'PROJECT_SPONSOR'];
+
+app.post("/api/auth/set-role", authenticate, async (req: Request, res: Response): Promise<any> => {
+  try {
+    const { role } = req.body;
+    const userId = (req as any).userId;
+    if (!role || !VALID_ROLES.includes(role)) {
+      return res.status(400).json({ error: "A valid role is required." });
+    }
+
+    const current = await pool.query("SELECT role, full_name, email FROM public.users WHERE id = $1", [userId]);
+    if (current.rows.length === 0) return res.status(404).json({ error: "User not found" });
+
+    const wasFirstAssignment = !current.rows[0].role;
+
+    const updated = await pool.query(
+      "UPDATE public.users SET role = $1 WHERE id = $2 RETURNING id, email, full_name, role",
+      [role, userId]
+    );
+    const user = updated.rows[0];
+
+    if (wasFirstAssignment) {
+      const firstName = (user.full_name || '').split(' ')[0] || 'there';
+      const isLandlord = ['DEVELOPER', 'LANDLORD'].includes(role.toUpperCase());
+      const { subject, html } = isLandlord ? welcomeLandlordTemplate(firstName) : welcomeTenantTemplate(firstName);
+      EmailService.send({ to: user.email, subject, html, template: isLandlord ? 'welcome_landlord' : 'welcome_tenant' });
+    }
+
+    // Issue a fresh token carrying the updated role so the frontend's stored
+    // JWT reflects it immediately, without requiring a re-login.
+    const token = jwt.sign({ id: user.id, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: JWT_EXPIRY });
+
+    return res.json({ success: true, user, tokens: { access_token: token, expires_in: JWT_EXPIRY } });
+  } catch (error: any) {
+    console.error("Set role error:", error.message);
+    return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
+  }
+});
 
 // ============================================================================
 // ════════════════════════════════════════════════════════════════════════════

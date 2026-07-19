@@ -99,6 +99,18 @@ interface AuthContextValue {
 
   login: (email: string, password: string) => Promise<void>;
 
+  /**
+   * Google Sign-In. Unlike `login`/`register`, this does NOT auto-redirect —
+   * per product decision, every Google sign-in (new or returning) must pass
+   * through role confirmation first. Returns whether a role still needs to
+   * be picked so the caller can route to the role-selection screen or
+   * straight to the dashboard.
+   */
+  loginWithGoogle: (credential: string) => Promise<{ needsRoleSelection: boolean }>;
+
+  /** Confirms/sets the user's role — called from the role-selection screen shown after every Google sign-in. */
+  setRole: (role: DbRole) => Promise<void>;
+
   register: (data: RegisterData) => Promise<void>;
 
   logout: () => void;
@@ -338,6 +350,41 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     window.location.href = roleHomePath(u.role, u.accountType);
   };
 
+  // ── Google Sign-In ────────────────────────────────────────────────────────
+  // Does not redirect itself — the caller (Google button component / login
+  // page) decides where to go based on needsRoleSelection, since every
+  // Google sign-in must pass through role confirmation per product decision.
+  const loginWithGoogle = async (credential: string) => {
+    const res = await api.post('/api/auth/google', { credential });
+
+    const jwt =
+      res.data.tokens?.access_token ??
+      res.data.token;
+
+    const storedAT = localStorage.getItem('ark_account_type');
+    const u        = buildUser(res.data.user, storedAT);
+
+    persist(jwt, u);
+
+    return { needsRoleSelection: !!res.data.needs_role_selection };
+  };
+
+  // ── Role confirmation (shown after every Google sign-in) ─────────────────
+  const setRole = async (role: DbRole) => {
+    const res = await api.post('/api/auth/set-role', { role });
+
+    const jwt =
+      res.data.tokens?.access_token ??
+      res.data.token;
+
+    const storedAT = localStorage.getItem('ark_account_type');
+    const u        = buildUser(res.data.user, storedAT);
+
+    persist(jwt, u);
+
+    window.location.href = roleHomePath(u.role, u.accountType);
+  };
+
   // ── Register ──────────────────────────────────────────────────────────────
   const register = async (data: RegisterData) => {
     const { accountType, ...backendData } = data;
@@ -404,7 +451,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       value={{
         user, token, loading,
         isLandlord, isInfraBuilder,
-        login, register, logout, refresh, setAccountType,
+        login, loginWithGoogle, setRole, register, logout, refresh, setAccountType,
       }}
     >
       {children}

@@ -46,6 +46,7 @@ api.interceptors.response.use(
     if (error.response?.status === 401 && typeof window !== 'undefined') {
       const isAuthRoute = config.url?.includes('/api/auth/login') ||
                           config.url?.includes('/api/auth/register') ||
+                          config.url?.includes('/api/auth/google') ||
                           config.url?.includes('/api/auth/forgot-password');
       if (!isAuthRoute) {
         localStorage.removeItem('ark_token');

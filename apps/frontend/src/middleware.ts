@@ -20,6 +20,7 @@ const PUBLIC_PATHS = new Set([
   '/forgot-password',
   '/reset-password',
   '/verify-email',
+  '/select-role',
   '/payment-success',
   '/payment-callback',
   '/marketplace',
