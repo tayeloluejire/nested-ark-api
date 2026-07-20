@@ -10,6 +10,7 @@ import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { useAuth } from '@/lib/AuthContext';
 import BrandLogo from '@/components/BrandLogo';
+import GoogleSignInButton from '@/components/GoogleSignInButton';
 import { Loader2, AlertCircle, Eye, EyeOff, Lock, Mail } from 'lucide-react';
 
 const REASON_MSG: Record<string, string> = {
@@ -114,6 +115,9 @@ function LoginContent() {
             {loading ? 'Signing in…' : 'Sign In'}
           </button>
         </form>
+
+        {/* ── Google Sign-In — renders its own "OR" divider ──────────────── */}
+        <GoogleSignInButton />
 
         <div className="space-y-3">
           <p className="text-center text-xs text-zinc-600">

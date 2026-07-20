@@ -46,6 +46,7 @@ import {
 import { useAuth } from '@/lib/AuthContext';
 import api from '@/lib/api';
 import BrandLogo from '@/components/BrandLogo';
+import GoogleSignInButton from '@/components/GoogleSignInButton';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const BANK_DRAFT_KEY = 'nested_ark_bank_draft';
@@ -972,6 +973,9 @@ function RegisterContent() {
             </span>
           )}
         </button>
+
+        {/* ── Google Sign-In — renders its own "OR" divider ──────────────── */}
+        <GoogleSignInButton />
 
         <p className="text-center text-zinc-600 text-xs">
           Already have an account?{' '}
