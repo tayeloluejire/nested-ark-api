@@ -11,7 +11,6 @@ import { startReminderCron } from './cron_scheduler';
 import {
   EmailService,
   initEmailService,
-  getTransporter,
   setDbLogger,
   genericTemplate,
   welcomeTenantTemplate,
@@ -8199,22 +8198,6 @@ app.get('/api/admin/overview', authenticate, async (req: Request, res: Response)
 // Flex-Pay Vaults · Mobilization Escrow · Reminders · Notice Generator · Dashboard
 // ============================================================================
 
-// ── COMPATIBILITY SHIM: getMailer() ──────────────────────────────────────────
-// The ONLY remaining consumer of this is `startReminderCron(pool, getMailer)`
-// at the bottom of this file — cron_scheduler.ts types its parameter as
-// `MailerFactory`, which expects a function returning a full nodemailer
-// `Transporter`. Since the email architecture moved to Brevo's HTTP API,
-// getTransporter() now returns a much simpler `MailTransport` (just
-// `.sendMail()`) — the only method cron_scheduler.ts actually calls. The
-// `as any` below is a type-level cast only; the object returned at runtime
-// is identical to what every other email call site in this file already
-// uses successfully. If cron_scheduler.ts is ever revised, its
-// `MailerFactory` type should be loosened to `() => { sendMail(...): ... }`
-// so this cast can be removed.
-function getMailer(): any {
-  return getTransporter();
-}
-
 // ── HELPER: generate HTML notice body ────────────────────────────────────────
 function buildNoticeHTML(opts: {
   noticeNumber: string; noticeType: string;
@@ -13496,10 +13479,10 @@ async function startServer() {
     console.log("Tables verified");
 
     // ── Initialize the EmailService singleton ────────────────────────────────
-    // Creates the ONE pooled SMTP transporter for the entire process and
+    // Creates the ONE pooled Brevo API transport for the entire process and
     // verifies connectivity. Must run before app.listen() so the very first
     // request can send mail without a cold-start delay, and before the cron
-    // jobs below (which share the same transporter via getMailer()).
+    // jobs below (which send through the same EmailService.send()).
     await initEmailService();
 
     // Persist every email event (recipient, template, status, provider
@@ -13514,7 +13497,7 @@ async function startServer() {
     });
 
     // Start daily reminder & drawdown cron (08:00 WAT)
-    startReminderCron(pool, getMailer);
+    startReminderCron(pool);
 
     // Start marketplace listing expiry cron (every 6 hours)
     startListingExpiryCron(pool);

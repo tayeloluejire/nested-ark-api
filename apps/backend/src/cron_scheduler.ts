@@ -4,56 +4,16 @@
  * Runs at 08:00 WAT (07:00 UTC) every day via node-cron.
  *
  * Called once from startServer() in index.ts:
- *   startReminderCron(pool, getMailer)
+ *   startReminderCron(pool)
  */
 
 import cron from 'node-cron';
 import { Pool } from 'pg';
 import crypto from 'crypto';
-
-// ── Types ─────────────────────────────────────────────────────────────────────
-type MailerFactory = () => import('nodemailer').Transporter;
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-function arkEmail(
-  subject: string,
-  bodyHtml: string,
-  actionBtn?: { label: string; url: string }
-): string {
-  const btn = actionBtn
-    ? `<div style="text-align:center;margin:24px 0;">
-         <a href="${actionBtn.url}" style="background:#14b8a6;color:#000;font-weight:900;font-size:13px;text-decoration:none;padding:12px 28px;border-radius:8px;display:inline-block;letter-spacing:.5px;">
-           ${actionBtn.label}
-         </a>
-       </div>`
-    : '';
-  return `
-    <!DOCTYPE html>
-    <html>
-    <head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/></head>
-    <body style="background:#09090b;margin:0;padding:0;font-family:'Segoe UI',sans-serif;">
-      <div style="max-width:520px;margin:32px auto;background:#18181b;border:1px solid #27272a;border-radius:12px;overflow:hidden;">
-        <div style="background:#000;padding:18px 24px;border-bottom:1px solid #27272a;">
-          <span style="color:#14b8a6;font-weight:900;font-size:16px;letter-spacing:1px;">NESTED ARK</span>
-          <span style="color:#52525b;font-size:11px;margin-left:12px;">Infrastructure OS</span>
-        </div>
-        <div style="padding:24px;">
-          <h2 style="color:#fff;font-size:16px;font-weight:800;margin:0 0 16px;">${subject}</h2>
-          ${bodyHtml}
-          ${btn}
-        </div>
-        <div style="padding:14px 24px;border-top:1px solid #27272a;text-align:center;">
-          <p style="color:#52525b;font-size:9px;text-transform:uppercase;letter-spacing:2px;margin:0;">
-            Secured by Nested Ark Infrastructure OS · Do not reply to this email
-          </p>
-        </div>
-      </div>
-    </body>
-    </html>`;
-}
+import { EmailService, genericTemplate } from './emailService';
 
 // ── Main cron function ────────────────────────────────────────────────────────
-export function startReminderCron(pool: Pool, getMailer: MailerFactory): void {
+export function startReminderCron(pool: Pool): void {
   // Run at 07:00 UTC = 08:00 WAT every day
   const schedule = process.env.CRON_SCHEDULE || '0 7 * * *';
 
@@ -95,12 +55,11 @@ export function startReminderCron(pool: Pool, getMailer: MailerFactory): void {
           AND t.status = 'ACTIVE'
       `);
 
-      const mailer = getMailer();
       const frontendUrl = process.env.FRONTEND_URL || 'https://nested-ark-frontend.vercel.app';
 
       for (const v of dueVaults.rows) {
         try {
-          const html = arkEmail(
+          const html = genericTemplate(
             'Rent Payment Due',
             `<p style="color:#a1a1aa;font-size:13px;line-height:1.7;">
               Dear <strong style="color:white">${v.tenant_name}</strong>,<br><br>
@@ -115,12 +74,17 @@ export function startReminderCron(pool: Pool, getMailer: MailerFactory): void {
             { label: 'Pay Now — Ark Portal', url: `${frontendUrl}/tenant/pay?tenancy_id=${v.tenancy_id}` }
           );
 
-          await mailer.sendMail({
-            from: `"Nested Ark OS" <${process.env.EMAIL_USER}>`,
+          const sendResult = await EmailService.send({
             to: v.tenant_email,
             subject: `[ACTION REQUIRED] Rent Due Today — ${v.unit_name} · ${v.project_number}`,
             html,
+            template: 'rent_due_today',
+            await: true,
           });
+
+          if (!sendResult.success) {
+            throw new Error(sendResult.error || 'Unknown email error');
+          }
 
           await client.query(
             `INSERT INTO rent_reminders
@@ -248,7 +212,7 @@ export function startReminderCron(pool: Pool, getMailer: MailerFactory): void {
           );
 
           // Send overdue email
-          const html = arkEmail(
+          const html = genericTemplate(
             `${noticeNumber} — Formal Notice`,
             `<p style="color:#a1a1aa;font-size:13px;line-height:1.7;">
               Dear <strong style="color:white">${v.tenant_name}</strong>,<br><br>
@@ -262,12 +226,17 @@ export function startReminderCron(pool: Pool, getMailer: MailerFactory): void {
             { label: 'Resolve Now — Pay Immediately', url: `${process.env.FRONTEND_URL}/tenant/pay?tenancy_id=${v.tenancy_id}` }
           );
 
-          await mailer.sendMail({
-            from: `"Nested Ark OS — Legal" <${process.env.EMAIL_USER}>`,
+          const sendResult = await EmailService.send({
             to: v.tenant_email,
             subject: `FORMAL NOTICE: ${noticeNumber} — Rental Arrears · ${v.project_number}`,
             html,
+            template: 'legal_notice_auto',
+            fromName: 'Nested Ark OS — Legal',
+            await: true,
           });
+          if (!sendResult.success) {
+            console.warn(`[CRON:${runId}] AUTO-NOTICE email FAILED → ${v.tenant_email}: ${sendResult.error}`);
+          }
 
           await client.query(
             `UPDATE legal_notices SET served_at = NOW(), status = 'SERVED'
