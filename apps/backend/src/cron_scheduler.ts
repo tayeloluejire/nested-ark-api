@@ -12,6 +12,43 @@ import { Pool } from 'pg';
 import crypto from 'crypto';
 import { EmailService, genericTemplate } from './emailService';
 
+/**
+ * Writes one row to the in-app `notifications` table — same schema/shape
+ * as the identical helper in index.ts. Duplicated rather than imported
+ * from index.ts to avoid a circular import (index.ts already imports
+ * `startReminderCron` from this file). Fire-and-forget: failures are
+ * logged and swallowed, never allowed to break the reminder/escalation
+ * cycle that calls it.
+ */
+async function createNotification(
+  pool: Pool,
+  params: {
+    userId: string;
+    type: string;
+    title: string;
+    body?: string;
+    relatedEntityType?: string;
+    relatedEntityId?: string;
+  },
+): Promise<void> {
+  try {
+    await pool.query(
+      `INSERT INTO notifications (user_id, type, title, body, related_entity_type, related_entity_id)
+       VALUES ($1,$2,$3,$4,$5,$6)`,
+      [
+        params.userId,
+        params.type,
+        params.title,
+        params.body || null,
+        params.relatedEntityType || null,
+        params.relatedEntityId || null,
+      ]
+    );
+  } catch (notifErr: any) {
+    console.error('[NOTIFICATION] Insert failed (non-fatal):', notifErr.message);
+  }
+}
+
 // ── Main cron function ────────────────────────────────────────────────────────
 export function startReminderCron(pool: Pool): void {
   // Run at 07:00 UTC = 08:00 WAT every day
@@ -40,6 +77,7 @@ export function startReminderCron(pool: Pool): void {
           t.tenant_name,
           t.tenant_email,
           t.tenant_phone,
+          t.tenant_user_id,
           t.unit_id,
           t.project_id,
           ru.unit_name,
@@ -93,6 +131,17 @@ export function startReminderCron(pool: Pool): void {
             [v.tenancy_id, v.unit_id, v.project_id, v.tenant_email]
           );
 
+          if (v.tenant_user_id) {
+            await createNotification(pool, {
+              userId: v.tenant_user_id,
+              type: 'RENT_DUE',
+              title: `Rent due today — ${v.unit_name}`,
+              body: `Your ${v.frequency.toLowerCase()} installment of ${v.currency} ${Number(v.installment_amount).toLocaleString()} is due today.`,
+              relatedEntityType: 'flex_pay_vault',
+              relatedEntityId: v.vault_id,
+            });
+          }
+
           console.log(`[CRON:${runId}] DUE reminder sent → ${v.tenant_email} (${v.unit_name})`);
         } catch (mailErr: any) {
           console.warn(`[CRON:${runId}] DUE reminder FAILED → ${v.tenant_email}: ${mailErr.message}`);
@@ -118,6 +167,7 @@ export function startReminderCron(pool: Pool): void {
           t.tenant_name,
           t.tenant_email,
           t.tenant_phone,
+          t.tenant_user_id,
           t.unit_id,
           t.project_id,
           t.tenant_score,
@@ -243,6 +293,17 @@ export function startReminderCron(pool: Pool): void {
              WHERE notice_number = $1`,
             [noticeNumber]
           );
+
+          if (v.tenant_user_id) {
+            await createNotification(pool, {
+              userId: v.tenant_user_id,
+              type: 'LEGAL_NOTICE',
+              title: `Formal notice: ${daysOverdue} days overdue`,
+              body: `Arrears of ${v.currency} ${amountOverdue.toLocaleString()} for ${v.unit_name}. Respond by ${deadlineStr}.`,
+              relatedEntityType: 'legal_notice',
+              relatedEntityId: v.vault_id,
+            });
+          }
 
           console.log(`[CRON:${runId}] AUTO-NOTICE issued → ${v.tenant_email} | ${noticeNumber} | ${daysOverdue}d overdue`);
         } catch (err: any) {

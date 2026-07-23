@@ -1341,6 +1341,26 @@ const ensureTablesExist = async () => {
       );
       CREATE INDEX IF NOT EXISTS idx_fw_feature ON feature_waitlist(feature_name);
 
+      -- In-app notifications (Android/web notification center). Separate
+      -- from email dispatch (EmailService) — this is what a user sees
+      -- inside the app itself. Created by the small createNotification()
+      -- helper alongside (not instead of) existing email sends, at a few
+      -- initial event sites (vault milestones, rent reminders); more event
+      -- types can call the same helper later without any schema change.
+      CREATE TABLE IF NOT EXISTS notifications (
+        id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id            UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        type               VARCHAR(50) NOT NULL,
+        title              VARCHAR(255) NOT NULL,
+        body               TEXT,
+        related_entity_type VARCHAR(50),
+        related_entity_id  UUID,
+        is_read            BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_notifications_unread ON notifications(user_id) WHERE is_read = FALSE;
+
     `);
 
     await client.query('COMMIT');
@@ -1352,6 +1372,40 @@ const ensureTablesExist = async () => {
     client.release();
   }
 };
+
+/**
+ * Writes one row to the in-app `notifications` table. Deliberately
+ * fire-and-forget from the caller's perspective — a notification failure
+ * must never break the real transaction/email flow it's attached to, same
+ * philosophy as EmailService's own error handling. Call sites wrap this in
+ * their own try/catch (or rely on this function's own internal catch)
+ * rather than let it throw upstream.
+ */
+async function createNotification(params: {
+  userId: string;
+  type: string;
+  title: string;
+  body?: string;
+  relatedEntityType?: string;
+  relatedEntityId?: string;
+}): Promise<void> {
+  try {
+    await pool.query(
+      `INSERT INTO notifications (user_id, type, title, body, related_entity_type, related_entity_id)
+       VALUES ($1,$2,$3,$4,$5,$6)`,
+      [
+        params.userId,
+        params.type,
+        params.title,
+        params.body || null,
+        params.relatedEntityType || null,
+        params.relatedEntityId || null,
+      ]
+    );
+  } catch (notifErr: any) {
+    console.error('[NOTIFICATION] Insert failed (non-fatal):', notifErr.message);
+  }
+}
 
 const authenticate = (req: Request, res: Response, next: NextFunction) => {
   const authHeader = req.headers.authorization;
@@ -4414,7 +4468,7 @@ app.post("/api/payments/webhook",
 
                   // Fetch tenant email from tenancy
                   const tRes = await pool.query(
-                    `SELECT t.tenant_name, t.tenant_email, ru.unit_name, p.title AS project_title
+                    `SELECT t.tenant_name, t.tenant_email, t.tenant_user_id, ru.unit_name, p.title AS project_title
                      FROM tenancies t
                      LEFT JOIN rental_units ru ON ru.id = t.unit_id
                      LEFT JOIN projects p ON p.id = ru.project_id
@@ -4422,7 +4476,7 @@ app.post("/api/payments/webhook",
                     [meta.tenancy_id]
                   );
                   if (!tRes.rows.length || !tRes.rows[0].tenant_email) return;
-                  const { tenant_name, tenant_email, unit_name, project_title } = tRes.rows[0];
+                  const { tenant_name, tenant_email, tenant_user_id, unit_name, project_title } = tRes.rows[0];
                   const firstName = (tenant_name || 'Tenant').split(' ')[0];
                   const frontendUrl = process.env.FRONTEND_URL || 'https://nestedark.com';
                   const { subject, html } = vaultMilestoneTemplate({
@@ -4437,6 +4491,16 @@ app.post("/api/payments/webhook",
                   const result = await EmailService.send({ to: tenant_email, subject, html, template: 'vault_milestone', await: true });
                   if (result?.success) {
                     console.log(`[MILESTONE] ${hitMilestone}% notification sent → ${tenant_email}`);
+                  }
+                  if (tenant_user_id) {
+                    await createNotification({
+                      userId: tenant_user_id,
+                      type: 'VAULT_MILESTONE',
+                      title: `Rent Vault ${hitMilestone}% funded`,
+                      body: `${unit_name || 'Your unit'} at ${project_title || 'your property'} — ₦${Math.round(newBalance).toLocaleString()} of ₦${Math.round(target).toLocaleString()} saved.`,
+                      relatedEntityType: 'flex_pay_vault',
+                      relatedEntityId: v.id,
+                    });
                   }
                 } catch (milestoneErr: any) {
                   console.error('[MILESTONE] Email failed (non-fatal):', milestoneErr.message);
@@ -4766,6 +4830,14 @@ app.post("/api/payments/webhook",
             if (result?.success) {
               console.log(`[STANDALONE-MILESTONE] ${hitMilestone}% notification sent → ${tenantEmail}`);
             }
+            await createNotification({
+              userId: sv.tenant_user_id,
+              type: 'VAULT_MILESTONE',
+              title: `Savings Vault ${hitMilestone}% funded`,
+              body: `₦${Math.round(newBalance).toLocaleString()} of ₦${Math.round(target).toLocaleString()} saved.`,
+              relatedEntityType: 'standalone_vault',
+              relatedEntityId: svId,
+            });
           } catch (e: any) {
             console.error('[STANDALONE-MILESTONE] Email failed (non-fatal):', e.message);
           }
@@ -12639,6 +12711,94 @@ app.get('/api/tenant/dashboard', authenticate, async (req: Request, res: Respons
       recent_maintenance:  maintRes.rows,
     });
   } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
+});
+
+// ── Notifications (in-app notification center) ─────────────────────────────
+// Rows are written by the createNotification() helper (see above, near
+// `authenticate`) — currently called from the vault-milestone and rent-
+// reminder event sites. Every route below is scoped to the authenticated
+// user's own notifications only; there is no cross-user access.
+
+// GET /api/notifications?limit=20&offset=0&unread_only=true
+app.get('/api/notifications', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId = (req as any).userId;
+  try {
+    const limit = Math.min(parseInt(String(req.query.limit || '20')) || 20, 100);
+    const offset = Math.max(parseInt(String(req.query.offset || '0')) || 0, 0);
+    const unreadOnly = String(req.query.unread_only || '') === 'true';
+
+    const rows = await pool.query(
+      `SELECT id, type, title, body, related_entity_type, related_entity_id, is_read, created_at
+       FROM notifications
+       WHERE user_id = $1 ${unreadOnly ? 'AND is_read = FALSE' : ''}
+       ORDER BY created_at DESC
+       LIMIT $2 OFFSET $3`,
+      [userId, limit, offset]
+    );
+
+    const countRes = await pool.query(
+      `SELECT COUNT(*) FROM notifications WHERE user_id = $1 AND is_read = FALSE`,
+      [userId]
+    );
+
+    return res.json({
+      success: true,
+      notifications: rows.rows,
+      unread_count: parseInt(countRes.rows[0]?.count || '0'),
+    });
+  } catch (e: any) {
+    console.error("Unhandled error:", e.message);
+    return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
+  }
+});
+
+// GET /api/notifications/unread-count — lightweight poll for a badge count
+app.get('/api/notifications/unread-count', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId = (req as any).userId;
+  try {
+    const countRes = await pool.query(
+      `SELECT COUNT(*) FROM notifications WHERE user_id = $1 AND is_read = FALSE`,
+      [userId]
+    );
+    return res.json({ success: true, unread_count: parseInt(countRes.rows[0]?.count || '0') });
+  } catch (e: any) {
+    console.error("Unhandled error:", e.message);
+    return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
+  }
+});
+
+// POST /api/notifications/:id/read — mark a single notification read
+app.post('/api/notifications/:id/read', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId = (req as any).userId;
+  const { id } = req.params;
+  try {
+    const result = await pool.query(
+      `UPDATE notifications SET is_read = TRUE WHERE id = $1 AND user_id = $2 RETURNING id`,
+      [id, userId]
+    );
+    if (!result.rows.length) {
+      return res.status(404).json({ error: "Notification not found." });
+    }
+    return res.json({ success: true });
+  } catch (e: any) {
+    console.error("Unhandled error:", e.message);
+    return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
+  }
+});
+
+// POST /api/notifications/read-all — mark every unread notification read
+app.post('/api/notifications/read-all', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId = (req as any).userId;
+  try {
+    await pool.query(
+      `UPDATE notifications SET is_read = TRUE WHERE user_id = $1 AND is_read = FALSE`,
+      [userId]
+    );
+    return res.json({ success: true });
+  } catch (e: any) {
+    console.error("Unhandled error:", e.message);
+    return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
+  }
 });
 
 // ── GET /api/tenant/rent-history — full rent_payments ledger for tenant ───
