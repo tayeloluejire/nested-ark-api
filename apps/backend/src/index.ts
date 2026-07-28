@@ -12713,6 +12713,151 @@ app.get('/api/tenant/dashboard', authenticate, async (req: Request, res: Respons
   } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
 });
 
+// ── GET /api/tenant/wallet — tenant's own vault balance + contribution
+// history. This is a computed, read-only view over flex_pay_vaults /
+// standalone_vaults (whichever applies) — deliberately NOT a new
+// money-holding table. Those vault tables are already the single source
+// of truth for tenant balances everywhere else in this file; introducing
+// a second stored balance here would create a reconciliation risk this
+// endpoint has no reason to take on. escrow_wallets (see the ESCROW
+// module) is a different, project/investor-scoped concept and is not
+// reused here — a tenant never owns a row in that table.
+app.get('/api/tenant/wallet', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId = (req as any).userId;
+  try {
+    const tenancy = await resolveTenancy(userId);
+
+    if (tenancy) {
+      const vaultRes = await pool.query(
+        `SELECT fpv.id, fpv.vault_balance, fpv.target_amount, fpv.installment_amount,
+                fpv.frequency, fpv.currency, fpv.status, fpv.next_due_date, fpv.funded_periods,
+                COALESCE((SELECT SUM(fc.amount_ngn) FROM flex_contributions fc
+                          WHERE fc.vault_id = fpv.id AND fc.status = 'SUCCESS'), 0) AS total_contributed
+         FROM flex_pay_vaults fpv
+         WHERE fpv.tenancy_id = $1
+         ORDER BY fpv.created_at DESC LIMIT 1`,
+        [tenancy.id]
+      );
+      const vault = vaultRes.rows[0] || null;
+
+      const txRes = vault ? await pool.query(
+        `SELECT id, amount_ngn, status, period_label, paid_at, ledger_hash
+         FROM flex_contributions
+         WHERE vault_id = $1
+         ORDER BY created_at DESC LIMIT 20`,
+        [vault.id]
+      ) : { rows: [] };
+
+      const targetAmount = vault ? parseFloat(vault.target_amount) || 0 : 0;
+      const balance = vault ? parseFloat(vault.vault_balance) || 0 : 0;
+
+      return res.json({
+        success:            true,
+        wallet_type:        vault ? 'FLEX_PAY' : 'NONE',
+        currency:           vault?.currency || tenancy.currency || 'NGN',
+        balance,
+        target_amount:      targetAmount,
+        installment_amount: vault ? parseFloat(vault.installment_amount) || 0 : 0,
+        funded_pct:         targetAmount > 0 ? Math.min(Math.round((balance / targetAmount) * 100), 100) : 0,
+        total_contributed:  vault ? parseFloat(vault.total_contributed) || 0 : 0,
+        next_due_date:      vault?.next_due_date || null,
+        status:             vault?.status || null,
+        transactions:       txRes.rows,
+      });
+    }
+
+    // Independent tenant — standalone vault, same response shape.
+    const svRes = await pool.query(
+      `SELECT sv.id, sv.vault_balance, sv.target_amount, sv.installment_amount,
+              sv.frequency, sv.currency, sv.status, sv.due_date, sv.funded_periods,
+              COALESCE((SELECT SUM(sc.amount_ngn) FROM standalone_contributions sc
+                        WHERE sc.vault_id = sv.id AND sc.status = 'SUCCESS'), 0) AS total_contributed
+       FROM standalone_vaults sv
+       WHERE sv.tenant_user_id = $1 AND sv.status NOT IN ('MIGRATED', 'CLOSED')
+       ORDER BY sv.created_at DESC LIMIT 1`,
+      [userId]
+    );
+    const sv = svRes.rows[0] || null;
+
+    const txRes = sv ? await pool.query(
+      `SELECT id, amount_ngn, status, period_label, paid_at, ledger_hash
+       FROM standalone_contributions
+       WHERE vault_id = $1
+       ORDER BY created_at DESC LIMIT 20`,
+      [sv.id]
+    ) : { rows: [] };
+
+    const targetAmount = sv ? parseFloat(sv.target_amount) || 0 : 0;
+    const balance = sv ? parseFloat(sv.vault_balance) || 0 : 0;
+
+    return res.json({
+      success:            true,
+      wallet_type:        sv ? 'STANDALONE' : 'NONE',
+      currency:           sv?.currency || 'NGN',
+      balance,
+      target_amount:      targetAmount,
+      installment_amount: sv ? parseFloat(sv.installment_amount) || 0 : 0,
+      funded_pct:         targetAmount > 0 ? Math.min(Math.round((balance / targetAmount) * 100), 100) : 0,
+      total_contributed:  sv ? parseFloat(sv.total_contributed) || 0 : 0,
+      next_due_date:      sv?.due_date || null,
+      status:             sv?.status || null,
+      transactions:       txRes.rows,
+    });
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
+});
+
+// ── GET /api/tenant/projects — the property development(s) tied to this
+// tenant's active tenancy/tenancies. Built generically (returns an array,
+// not a single row) so a tenant renting across multiple units/projects is
+// handled correctly, even though today's typical case is exactly one.
+// Reuses the same tenant_user_id -> tenant_email fallback pattern as
+// resolveTenancy(), generalized to the full active list rather than
+// LIMIT 1, since resolveTenancy() itself only ever returns one tenancy.
+app.get('/api/tenant/projects', authenticate, async (req: Request, res: Response): Promise<any> => {
+  const userId = (req as any).userId;
+  try {
+    const byUserId = await pool.query(
+      `SELECT p.id AS project_id, p.title, p.project_number, p.location, p.country,
+              p.status AS project_status, p.progress_percentage, p.category,
+              t.id AS tenancy_id, t.lease_start, t.lease_end, t.status AS tenancy_status,
+              ru.id AS unit_id, ru.unit_name, ru.unit_type, ru.rent_amount, ru.currency
+       FROM tenancies t
+       JOIN rental_units ru ON ru.id = t.unit_id
+       LEFT JOIN projects p ON p.id = t.project_id
+       WHERE t.tenant_user_id = $1 AND t.status = 'ACTIVE'
+       ORDER BY t.created_at DESC`,
+      [userId]
+    );
+
+    let rows = byUserId.rows;
+
+    if (rows.length === 0) {
+      const uRes = await pool.query('SELECT email FROM public.users WHERE id = $1', [userId]);
+      if (uRes.rows.length) {
+        const byEmail = await pool.query(
+          `SELECT p.id AS project_id, p.title, p.project_number, p.location, p.country,
+                  p.status AS project_status, p.progress_percentage, p.category,
+                  t.id AS tenancy_id, t.lease_start, t.lease_end, t.status AS tenancy_status,
+                  ru.id AS unit_id, ru.unit_name, ru.unit_type, ru.rent_amount, ru.currency
+           FROM tenancies t
+           JOIN rental_units ru ON ru.id = t.unit_id
+           LEFT JOIN projects p ON p.id = t.project_id
+           WHERE t.tenant_email = $1 AND t.status = 'ACTIVE'
+           ORDER BY t.created_at DESC`,
+          [uRes.rows[0].email]
+        );
+        rows = byEmail.rows;
+      }
+    }
+
+    return res.json({
+      success:  true,
+      count:    rows.length,
+      projects: rows,
+    });
+  } catch (e: any) { console.error("Unhandled error:", e.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." }); }
+});
+
 // ── Notifications (in-app notification center) ─────────────────────────────
 // Rows are written by the createNotification() helper (see above, near
 // `authenticate`) — currently called from the vault-milestone and rent-
