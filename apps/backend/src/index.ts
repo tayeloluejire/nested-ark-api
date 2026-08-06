@@ -7643,7 +7643,7 @@ app.get('/api/marketplace/discover', async (req: Request, res: Response): Promis
          ru.marketing_description, ru.cover_image, ru.photo_urls_arr, ru.advertised_at, ru.listing_expires_at,
          ru.bank_name, ru.account_name, ru.status,
          p.id AS project_id, p.title AS project_title, p.location, p.country,
-         p.project_number, p.city
+         p.project_number
        FROM rental_units ru
        JOIN projects p ON p.id = ru.project_id
        ${where}
@@ -7674,7 +7674,7 @@ app.get('/api/marketplace/unit/:unitId', async (req: Request, res: Response): Pr
     const result = await pool.query(
       `SELECT
          ru.*, p.title AS project_title, p.location, p.country,
-         p.project_number, p.city, p.description AS project_description
+         p.project_number, p.description AS project_description
        FROM rental_units ru
        JOIN projects p ON p.id = ru.project_id
        WHERE ru.id = $1`,
