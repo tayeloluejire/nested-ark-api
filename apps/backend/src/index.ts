@@ -1361,6 +1361,58 @@ const ensureTablesExist = async () => {
       CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_notifications_unread ON notifications(user_id) WHERE is_read = FALSE;
 
+      -- ── AML: Sanctions / PEP screening ──────────────────────────────────
+      -- pg_trgm powers the fuzzy name matching in screenNameAgainstWatchlist()
+      -- (similarity() / % operator below) — required, not optional, for this
+      -- feature: exact-string matching against sanctions lists misses almost
+      -- every real match (transliteration, middle names, punctuation).
+      CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+      -- Cached copy of public sanctions/PEP list data (OFAC SDN, OFAC
+      -- Consolidated, UN Security Council Consolidated List). Refreshed on a
+      -- schedule by refreshSanctionsLists() — never edited by hand. Kept as
+      -- its own table (not joined into kyc_records) so a list refresh is a
+      -- clean DELETE+INSERT per source with no risk to screening history.
+      CREATE TABLE IF NOT EXISTS sanctions_watchlist_entries (
+        id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        source        VARCHAR(20) NOT NULL, -- OFAC_SDN | OFAC_CONSOLIDATED | UN_CONSOLIDATED
+        external_id   VARCHAR(100), -- source's own entry/reference number, for traceability
+        entry_type    VARCHAR(20) NOT NULL DEFAULT 'INDIVIDUAL', -- INDIVIDUAL | ENTITY
+        full_name     TEXT NOT NULL,
+        aliases       TEXT, -- pipe-separated a.k.a. list, folded into the same similarity search
+        programs      TEXT, -- sanctions program(s)/regime(s), for the admin review screen
+        date_of_birth VARCHAR(20),
+        nationality   VARCHAR(200),
+        list_version  TIMESTAMPTZ NOT NULL DEFAULT NOW(), -- which refresh run wrote this row
+        created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_watchlist_source ON sanctions_watchlist_entries(source);
+      -- Trigram GIN index is what makes similarity()-based screening fast
+      -- enough to run synchronously at KYC submission time on a list with
+      -- tens of thousands of rows.
+      CREATE INDEX IF NOT EXISTS idx_watchlist_name_trgm ON sanctions_watchlist_entries USING GIN (full_name gin_trgm_ops);
+
+      -- One row per screening RUN (not per list entry) against a given user's
+      -- submitted name. status starts PENDING_REVIEW for anything above the
+      -- match threshold; an admin resolves it to CLEARED or CONFIRMED_MATCH.
+      -- No row at all = never screened above threshold = implicitly clear.
+      CREATE TABLE IF NOT EXISTS sanctions_screening_results (
+        id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id           UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        screened_name     TEXT NOT NULL,
+        matched_entry_id  UUID REFERENCES sanctions_watchlist_entries(id) ON DELETE SET NULL,
+        matched_name      TEXT,
+        match_source      VARCHAR(20),
+        match_score       DECIMAL(4,3) NOT NULL, -- 0.000–1.000, pg_trgm similarity()
+        status            VARCHAR(20) NOT NULL DEFAULT 'PENDING_REVIEW', -- PENDING_REVIEW | CLEARED | CONFIRMED_MATCH
+        reviewed_by       UUID REFERENCES users(id),
+        reviewed_at       TIMESTAMP,
+        review_notes      TEXT,
+        created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_screening_user ON sanctions_screening_results(user_id);
+      CREATE INDEX IF NOT EXISTS idx_screening_status ON sanctions_screening_results(status) WHERE status = 'PENDING_REVIEW';
+
     `);
 
     await client.query('COMMIT');
@@ -5202,6 +5254,12 @@ app.post("/api/kyc/submit", authenticate, async (req: Request, res: Response): P
     );
     const lHash = crypto.createHash('sha256').update(userId + id_type + id_number + Date.now()).digest('hex');
     await pool.query("INSERT INTO system_ledger (transaction_type, payload, immutable_hash) VALUES ($1, $2, $3)", ['KYC_SUBMITTED', JSON.stringify({ user_id: userId, id_type }), lHash]);
+    // Fire-and-forget sanctions/PEP screening — screenNameAgainstWatchlist()
+    // swallows its own errors internally (same philosophy as
+    // createNotification()), so a screening hiccup can never delay or break
+    // this response. Results land in sanctions_screening_results for admin
+    // review; nothing here blocks or auto-rejects the KYC submission itself.
+    screenNameAgainstWatchlist(userId, full_name);
     return res.status(201).json({ success: true, kyc: result.rows[0], message: 'KYC submitted. Verification takes 1-3 business days.' });
   } catch (err: any) {
     console.error("Unhandled error:", err.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
@@ -5251,6 +5309,321 @@ app.get("/api/admin/kyc", authenticate, async (req: Request, res: Response): Pro
       `SELECT k.*, u.email, u.full_name as user_full_name FROM kyc_records k JOIN public.users u ON k.user_id = u.id ORDER BY k.created_at DESC`
     );
     return res.json({ success: true, records: result.rows, count: result.rows.length });
+  } catch (err: any) {
+    console.error("Unhandled error:", err.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
+  }
+});
+
+// ============================================================================
+// SANCTIONS / PEP SCREENING — free, public watchlist data, no vendor
+// ============================================================================
+// Screens a submitted name against three public, freely-downloadable
+// sanctions/PEP sources: the US Treasury OFAC SDN list, OFAC's non-SDN
+// Consolidated list, and the UN Security Council Consolidated List. This is
+// a real, working data pipeline against live government/UN sources — not a
+// mock. It is deliberately separate from BVN/NIN identity verification
+// (which requires a licensed provider — see the KYC endpoints above) since
+// sanctions screening needs no vendor at all.
+//
+// IMPORTANT for whoever maintains this: OFAC has stated it can rename its
+// export files without notice (see ofac.treasury.gov's own Sanctions List
+// Service documentation). If refreshSanctionsLists() starts logging
+// "[sanctions] OFAC SDN fetch failed" repeatedly, check
+// https://sanctionslistservice.ofac.treas.gov/api/PublicationPreview/exports/
+// for the current filename before assuming it's a transient network issue.
+
+const OFAC_SDN_CSV_URL = 'https://sanctionslistservice.ofac.treas.gov/api/PublicationPreview/exports/SDN.CSV';
+const OFAC_CONSOLIDATED_CSV_URL = 'https://sanctionslistservice.ofac.treas.gov/api/PublicationPreview/exports/CONSOLIDATED.CSV';
+const UN_CONSOLIDATED_XML_URL = 'https://scsanctions.un.org/resources/xml/en/consolidated.xml';
+
+// Match threshold for pg_trgm similarity() (0–1). 0.55 is deliberately
+// permissive — sanctions screening favours false positives (an admin
+// spends 30 seconds clearing a coincidental name match) over false
+// negatives (a real match slips through because the threshold was too
+// strict). Tune this from real review-queue data once you have some.
+const SANCTIONS_MATCH_THRESHOLD = 0.55;
+
+/**
+ * Parses OFAC's classic SDN.CSV / CONSOLIDATED.CSV layout: 12 comma-
+ * separated columns per row, double-quote quoted, "-0-" used in place of a
+ * genuinely empty field. This exact column layout has been stable for
+ * over a decade (OFAC explicitly kept it when retiring the older
+ * .DEL/.PIP formats in 2023) — see the OFAC SDN data file specification.
+ * Columns: ent_num, SDN_Name, SDN_Type, Program, Title, Call_Sign,
+ * Vess_type, Tonnage, GRT, Vess_flag, Vess_owner, Remarks.
+ */
+function parseOfacCsv(csvText: string): Array<{ externalId: string; fullName: string; entryType: string; programs: string }> {
+  const rows: Array<{ externalId: string; fullName: string; entryType: string; programs: string }> = [];
+  const lines = csvText.split(/\r?\n/);
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    // Simple quoted-CSV splitter — OFAC's export never nests quotes, so a
+    // full CSV parser dependency isn't needed for this one, stable format.
+    const cols: string[] = [];
+    let cur = '';
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === '"') { inQuotes = !inQuotes; continue; }
+      if (ch === ',' && !inQuotes) { cols.push(cur); cur = ''; continue; }
+      cur += ch;
+    }
+    cols.push(cur);
+    if (cols.length < 4) continue;
+    const [entNum, sdnName, sdnType, program] = cols;
+    if (!sdnName || sdnName === '-0-') continue;
+    rows.push({
+      externalId: entNum?.trim() || '',
+      fullName: sdnName.trim(),
+      entryType: (sdnType || '').trim().toUpperCase() === 'INDIVIDUAL' ? 'INDIVIDUAL' : 'ENTITY',
+      programs: (program || '').trim(),
+    });
+  }
+  return rows;
+}
+
+/**
+ * Tolerant, dependency-free extraction of <ENTITY>/<INDIVIDUAL> name blocks
+ * from the UN Consolidated List XML. Deliberately regex-based rather than
+ * a full XML parser: the UN feed is large, this file has no npm XML
+ * dependency today, and the only thing screening needs out of each block
+ * is the name and reference number — pulling in a parser for that alone
+ * isn't worth the new dependency. If the UN changes their tag structure
+ * this will start returning zero rows (logged clearly), not silently
+ * corrupt data.
+ */
+function parseUnConsolidatedXml(xmlText: string): Array<{ externalId: string; fullName: string; entryType: string }> {
+  const rows: Array<{ externalId: string; fullName: string; entryType: string }> = [];
+  const decode = (s: string) => s
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&apos;/g, "'").trim();
+
+  const individualBlocks = xmlText.match(/<INDIVIDUAL>[\s\S]*?<\/INDIVIDUAL>/g) || [];
+  for (const block of individualBlocks) {
+    const ref = block.match(/<REFERENCE_NUMBER>([\s\S]*?)<\/REFERENCE_NUMBER>/)?.[1];
+    const first = block.match(/<FIRST_NAME>([\s\S]*?)<\/FIRST_NAME>/)?.[1] || '';
+    const second = block.match(/<SECOND_NAME>([\s\S]*?)<\/SECOND_NAME>/)?.[1] || '';
+    const third = block.match(/<THIRD_NAME>([\s\S]*?)<\/THIRD_NAME>/)?.[1] || '';
+    const fourth = block.match(/<FOURTH_NAME>([\s\S]*?)<\/FOURTH_NAME>/)?.[1] || '';
+    const fullName = decode([first, second, third, fourth].join(' ')).replace(/\s+/g, ' ').trim();
+    if (fullName) rows.push({ externalId: decode(ref || ''), fullName, entryType: 'INDIVIDUAL' });
+  }
+
+  const entityBlocks = xmlText.match(/<ENTITY>[\s\S]*?<\/ENTITY>/g) || [];
+  for (const block of entityBlocks) {
+    const ref = block.match(/<REFERENCE_NUMBER>([\s\S]*?)<\/REFERENCE_NUMBER>/)?.[1];
+    const name = block.match(/<FIRST_NAME>([\s\S]*?)<\/FIRST_NAME>/)?.[1];
+    const fullName = decode(name || '');
+    if (fullName) rows.push({ externalId: decode(ref || ''), fullName, entryType: 'ENTITY' });
+  }
+  return rows;
+}
+
+/**
+ * Refreshes the cached watchlist from all three sources. Each source is
+ * fetched and replaced independently — a UN outage must never block an
+ * OFAC refresh, and vice versa. Safe to call on a schedule or on demand
+ * (POST /api/admin/sanctions/refresh); every write is DELETE-then-INSERT
+ * per source inside its own try/catch, so a failed source just leaves its
+ * previous cached data in place rather than emptying the table.
+ */
+async function refreshSanctionsLists(): Promise<{ source: string; count: number; error?: string }[]> {
+  const results: { source: string; count: number; error?: string }[] = [];
+
+  // ---- OFAC SDN ----
+  try {
+    const res = await fetch(OFAC_SDN_CSV_URL);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const entries = parseOfacCsv(await res.text());
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query("DELETE FROM sanctions_watchlist_entries WHERE source = 'OFAC_SDN'");
+      for (const e of entries) {
+        await client.query(
+          `INSERT INTO sanctions_watchlist_entries (source, external_id, entry_type, full_name, programs)
+           VALUES ('OFAC_SDN', $1, $2, $3, $4)`,
+          [e.externalId, e.entryType, e.fullName, e.programs]
+        );
+      }
+      await client.query('COMMIT');
+      results.push({ source: 'OFAC_SDN', count: entries.length });
+      console.log(`[sanctions] OFAC SDN refreshed: ${entries.length} entries`);
+    } catch (dbErr: any) {
+      await client.query('ROLLBACK');
+      throw dbErr;
+    } finally {
+      client.release();
+    }
+  } catch (err: any) {
+    console.error('[sanctions] OFAC SDN fetch failed:', err.message);
+    results.push({ source: 'OFAC_SDN', count: 0, error: err.message });
+  }
+
+  // ---- OFAC Consolidated (non-SDN) ----
+  try {
+    const res = await fetch(OFAC_CONSOLIDATED_CSV_URL);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const entries = parseOfacCsv(await res.text());
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query("DELETE FROM sanctions_watchlist_entries WHERE source = 'OFAC_CONSOLIDATED'");
+      for (const e of entries) {
+        await client.query(
+          `INSERT INTO sanctions_watchlist_entries (source, external_id, entry_type, full_name, programs)
+           VALUES ('OFAC_CONSOLIDATED', $1, $2, $3, $4)`,
+          [e.externalId, e.entryType, e.fullName, e.programs]
+        );
+      }
+      await client.query('COMMIT');
+      results.push({ source: 'OFAC_CONSOLIDATED', count: entries.length });
+      console.log(`[sanctions] OFAC Consolidated refreshed: ${entries.length} entries`);
+    } catch (dbErr: any) {
+      await client.query('ROLLBACK');
+      throw dbErr;
+    } finally {
+      client.release();
+    }
+  } catch (err: any) {
+    console.error('[sanctions] OFAC Consolidated fetch failed:', err.message);
+    results.push({ source: 'OFAC_CONSOLIDATED', count: 0, error: err.message });
+  }
+
+  // ---- UN Security Council Consolidated List ----
+  try {
+    const res = await fetch(UN_CONSOLIDATED_XML_URL);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const entries = parseUnConsolidatedXml(await res.text());
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query("DELETE FROM sanctions_watchlist_entries WHERE source = 'UN_CONSOLIDATED'");
+      for (const e of entries) {
+        await client.query(
+          `INSERT INTO sanctions_watchlist_entries (source, external_id, entry_type, full_name)
+           VALUES ('UN_CONSOLIDATED', $1, $2, $3)`,
+          [e.externalId, e.entryType, e.fullName]
+        );
+      }
+      await client.query('COMMIT');
+      results.push({ source: 'UN_CONSOLIDATED', count: entries.length });
+      console.log(`[sanctions] UN Consolidated refreshed: ${entries.length} entries`);
+    } catch (dbErr: any) {
+      await client.query('ROLLBACK');
+      throw dbErr;
+    } finally {
+      client.release();
+    }
+  } catch (err: any) {
+    console.error('[sanctions] UN Consolidated fetch failed:', err.message);
+    results.push({ source: 'UN_CONSOLIDATED', count: 0, error: err.message });
+  }
+
+  return results;
+}
+
+/**
+ * Screens one name against the cached watchlist using pg_trgm similarity().
+ * Stores a `sanctions_screening_results` row for every match at or above
+ * SANCTIONS_MATCH_THRESHOLD (status PENDING_REVIEW) so an admin can review
+ * it — never auto-blocks or auto-rejects a user by itself. Best-effort: a
+ * failure here is logged and swallowed, never thrown upstream, so it can
+ * never break the KYC submission flow it's attached to (same philosophy as
+ * createNotification()).
+ */
+async function screenNameAgainstWatchlist(userId: string, fullName: string): Promise<void> {
+  if (!fullName || !fullName.trim()) return;
+  try {
+    const result = await pool.query(
+      `SELECT id, source, full_name, similarity($1, full_name) AS score
+       FROM sanctions_watchlist_entries
+       WHERE full_name % $1
+       ORDER BY score DESC
+       LIMIT 5`,
+      [fullName.trim()]
+    );
+    for (const row of result.rows) {
+      const score = parseFloat(row.score);
+      if (score < SANCTIONS_MATCH_THRESHOLD) continue;
+      // Avoid re-flagging the exact same (user, watchlist entry) pair on
+      // every KYC resubmission — one open PENDING_REVIEW row per pair is
+      // enough for an admin to act on.
+      const existing = await pool.query(
+        `SELECT id FROM sanctions_screening_results
+         WHERE user_id = $1 AND matched_entry_id = $2 AND status = 'PENDING_REVIEW'`,
+        [userId, row.id]
+      );
+      if (existing.rows.length > 0) continue;
+
+      await pool.query(
+        `INSERT INTO sanctions_screening_results
+           (user_id, screened_name, matched_entry_id, matched_name, match_source, match_score)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [userId, fullName.trim(), row.id, row.full_name, row.source, score]
+      );
+      console.log(`[sanctions] Potential match: user ${userId} vs "${row.full_name}" (${row.source}, score ${score.toFixed(3)})`);
+    }
+  } catch (err: any) {
+    console.error('[sanctions] Screening error (non-fatal):', err.message);
+  }
+}
+
+// POST /api/admin/sanctions/refresh — manually trigger a list refresh (also runs on a schedule — see startServer()).
+app.post("/api/admin/sanctions/refresh", authenticate, async (req: Request, res: Response): Promise<any> => {
+  const adminId = (req as any).userId;
+  const roleCheck = await pool.query("SELECT role FROM public.users WHERE id = $1", [adminId]);
+  if (!['ADMIN', 'DEVELOPER', 'FOUNDER'].includes(roleCheck.rows[0]?.role)) return res.status(403).json({ error: 'Admin only' });
+  try {
+    const results = await refreshSanctionsLists();
+    return res.json({ success: true, results });
+  } catch (err: any) {
+    console.error("Unhandled error:", err.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
+  }
+});
+
+// GET /api/admin/sanctions/matches — admin review queue of potential matches awaiting a decision.
+app.get("/api/admin/sanctions/matches", authenticate, async (req: Request, res: Response): Promise<any> => {
+  const adminId = (req as any).userId;
+  const roleCheck = await pool.query("SELECT role FROM public.users WHERE id = $1", [adminId]);
+  if (!['ADMIN', 'DEVELOPER', 'FOUNDER'].includes(roleCheck.rows[0]?.role)) return res.status(403).json({ error: 'Admin only' });
+  const status = typeof req.query.status === 'string' ? req.query.status.toUpperCase() : 'PENDING_REVIEW';
+  try {
+    const result = await pool.query(
+      `SELECT s.*, u.email, u.full_name AS user_full_name, u.role AS user_role
+       FROM sanctions_screening_results s
+       JOIN public.users u ON s.user_id = u.id
+       WHERE s.status = $1
+       ORDER BY s.match_score DESC, s.created_at DESC`,
+      [status]
+    );
+    return res.json({ success: true, matches: result.rows, count: result.rows.length });
+  } catch (err: any) {
+    console.error("Unhandled error:", err.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
+  }
+});
+
+// POST /api/admin/sanctions/matches/:id/resolve — admin clears a match or confirms it as a real hit.
+app.post("/api/admin/sanctions/matches/:id/resolve", authenticate, async (req: Request, res: Response): Promise<any> => {
+  const adminId = (req as any).userId;
+  const roleCheck = await pool.query("SELECT role FROM public.users WHERE id = $1", [adminId]);
+  if (!['ADMIN', 'DEVELOPER', 'FOUNDER'].includes(roleCheck.rows[0]?.role)) return res.status(403).json({ error: 'Admin only' });
+  const { confirmed, notes } = req.body;
+  const status = confirmed ? 'CONFIRMED_MATCH' : 'CLEARED';
+  try {
+    const result = await pool.query(
+      `UPDATE sanctions_screening_results
+       SET status = $1, reviewed_by = $2, reviewed_at = NOW(), review_notes = $3
+       WHERE id = $4 RETURNING *`,
+      [status, adminId, notes || null, req.params.id]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Screening result not found' });
+    const lHash = crypto.createHash('sha256').update(req.params.id + status + Date.now()).digest('hex');
+    await pool.query(
+      "INSERT INTO system_ledger (transaction_type, payload, immutable_hash) VALUES ($1, $2, $3)",
+      ['SANCTIONS_MATCH_RESOLVED', JSON.stringify({ match_id: req.params.id, reviewer: adminId, status }), lHash]
+    );
+    return res.json({ success: true, match: result.rows[0] });
   } catch (err: any) {
     console.error("Unhandled error:", err.message); return res.status(500).json({ error: "Internal server error. Please try again or contact support." });
   }
@@ -8663,24 +9036,54 @@ app.post(['/api/notices/generate', '/api/notices/generate/'], authenticate, asyn
   const { tenancy_id, notice_type, amount_overdue, days_overdue, notes } = req.body;
   if (!tenancy_id || !notice_type) return res.status(400).json({ error: 'tenancy_id and notice_type required' });
   try {
-    const tenRes = await pool.query(`SELECT t.*, ru.unit_name, ru.rent_amount, p.title AS project_title, p.project_number, p.sponsor_id FROM tenancies t JOIN rental_units ru ON ru.id = t.unit_id LEFT JOIN projects p ON p.id = t.project_id WHERE t.id = $1`, [tenancy_id]);
+    const tenRes = await pool.query(`SELECT t.*, ru.unit_name, ru.rent_amount, ru.payment_frequency AS unit_payment_frequency, p.title AS project_title, p.project_number, p.sponsor_id FROM tenancies t JOIN rental_units ru ON ru.id = t.unit_id LEFT JOIN projects p ON p.id = t.project_id WHERE t.id = $1`, [tenancy_id]);
     if (!tenRes.rows.length) return res.status(404).json({ error: 'Tenancy not found' });
     const t = tenRes.rows[0];
     const roleCheck = await pool.query(`SELECT role FROM public.users WHERE id=$1`, [userId]);
     if (t.sponsor_id !== userId && !['ADMIN','DEVELOPER'].includes(roleCheck.rows[0]?.role)) return res.status(403).json({ error: 'Only property owner or admin can issue notices' });
     const seqRes = await pool.query(`SELECT nextval('notice_number_seq') AS n`);
     const noticeNumber = `ARK-${notice_type.slice(0,3)}-${new Date().getFullYear()}-${String(seqRes.rows[0].n).padStart(5,'0')}`;
-    // Correct deadlines matching the UI definition:
-    // NOTICE_TO_PAY → 7 days | NOTICE_TO_QUIT → 30 days
-    // FINAL_WARNING → 2 days | EVICTION_WARNING → 30 days
-    const DEADLINE_MAP: Record<string, number> = {
-      NOTICE_TO_PAY:    7,
-      NOTICE_TO_QUIT:   30,
-      FINAL_WARNING:    2,
-      EVICTION_WARNING: 30,
+    // NOTICE_TO_PAY (7 days) and FINAL_WARNING (2 days) are Nested Ark's
+    // own arrears-escalation cadence, not statutory periods — flat,
+    // unrelated to tenancy frequency.
+    //
+    // NOTICE_TO_QUIT and EVICTION_WARNING are the actual legal notice to
+    // quit under Nigerian tenancy law (Lagos State Tenancy Law 2011 s.13(4)
+    // and the materially identical Recovery of Premises Law/Act mirrored
+    // across most other states) and MUST scale with how the tenancy is
+    // paid — a flat 30 days was wrong for anything but a monthly tenancy:
+    //   Weekly / at-will tenancy → 1 week
+    //   Monthly tenancy          → 1 month
+    //   Quarterly tenancy        → 1 quarter (3 months)
+    //   Half-yearly tenancy      → 3 months
+    //   Yearly tenancy           → 6 months
+    // BIWEEKLY isn't a distinct statutory category in this table — treated
+    // here as 2 weeks, the direct proportional analog of the weekly rule,
+    // not a cited statutory figure.
+    const NOTICE_TO_QUIT_PERIOD_BY_FREQUENCY: Record<string, { unit: 'days' | 'months'; amount: number }> = {
+      WEEKLY:    { unit: 'days',   amount: 7 },
+      BIWEEKLY:  { unit: 'days',   amount: 14 },
+      MONTHLY:   { unit: 'months', amount: 1 },
+      QUARTERLY: { unit: 'months', amount: 3 },
+      BIANNUAL:  { unit: 'months', amount: 3 },
+      ANNUAL:    { unit: 'months', amount: 6 },
     };
-    const deadlineDays = DEADLINE_MAP[notice_type] ?? 7;
-    const deadline = new Date(); deadline.setDate(deadline.getDate() + deadlineDays);
+    const FLAT_DEADLINE_DAYS: Record<string, number> = {
+      NOTICE_TO_PAY:    7,
+      FINAL_WARNING:    2,
+    };
+    const deadline = new Date();
+    if (notice_type === 'NOTICE_TO_QUIT' || notice_type === 'EVICTION_WARNING') {
+      const tenancyFreq = (t.payment_frequency || t.unit_payment_frequency || 'MONTHLY').toUpperCase();
+      const period = NOTICE_TO_QUIT_PERIOD_BY_FREQUENCY[tenancyFreq] ?? NOTICE_TO_QUIT_PERIOD_BY_FREQUENCY.MONTHLY;
+      if (period.unit === 'months') {
+        deadline.setMonth(deadline.getMonth() + period.amount);
+      } else {
+        deadline.setDate(deadline.getDate() + period.amount);
+      }
+    } else {
+      deadline.setDate(deadline.getDate() + (FLAT_DEADLINE_DAYS[notice_type] ?? 7));
+    }
     const deadlineStr = deadline.toLocaleDateString('en-GB', { day:'2-digit', month:'long', year:'numeric' });
     const overdue = parseFloat(amount_overdue) || parseFloat(t.rent_amount) || 0;
     const daysOvd = parseInt(days_overdue) || 2;
@@ -13816,6 +14219,18 @@ async function startServer() {
     // Disburses NO CHOP YOUR RENT standalone vaults to tenant's own account or
     // directly to landlord — no landlord onboarding required.
     startStandaloneVaultPayoutCron(pool);
+
+    // Refresh the cached sanctions/PEP watchlist (OFAC SDN, OFAC
+    // Consolidated, UN Security Council Consolidated List) once on boot,
+    // then every 24h. Deliberately delayed 60s past boot so it never
+    // competes with the DB pool during the app's own cold-start queries.
+    // Manual trigger also available at POST /api/admin/sanctions/refresh.
+    setTimeout(() => {
+      refreshSanctionsLists().catch((err) => console.error('[sanctions] Initial refresh failed:', err.message));
+    }, 60 * 1000);
+    setInterval(() => {
+      refreshSanctionsLists().catch((err) => console.error('[sanctions] Scheduled refresh failed:', err.message));
+    }, 24 * 60 * 60 * 1000);
 
     app.listen(PORT, "0.0.0.0", () => {
       console.log("[BOOT] All modules initialized successfully");
