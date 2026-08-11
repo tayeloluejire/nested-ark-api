@@ -1069,6 +1069,15 @@ const ensureTablesExist = async () => {
       ALTER TABLE platform_revenue ADD COLUMN IF NOT EXISTS fee_type VARCHAR(50) DEFAULT 'RENTAL_FEE';
       ALTER TABLE flex_pay_vaults     ADD COLUMN IF NOT EXISTS project_id UUID REFERENCES projects(id);
       ALTER TABLE rent_reminders      ADD COLUMN IF NOT EXISTS project_id UUID REFERENCES projects(id);
+      -- FIXED: rent_reminders.unit_id was already in the CREATE TABLE
+      -- statement above, but that only runs on a brand-new install
+      -- (CREATE TABLE IF NOT EXISTS is a no-op once the table already
+      -- exists). The live table predates unit_id being added there, and
+      -- — unlike project_id right above, which got this exact backfill —
+      -- no migration ever added it, so `ru.id = rr.unit_id` in
+      -- GET /api/rental/management/:projectId's rent-reminders queries
+      -- threw "column rr.unit_id does not exist" on every real request.
+      ALTER TABLE rent_reminders      ADD COLUMN IF NOT EXISTS unit_id UUID REFERENCES rental_units(id);
       ALTER TABLE legal_notices       ADD COLUMN IF NOT EXISTS project_id UUID REFERENCES projects(id);
       ALTER TABLE tenancies           ADD COLUMN IF NOT EXISTS project_id    UUID REFERENCES projects(id);
       ALTER TABLE tenancies     ADD COLUMN IF NOT EXISTS rent_amount   DECIMAL(15,2) DEFAULT 0;
@@ -7848,7 +7857,16 @@ app.put('/api/rental/units/:id', authenticate, validateMediaPayload, async (req:
         service_charge       ?? null,
         security_deposit     ?? null,
         description          ?? null,
-        amenities            ? JSON.stringify(amenities) : null,
+        // FIXED: amenities is a real Postgres TEXT[] column (confirmed
+        // against the base CREATE TABLE) — JSON.stringify() sent a JSON
+        // string where node-pg needs an actual array, throwing a Postgres
+        // type error ('column "amenities" is of type text[] but
+        // expression is of type text') on every save that included
+        // amenities, surfacing to the client as a generic 500. Same
+        // array-passthrough pattern the create endpoint (POST
+        // /api/rental/units) already uses correctly, and that
+        // photo_urls_arr right below already uses correctly too.
+        amenities            ? (Array.isArray(amenities) ? amenities : [amenities]) : null,
         photo_urls           ? JSON.stringify(photo_urls) : null,
         available_from       ?? null,
         id,
