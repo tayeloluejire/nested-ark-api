@@ -1074,7 +1074,7 @@ const ensureTablesExist = async () => {
       -- (CREATE TABLE IF NOT EXISTS is a no-op once the table already
       -- exists). The live table predates unit_id being added there, and
       -- — unlike project_id right above, which got this exact backfill —
-      -- no migration ever added it, so `ru.id = rr.unit_id` in
+      -- no migration ever added it, so 'ru.id = rr.unit_id' in
       -- GET /api/rental/management/:projectId's rent-reminders queries
       -- threw "column rr.unit_id does not exist" on every real request.
       ALTER TABLE rent_reminders      ADD COLUMN IF NOT EXISTS unit_id UUID REFERENCES rental_units(id);
