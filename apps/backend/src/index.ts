@@ -10578,7 +10578,18 @@ app.get('/api/tenant/standalone-vault/:id/receipt', authenticate, async (req: Re
 // Platform covers Paystack fee (bearer:account). 2% platform fee at vault release.
 // Vault must exist — call /init first if not. Optional: pass `amount` to override
 // the default installment_amount.
-app.post('/api/tenant/standalone-vault/pay', authenticate, requireVerifiedEmail, async (req: Request, res: Response): Promise<any> => {
+app.post('/api/tenant/standalone-vault/pay', authenticate, async (req: Request, res: Response): Promise<any> => {
+  // FIXED: requireVerifiedEmail was the only payment-initiation endpoint
+  // in this backend gated on email verification — the sibling endpoint
+  // for linked-tenancy rent (POST /api/tenant/pay-installment) has never
+  // required it. That inconsistency meant an unverified independent-saver
+  // tenant got hard-blocked from funding their own vault with
+  // "Please verify your email address before performing this action.",
+  // while a linked tenant with the exact same unverified-email status
+  // could pay rent freely. Removed to match the established pattern.
+  // Verification status is unrelated to payment authorization here — the
+  // handler below already authorizes strictly by tenant_user_id via the
+  // authenticated session, not by email state.
   const userId = (req as any).userId;
   const { amount } = req.body;
   try {
