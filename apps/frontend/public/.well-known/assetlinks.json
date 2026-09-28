@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.nestedark.app",
+      "sha256_cert_fingerprints": [
+        "31:FB:83:A4:CD:7B:EF:F4:D3:17:AC:26:E3:5D:F9:D2:88:B6:CE:C0:2B:C9:D9:3D:FB:19:64:B1:92:7A:AD:39"
+      ]
+    }
+  }
+]
