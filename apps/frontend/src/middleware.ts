@@ -23,6 +23,7 @@ const PUBLIC_PATHS = new Set([
   '/select-role',
   '/payment-success',
   '/payment-callback',
+  '/app-return',
   '/marketplace',
   '/founder/login',
   '/no-chop-your-rent',
@@ -91,6 +92,24 @@ export function middleware(req: NextRequest) {
     hasStaticExtension(pathname)
   ) {
     return NextResponse.next();
+  }
+
+  // ─────────────────────────────────────────────────────────
+  // Android Paystack return: the in-app Custom Tab has no session
+  // cookies, so /tenant/pay/success would bounce to /login. Send
+  // Android browsers to the public /app-return page, which reopens
+  // the NestedArk app. `?web=1` opts out (used as the fallback when
+  // the app is not installed), so desktop/iOS/web flows are untouched.
+  // ─────────────────────────────────────────────────────────
+
+  if (
+    pathname === '/tenant/pay/success' &&
+    !req.nextUrl.searchParams.has('web') &&
+    /Android/i.test(req.headers.get('user-agent') ?? '')
+  ) {
+    const url = req.nextUrl.clone();
+    url.pathname = '/app-return';
+    return NextResponse.redirect(url); // query (?reference=) is preserved
   }
 
   // ─────────────────────────────────────────────────────────
