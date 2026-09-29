@@ -26,6 +26,18 @@ import {
 
 dotenv.config();
 
+// A single uncaught error anywhere in the app previously crashed the whole
+// process (e.g. the webhook body-parsing bug above), taking down every
+// route for every user until Render restarted it. These handlers only add
+// logging so the error is visible and the process survives — they don't
+// change behavior for any request that already works correctly.
+process.on('unhandledRejection', (reason: any) => {
+  console.error('[UNHANDLED REJECTION]', reason?.stack || reason);
+});
+process.on('uncaughtException', (err: any) => {
+  console.error('[UNCAUGHT EXCEPTION]', err?.stack || err);
+});
+
 const app = express();
 
 // ── CORS must be registered BEFORE express.json() so OPTIONS preflight requests
@@ -86,7 +98,20 @@ app.options('*', (req: Request, res: Response) => {
 });
 
 // 3. Body parsers AFTER cors + options — safe now
-app.use(express.json());
+// The Paystack webhook route (POST /api/payments/webhook, defined below)
+// needs the RAW, untouched request body to compute the HMAC signature —
+// that's what its own express.raw() middleware is for. But this global
+// express.json() runs on every route first (Express runs middleware in
+// registration order), so it was consuming and parsing the webhook's body
+// into a JS object before express.raw() ever saw it — leaving req.body as
+// an Object instead of a Buffer, which crashed crypto.createHmac(...).update()
+// on every webhook delivery and took the whole process down. Skipping just
+// this one path here means express.raw() further down actually gets the
+// original body, exactly as its own comment always said it needed.
+app.use((req: Request, res: Response, next: NextFunction) => {
+  if (req.path === '/api/payments/webhook') return next();
+  express.json()(req, res, next);
+});
 // ════════════════════════════════════════════════════════════════════════════
 // SECURITY: Rate Limiting — memory-backed, zero external dependencies
 // Uses Map<ip+path, {count, resetTime}>. Safe for single Render instance.
