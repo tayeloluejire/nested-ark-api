@@ -253,7 +253,22 @@ const ensureTablesExist = async () => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    
+
+    // This transaction includes CREATE INDEX ... USING GIN (full_name
+    // gin_trgm_ops) on sanctions_watchlist_entries — building a trigram
+    // index over a watchlist-sized table (tens of thousands of rows) can
+    // take longer than Supabase's default statement_timeout. Because
+    // every statement here runs in one transaction, that one slow
+    // statement getting cancelled previously rolled back the ENTIRE
+    // block (including all the fast, already-satisfied IF NOT EXISTS
+    // checks) — so it retried and failed the same way on every boot,
+    // and this index never actually got built. SET LOCAL only affects
+    // this transaction/session, so it doesn't loosen timeouts anywhere
+    // else in the app. Once this runs successfully once, every later
+    // boot hits IF NOT EXISTS everywhere and finishes in milliseconds —
+    // this is a one-time cost, not a standing timeout increase.
+    await client.query(`SET LOCAL statement_timeout = '10min'`);
+
     // ⭐ IMPORTANT: NO DROP TABLE STATEMENTS - PRESERVES USER DATA
     // Tables are created IF NOT EXISTS, so data persists across restarts
     
